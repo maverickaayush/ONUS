@@ -9,7 +9,6 @@ while true; do
 inotifywait -qq -r -e modify,create,delete,move "$REPO"
 
 ```
-# Wait for editors to finish writing
 sleep 10
 
 # Skip if nothing changed
