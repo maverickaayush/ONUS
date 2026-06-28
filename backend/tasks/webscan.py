@@ -28,7 +28,7 @@ _ZAP_RISK_MAP = {
 # --- Timing budget -----------------------------------------------------------
 # Webscan is the heaviest module: ZAP active scanning legitimately needs minutes.
 # It therefore runs with a RAISED per-task Celery limit (see the run_webscan
-# decorator) instead of the default 300/360 — otherwise the worst case below
+# decorator) instead of the default 300/360 - otherwise the worst case below
 # would be SIGKILL'd mid-scan, which breaks the chord and fails the whole scan.
 #
 #   ZAP readiness wait   : <= 60s   (_ZAP_READY_TIMEOUT)
@@ -60,7 +60,7 @@ def _kill_zap(proc: Optional[subprocess.Popen]) -> None:
     """
     Terminate the ZAP daemon and all its children: graceful SIGTERM first,
     then SIGKILL after 5s, then reap the Popen so it can't become a zombie.
-    Never raises — called from finally blocks.
+    Never raises - called from finally blocks.
     """
     if proc is None:
         return
@@ -95,7 +95,7 @@ def _kill_zap(proc: Optional[subprocess.Popen]) -> None:
 def _start_zap(scan_id: str, port: int) -> Optional[subprocess.Popen]:
     """
     Start ZAP daemon and return the Popen handle, or None if zap.sh is missing.
-    Does NOT wait for readiness — call _wait_for_zap() after this.
+    Does NOT wait for readiness - call _wait_for_zap() after this.
     """
     zap_cmd = None
     for candidate in ('zap.sh', 'zap', '/usr/share/zaproxy/zap.sh',
@@ -105,7 +105,7 @@ def _start_zap(scan_id: str, port: int) -> Optional[subprocess.Popen]:
             break
 
     if not zap_cmd:
-        logger.warning("ZAP not found in PATH — web scan will use Nikto only")
+        logger.warning("ZAP not found in PATH - web scan will use Nikto only")
         return None
 
     try:
@@ -166,7 +166,7 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> List[dict]:
             return findings
 
         if not _wait_for_zap(port, timeout=_ZAP_READY_TIMEOUT):
-            logger.warning("ZAP not ready for scan %s — skipping ZAP", scan_id)
+            logger.warning("ZAP not ready for scan %s - skipping ZAP", scan_id)
             return findings
 
         zap = ZAPv2(
@@ -204,7 +204,7 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> List[dict]:
                     break
                 time.sleep(5)
             else:
-                logger.warning("ZAP active scan hit scan budget for scan %s — "
+                logger.warning("ZAP active scan hit scan budget for scan %s - "
                                "collecting alerts found so far", scan_id)
 
         # --- Collect alerts (whatever exists, even on a budget cut) ---
@@ -312,7 +312,7 @@ def _run_nikto(scan_id: str, domain: str, target_url: str) -> List[dict]:
     except subprocess.TimeoutExpired:
         logger.warning("Nikto timed out for scan %s", scan_id)
     except FileNotFoundError:
-        logger.warning("Nikto not installed — skipping for scan %s", scan_id)
+        logger.warning("Nikto not installed - skipping for scan %s", scan_id)
     except json.JSONDecodeError as e:
         logger.error("Nikto JSON parse error for scan %s: %s", scan_id, e)
     except Exception as e:
@@ -341,7 +341,7 @@ def run_webscan(scan_id: str, domain: str) -> list:
     """
     Web scan module: OWASP ZAP (spider + active scan) + Nikto.
 
-    ZAP and Nikto are both optional — if either is missing the module continues
+    ZAP and Nikto are both optional - if either is missing the module continues
     with whatever is available. Partial results are still reported as 'complete'
     (not 'failed'). Runs with a raised per-task time limit because ZAP active
     scanning is the pipeline's long pole (see the timing-budget note above).

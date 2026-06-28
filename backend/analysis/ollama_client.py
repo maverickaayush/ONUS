@@ -7,7 +7,7 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Section 4.5 — byte-for-byte. Do NOT paraphrase or reorder.
+# Section 4.5 - byte-for-byte. Do NOT paraphrase or reorder.
 _SYSTEM_PROMPT = (
     "You are a professional cybersecurity analyst. You will be given raw vulnerability\n"
     "findings from an automated VAPT scan in JSON format. Your task is to analyze\n"
@@ -36,6 +36,23 @@ _SEVERITY_SCORES = {
     'Critical': 10.0, 'High': 7.5, 'Medium': 5.0,
     'Low': 2.5, 'Informational': 0.0, 'Info': 0.0,
 }
+
+
+def _strip_emdashes(obj):
+    """
+    Recursively replace em-dashes (U+2014) with hyphens in every string of a
+    nested dict/list structure. Qwen 2.5 frequently emits em-dashes in the
+    free-text fields it generates (executive_summary, description, remediation),
+    which would otherwise reach the PDF and dashboard. Applied to whatever
+    analyse() returns so the AI output is always em-dash free.
+    """
+    if isinstance(obj, str):
+        return obj.replace('—', '-')
+    if isinstance(obj, list):
+        return [_strip_emdashes(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _strip_emdashes(v) for k, v in obj.items()}
+    return obj
 
 
 def analyse(aggregated: dict, domain: str) -> dict:
@@ -80,20 +97,20 @@ def analyse(aggregated: dict, domain: str) -> dict:
         if missing:
             raise ValueError(f"Ollama response missing required keys: {missing}")
 
-        logger.info("Ollama analysis complete for %s — risk_score=%s",
+        logger.info("Ollama analysis complete for %s - risk_score=%s",
                     domain, result.get('risk_score'))
-        return result
+        return _strip_emdashes(result)
 
     except requests.exceptions.Timeout:
-        logger.warning("Ollama timed out for %s — using rule-based fallback", domain)
+        logger.warning("Ollama timed out for %s - using rule-based fallback", domain)
     except requests.exceptions.ConnectionError:
-        logger.warning("Ollama not reachable for %s — using rule-based fallback", domain)
+        logger.warning("Ollama not reachable for %s - using rule-based fallback", domain)
     except (json.JSONDecodeError, KeyError, ValueError) as e:
-        logger.warning("Ollama response invalid for %s (%s) — using fallback", domain, e)
+        logger.warning("Ollama response invalid for %s (%s) - using fallback", domain, e)
     except Exception as e:
-        logger.error("Ollama unexpected error for %s: %s — using fallback", domain, e)
+        logger.error("Ollama unexpected error for %s: %s - using fallback", domain, e)
 
-    return _rule_based_fallback(aggregated, domain)
+    return _strip_emdashes(_rule_based_fallback(aggregated, domain))
 
 
 def _rule_based_fallback(aggregated: dict, domain: str) -> dict:
@@ -143,7 +160,7 @@ def _rule_based_fallback(aggregated: dict, domain: str) -> dict:
                      f'{len(findings)} findings.']
     if top_issues:
         summary_parts.append(f'Top issues: {", ".join(top_issues)}.')
-    summary_parts.append('(AI analysis unavailable — rule-based scoring applied.)')
+    summary_parts.append('(AI analysis unavailable - rule-based scoring applied.)')
 
     return {
         'executive_summary':   ' '.join(summary_parts),

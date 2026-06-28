@@ -125,7 +125,7 @@ def test_xss(target: str, domain: str) -> List[dict]:
                     if marker in resp.text and payload in resp.text:
                         findings.append(normalize_finding(
                             module=MODULE, tool='owasp', type_='reflected_xss',
-                            title='Reflected XSS — payload reflected unsanitized',
+                            title='Reflected XSS - payload reflected unsanitized',
                             evidence=f'Parameter "{param}" reflects '
                                      f'payload {payload[:60]!r} verbatim',
                             severity='High', target=domain,
@@ -160,7 +160,7 @@ def test_path_traversal(target: str, domain: str) -> List[dict]:
                 if any(ind in resp.text for ind in indicators):
                     findings.append(normalize_finding(
                         module=MODULE, tool='owasp', type_='path_traversal',
-                        title='Path traversal — /etc/passwd accessible',
+                        title='Path traversal - /etc/passwd accessible',
                         evidence=f'GET {probe_url} returned /etc/passwd content',
                         severity='Critical', target=domain,
                     ))
@@ -179,7 +179,7 @@ def test_path_traversal(target: str, domain: str) -> List[dict]:
                 if any(ind in resp.text for ind in indicators):
                     findings.append(normalize_finding(
                         module=MODULE, tool='owasp', type_='path_traversal',
-                        title='Path traversal via parameter — /etc/passwd readable',
+                        title='Path traversal via parameter - /etc/passwd readable',
                         evidence=f'Parameter "{param}" with traversal payload '
                                  f'returned /etc/passwd content',
                         severity='Critical', target=domain,
@@ -273,7 +273,7 @@ def test_error_disclosure(target: str, domain: str) -> List[dict]:
 def run_owasp(scan_id: str, domain: str) -> list:
     """
     OWASP Top 10 module: 5 non-destructive active tests.
-    All payloads are read-only GET requests — no data modification ever.
+    All payloads are read-only GET requests - no data modification ever.
     """
     update_module_status(scan_id, MODULE, 'running')
     findings = []

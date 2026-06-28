@@ -8,7 +8,7 @@ from alembic import context
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
 
 from database import Base
-import models  # noqa: F401 — ensures all models are registered
+import models  # noqa: F401 - ensures all models are registered
 
 config = context.config
 

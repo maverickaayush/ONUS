@@ -24,7 +24,7 @@ class ScanRequest(BaseModel):
         if "://" in host:
             host = host.split("://", 1)[1]
         host = host.split("/", 1)[0]
-        if host.count(":") == 1:  # host:port — but not an IPv6 literal
+        if host.count(":") == 1:  # host:port - but not an IPv6 literal
             host = host.split(":", 1)[0]
 
         if not host:
@@ -42,7 +42,7 @@ class ScanRequest(BaseModel):
         if ip is not None:
             if ip.is_private or ip.is_loopback or ip.is_link_local:
                 raise ValueError("Scanning private/internal IP addresses is not permitted")
-            # Public IP literal — allow it through.
+            # Public IP literal - allow it through.
             return host
 
         # Otherwise it must be a syntactically valid domain name.

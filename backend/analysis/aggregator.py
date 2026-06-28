@@ -11,7 +11,7 @@ _SEVERITY_ORDER = {
     'Low': 3, 'Informational': 4, 'Info': 4,
 }
 
-# OWASP Top 10 2021 — keyed by substring of finding type
+# OWASP Top 10 2021 - keyed by substring of finding type
 _OWASP_MAP = {
     'sqli':                   'A03:2021 - Injection',
     'xss':                    'A03:2021 - Injection',
@@ -89,7 +89,7 @@ def aggregate(findings_list: List[List[dict]]) -> dict:
             'scan_metadata': { 'timestamp': ISO8601, 'tool_versions': {...} }
         }
     """
-    # 1. Flatten — skip None / non-list module results gracefully
+    # 1. Flatten - skip None / non-list module results gracefully
     flat: List[dict] = []
     for module_result in findings_list:
         if isinstance(module_result, list):

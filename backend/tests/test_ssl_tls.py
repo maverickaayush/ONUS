@@ -63,7 +63,7 @@ class TestSslTlsSchema:
         assert 'OK' in _TESTSSL_SKIP
 
     def test_testssl_json_parsing_skips_info_ok(self):
-        """INFO/OK findings must be skipped — they represent passing checks."""
+        """INFO/OK findings must be skipped - they represent passing checks."""
         from tasks.ssl_tls import _parse_testssl_json
 
         sample = json.dumps([
@@ -156,7 +156,7 @@ class TestSslTlsSchema:
         assert 'weak_cipher_rc4' in types, "RC4 must be flagged"
         assert 'weak_cipher_des' in types, "DES must be flagged"
         assert 'weak_cipher_bits' in types, "Sub-128-bit cipher must be flagged"
-        # Rejected cipher (RC4-MD5) must NOT appear — check exact cipher name,
+        # Rejected cipher (RC4-MD5) must NOT appear - check exact cipher name,
         # not substring (EXP-RC4-MD5 is accepted and also contains 'RC4-MD5').
         rejected = [f for f in findings
                     if f.get('title', '').endswith(': RC4-MD5')]
@@ -214,7 +214,7 @@ class TestSslTlsModuleStatus:
             "Both tools missing must result in 'failed' status"
 
     def test_no_https_marks_complete(self):
-        """Unreachable port 443 is not an error — must mark 'complete'."""
+        """Unreachable port 443 is not an error - must mark 'complete'."""
         status_calls = []
 
         def record(scan_id, module, status):
@@ -320,7 +320,7 @@ class TestSslTlsCertExpiry:
 
 class TestSslTlsLive:
     """
-    Live tests using the pure-Python helpers — no testssl.sh or sslscan needed.
+    Live tests using the pure-Python helpers - no testssl.sh or sslscan needed.
     These verify the module works end-to-end against a real HTTPS host.
     """
 
@@ -337,7 +337,7 @@ class TestSslTlsLive:
 
     def test_run_ssl_tls_returns_list_with_schema(self):
         """
-        Full run_ssl_tls against badssl.com (no external tools — both skipped).
+        Full run_ssl_tls against badssl.com (no external tools - both skipped).
         Must return a list of dicts, every dict has all required fields including
         found_by, and module status ends as 'complete'.
         """
@@ -354,7 +354,7 @@ class TestSslTlsLive:
         # Both tools missing with reachable host → failed (by spec)
         # but result is still a list
         assert isinstance(result, list), "Must always return a list"
-        # status must be either complete or failed — never silent None
+        # status must be either complete or failed - never silent None
         assert status_calls[-1] in ('complete', 'failed'), \
             f"Final status must be complete or failed, got {status_calls}"
 

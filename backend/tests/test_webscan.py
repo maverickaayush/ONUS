@@ -1,7 +1,7 @@
 """
 Step 4 verification tests for the webscan module.
 
-Runs against http://testphp.vulnweb.com — a legally-authorized intentionally
+Runs against http://testphp.vulnweb.com - a legally-authorized intentionally
 vulnerable PHP app maintained by Acunetix for security tool testing.
 
 Run with:
@@ -31,7 +31,7 @@ def _stub_update_status(scan_id, module, status):
 
 
 class TestWebscanSchema:
-    """Schema and contract tests — run without ZAP/Nikto/DB."""
+    """Schema and contract tests - run without ZAP/Nikto/DB."""
 
     def test_nikto_schema(self):
         """Nikto findings must match Section 4.3 schema including found_by."""
@@ -42,7 +42,7 @@ class TestWebscanSchema:
         assert isinstance(findings, list), "Nikto must return a list"
         for f in findings:
             missing = REQUIRED_FIELDS - set(f.keys())
-            assert not missing, f"Finding missing keys: {missing} — {f.get('title')}"
+            assert not missing, f"Finding missing keys: {missing} - {f.get('title')}"
             assert f['found_by'] == ['webscan'], \
                 f"found_by must be ['webscan'], got {f['found_by']}"
             assert f['module'] == 'webscan', \
@@ -169,7 +169,7 @@ class TestWebscanSchema:
             assert 8090 <= p <= 8989, f"Port {p} out of expected range"
 
         # Concurrent scans should use different ports (hash collisions allowed
-        # but rare — at least confirm the formula doesn't always give the same port)
+        # but rare - at least confirm the formula doesn't always give the same port)
         assert len(set(ports)) > 1, "Port formula produces same port for all scans"
 
     def test_zap_port_http_and_https_in_proxies(self):
