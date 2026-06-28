@@ -218,7 +218,8 @@ def _parse_sslscan_xml(path: str, domain: str, scan_id: str) -> List[dict]:
     try:
         tree = ET.parse(path)
         root = tree.getroot()
-        ssltest = root.find('ssltest') or root
+        _found = root.find('ssltest')
+        ssltest = _found if _found is not None else root
 
         # --- Protocol checks ---
         for proto in ssltest.findall('.//protocol'):
