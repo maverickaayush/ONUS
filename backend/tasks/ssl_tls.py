@@ -271,6 +271,8 @@ def _parse_sslscan_xml(path: str, domain: str, scan_id: str) -> List[dict]:
             except ValueError:
                 bits = 128
 
+            # Each weakness is checked independently — a cipher can trigger
+            # multiple findings (e.g. 40-bit RC4 is both RC4 AND weak-bits).
             cipher_upper = cipher_name.upper()
             if 'RC4' in cipher_upper:
                 findings.append(normalize_finding(
@@ -279,15 +281,14 @@ def _parse_sslscan_xml(path: str, domain: str, scan_id: str) -> List[dict]:
                     evidence=f'Cipher {cipher_name} ({bits} bits) is enabled',
                     severity='High', target=domain,
                 ))
-            elif 'DES' in cipher_upper:
-                severity = 'High'
+            if 'DES' in cipher_upper:
                 findings.append(normalize_finding(
                     module=MODULE, tool='sslscan', type_='weak_cipher_des',
                     title=f'DES/3DES cipher enabled: {cipher_name}',
                     evidence=f'Cipher {cipher_name} ({bits} bits) is enabled',
-                    severity=severity, target=domain,
+                    severity='High', target=domain,
                 ))
-            elif bits < 128 and bits > 0:
+            if 0 < bits < 128:
                 findings.append(normalize_finding(
                     module=MODULE, tool='sslscan', type_='weak_cipher_bits',
                     title=f'Weak cipher key length: {cipher_name} ({bits} bits)',
