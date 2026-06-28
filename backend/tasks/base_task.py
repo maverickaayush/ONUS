@@ -35,7 +35,7 @@ def normalize_finding(
 ) -> dict:
     """
     Return a normalized finding dict matching the Section 4.3 schema.
-    Every scanning module must use this helper — the aggregator depends on
+    Every scanning module must use this helper - the aggregator depends on
     the presence of found_by and the exact field names.
     """
     return {
@@ -61,7 +61,7 @@ class BaseTask(Task):
         from tasks.base_task import BaseTask, normalize_finding, update_module_status
 
     The helpers are also exposed as static methods (``self.normalize_finding``,
-    ``self.update_module_status``). ``on_failure`` is a logging safety net —
+    ``self.update_module_status``). ``on_failure`` is a logging safety net -
     each module is still expected to catch its own exceptions, mark itself
     ``failed`` and return ``[]`` so the chord callback always fires with all
     five results.

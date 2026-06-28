@@ -9,7 +9,7 @@ import requests
 from tasks.base_task import BaseTask, normalize_finding, update_module_status
 from tasks.celery_app import app
 
-# verify=False is a deliberate scanner design choice — test targets commonly
+# verify=False is a deliberate scanner design choice - test targets commonly
 # have self-signed or invalid certs that must not block the analysis.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -28,7 +28,7 @@ _SECURITY_HEADERS = {
 
 
 # ---------------------------------------------------------------------------
-# Cookie parsing (raw Set-Cookie headers — requests' jar doesn't expose flags)
+# Cookie parsing (raw Set-Cookie headers - requests' jar doesn't expose flags)
 # ---------------------------------------------------------------------------
 
 def _parse_raw_cookies(resp) -> List[Tuple[str, set]]:
@@ -69,7 +69,7 @@ def _check_hsts(value: str, domain: str) -> List[dict]:
         return [normalize_finding(
             module=MODULE, tool='headers', type_='missing_hsts',
             title='Missing Strict-Transport-Security header',
-            evidence='HSTS not present — browsers can connect over plain HTTP',
+            evidence='HSTS not present - browsers can connect over plain HTTP',
             severity='High', target=domain,
         )]
 
@@ -98,14 +98,14 @@ def _check_csp(value: str, domain: str) -> List[dict]:
         return [normalize_finding(
             module=MODULE, tool='headers', type_='missing_csp',
             title='Missing Content-Security-Policy header',
-            evidence='No CSP set — XSS mitigation policy absent',
+            evidence='No CSP set - XSS mitigation policy absent',
             severity='Medium', target=domain,
         )]
     findings = []
     if 'unsafe-inline' in value:
         findings.append(normalize_finding(
             module=MODULE, tool='headers', type_='csp_unsafe_inline',
-            title="CSP contains 'unsafe-inline' — weakens XSS protection",
+            title="CSP contains 'unsafe-inline' - weakens XSS protection",
             evidence=f'Content-Security-Policy: {value[:200]}',
             severity='Medium', target=domain,
         ))
@@ -122,7 +122,7 @@ def _check_csp(value: str, domain: str) -> List[dict]:
 def _check_clickjacking(xfo: str, csp: str, domain: str) -> List[dict]:
     """
     Flag clickjacking risk only when BOTH X-Frame-Options is absent AND
-    CSP has no frame-ancestors directive — either one alone is sufficient.
+    CSP has no frame-ancestors directive - either one alone is sufficient.
     """
     has_xfo = bool(xfo)
     has_frame_ancestors = 'frame-ancestors' in csp.lower() if csp else False
@@ -147,7 +147,7 @@ def _check_cors(acao: str, acac: str, domain: str) -> List[dict]:
         return [normalize_finding(
             module=MODULE, tool='headers', type_='cors_wildcard_with_credentials',
             title='CORS wildcard with Access-Control-Allow-Credentials: true',
-            evidence='Any origin can make credentialed cross-origin requests — '
+            evidence='Any origin can make credentialed cross-origin requests - '
                      'session tokens / cookies exposed to attacker-controlled sites',
             severity='High', target=domain,
         )]
@@ -283,7 +283,7 @@ def _run_headers(scan_id: str, domain: str) -> List[dict]:
         domain,
     ))
 
-    # Cookie flags (raw header parsing — reliable across all servers)
+    # Cookie flags (raw header parsing - reliable across all servers)
     for cookie_name, flags in _parse_raw_cookies(resp):
         if 'secure' not in flags:
             findings.append(normalize_finding(
@@ -309,7 +309,7 @@ def _run_headers(scan_id: str, domain: str) -> List[dict]:
                 severity='Low', target=domain,
             ))
 
-    # Single Informational finding — all present security headers as a dict
+    # Single Informational finding - all present security headers as a dict
     present = {k: v[:200] for k, v in headers.items() if k in _SECURITY_HEADERS and v}
     if present:
         findings.append(normalize_finding(
@@ -328,7 +328,7 @@ def _run_headers(scan_id: str, domain: str) -> List[dict]:
 
 @app.task(base=BaseTask, name='tasks.headers.run_headers')
 def run_headers(scan_id: str, domain: str) -> list:
-    """HTTP security headers analysis — single GET request, pure Python."""
+    """HTTP security headers analysis - single GET request, pure Python."""
     update_module_status(scan_id, MODULE, 'running')
     findings = []
     try:

@@ -15,7 +15,7 @@ from tasks.celery_app import app
 logger = logging.getLogger(__name__)
 MODULE = 'ssl_tls'
 
-# testssl.sh severity → normalized severity (skip INFO/OK — those are passing checks)
+# testssl.sh severity → normalized severity (skip INFO/OK - those are passing checks)
 _TESTSSL_SEVERITY_MAP = {
     'CRITICAL': 'Critical',
     'HIGH':     'High',
@@ -23,7 +23,7 @@ _TESTSSL_SEVERITY_MAP = {
     'LOW':      'Low',
     'WARN':     'Low',
 }
-# Values that represent passing checks — do NOT emit as findings
+# Values that represent passing checks - do NOT emit as findings
 _TESTSSL_SKIP = {'INFO', 'OK', 'HINT', 'DEBUG', 'NOT_TESTED', 'NOT applicable'}
 
 
@@ -48,7 +48,7 @@ def _cert_expiry_finding(domain: str) -> Optional[dict]:
     """
     Connect via ssl.getpeercert() and return an expiry finding if the cert
     expires within 30 days or is already expired. Returns None on any error
-    (no connectivity, self-signed, etc.) — this is enrichment, not critical.
+    (no connectivity, self-signed, etc.) - this is enrichment, not critical.
     """
     try:
         ctx = ssl.create_default_context()
@@ -95,7 +95,7 @@ def _run_testssl(scan_id: str, domain: str) -> List[dict]:
     out_path = f'/tmp/ssl_{scan_id}.json'
 
     if not shutil.which('testssl.sh'):
-        logger.warning("testssl.sh not found — skipping for scan %s", scan_id)
+        logger.warning("testssl.sh not found - skipping for scan %s", scan_id)
         return findings
 
     try:
@@ -115,7 +115,7 @@ def _run_testssl(scan_id: str, domain: str) -> List[dict]:
             check=False,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("testssl.sh timed out (180s) for scan %s — parsing partial output", scan_id)
+        logger.warning("testssl.sh timed out (180s) for scan %s - parsing partial output", scan_id)
     except Exception as e:
         logger.error("testssl.sh failed for scan %s: %s", scan_id, e)
         return findings
@@ -184,7 +184,7 @@ def _run_sslscan(scan_id: str, domain: str) -> List[dict]:
     out_path = f'/tmp/sslscan_{scan_id}.xml'
 
     if not shutil.which('sslscan'):
-        logger.warning("sslscan not found — skipping for scan %s", scan_id)
+        logger.warning("sslscan not found - skipping for scan %s", scan_id)
         return findings
 
     try:
@@ -271,7 +271,7 @@ def _parse_sslscan_xml(path: str, domain: str, scan_id: str) -> List[dict]:
             except ValueError:
                 bits = 128
 
-            # Each weakness is checked independently — a cipher can trigger
+            # Each weakness is checked independently - a cipher can trigger
             # multiple findings (e.g. 40-bit RC4 is both RC4 AND weak-bits).
             cipher_upper = cipher_name.upper()
             if 'RC4' in cipher_upper:
@@ -399,7 +399,7 @@ def _dedup(findings: List[dict]) -> List[dict]:
 def run_ssl_tls(scan_id: str, domain: str) -> list:
     """
     SSL/TLS module: testssl.sh + sslscan + pure-Python cert expiry check.
-    Either tool can be missing — the module degrades gracefully.
+    Either tool can be missing - the module degrades gracefully.
     """
     update_module_status(scan_id, MODULE, 'running')
     findings = []
@@ -422,7 +422,7 @@ def run_ssl_tls(scan_id: str, domain: str) -> list:
         # Both tools missing → failed
         if not testssl_avail and not sslscan_avail:
             logger.error(
-                "ssl_tls scan %s: both testssl.sh and sslscan missing — "
+                "ssl_tls scan %s: both testssl.sh and sslscan missing - "
                 "install them in the Docker image", scan_id,
             )
             update_module_status(scan_id, MODULE, 'failed')

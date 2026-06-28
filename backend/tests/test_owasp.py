@@ -93,7 +93,7 @@ class TestOwaspSchema:
 
         def mock_get(url, **kwargs):
             params = kwargs.get('params', {})
-            # Return escaped version — not a reflection vulnerability
+            # Return escaped version - not a reflection vulnerability
             return _mock_resp('&lt;script&gt;alert&lt;/script&gt;')
 
         with patch('tasks.owasp.requests.get', side_effect=mock_get):

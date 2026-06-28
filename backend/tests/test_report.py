@@ -105,7 +105,7 @@ class TestGeneratePdf:
         assert pdf[:4] == b'%PDF'
 
     def test_missing_risk_score_defaults_to_zero(self):
-        """analysis dict without risk_score must not crash — defaults to 0."""
+        """analysis dict without risk_score must not crash - defaults to 0."""
         from reports.generator import generate_pdf
         analysis = _make_analysis()
         del analysis['risk_score']
@@ -207,7 +207,14 @@ class TestRiskBadge:
     def test_risk_exactly_40_is_amber_not_green(self):
         html = self._get_html(40)
         assert '#D4870A' in html
-        assert '#C0392B' not in html.split('risk-badge')[1].split('</div>')[0]
+        # The badge inline style must use amber, not green
+        # Extract the risk-badge element's style attribute to check precisely
+        import re
+        badge_style = re.search(
+            r'class="risk-badge"\s+style="background:([^"]+)"', html)
+        assert badge_style, "risk-badge style attribute not found"
+        assert badge_style.group(1).strip() == '#D4870A', \
+            f"Expected amber #D4870A at risk=40, got {badge_style.group(1)}"
 
 
 class TestSeverityBadge:
@@ -300,7 +307,6 @@ class TestDbStorage:
     def test_idempotent_update_on_second_call(self):
         """Second generate_pdf with store_in_db=True must UPDATE not INSERT."""
         from reports.generator import _store_report
-        from unittest.mock import MagicMock, patch
 
         scan = _make_scan()
         existing_report = MagicMock()
@@ -308,7 +314,8 @@ class TestDbStorage:
         mock_db = MagicMock()
         mock_db.query.return_value.filter.return_value.first.return_value = existing_report
 
-        with patch('reports.generator.SessionLocal', return_value=mock_db):
+        # SessionLocal is a lazy import inside _store_report - patch at its source
+        with patch('database.SessionLocal', return_value=mock_db):
             _store_report(scan, b'%PDF-fake')
 
         # Must UPDATE existing, not add a new row
@@ -317,7 +324,7 @@ class TestDbStorage:
         mock_db.commit.assert_called_once()
 
     def test_db_failure_reraises_but_bytes_already_returned(self):
-        """DB failure must re-raise so caller knows, but PDF bytes were returned first."""
+        """DB failure must re-raise so caller knows."""
         from reports.generator import generate_pdf
 
         def bad_store(scan, pdf_bytes):

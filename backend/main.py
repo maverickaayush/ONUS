@@ -6,7 +6,7 @@ from routers.report import router as report_router
 
 app = FastAPI(
     title="VAPT Tool API",
-    description="Automated Vulnerability Assessment and Penetration Testing — IIT Kanpur Computer Centre",
+    description="Automated Vulnerability Assessment and Penetration Testing - IIT Kanpur Computer Centre",
     version="1.0.0",
 )
 

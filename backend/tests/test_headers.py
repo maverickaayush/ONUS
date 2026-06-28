@@ -2,8 +2,8 @@
 Step 5 (headers) verification tests.
 
 Targets:
-  - example.com  — minimal headers, expect several missing
-  - github.com   — well-configured, expect few or none
+  - example.com  - minimal headers, expect several missing
+  - github.com   - well-configured, expect few or none
 
 Run with:
     cd backend && python3 -m pytest tests/test_headers.py -v
@@ -75,7 +75,7 @@ class TestHeadersSchema:
         assert hsts['severity'] == 'High'
 
     def test_hsts_short_max_age_is_low_not_medium(self):
-        """max-age < 31536000 must be Low (not Medium — spec says Low)."""
+        """max-age < 31536000 must be Low (not Medium - spec says Low)."""
         from tasks.headers import _check_hsts
         findings = _check_hsts('max-age=3600', 'example.com')
         weak = [f for f in findings if f['type'] == 'weak_hsts_max_age']
@@ -102,7 +102,7 @@ class TestHeadersSchema:
         assert findings[0]['type'] == 'cors_wildcard_with_credentials'
 
     def test_xfo_missing_but_csp_frame_ancestors_no_finding(self):
-        """CSP frame-ancestors is sufficient — must not flag missing XFO."""
+        """CSP frame-ancestors is sufficient - must not flag missing XFO."""
         from tasks.headers import _check_clickjacking
         findings = _check_clickjacking(
             xfo='',
@@ -238,7 +238,7 @@ class TestHeadersModuleStatus:
 
 class TestHeadersLive:
     """
-    Live tests against real targets — no mocks.
+    Live tests against real targets - no mocks.
     example.com has minimal headers; github.com is well-configured.
     """
 

@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<title>VAPT Report — {{ domain }}</title>
+<title>VAPT Report - {{ domain }}</title>
 <style>
 /* ── Page layout ────────────────────────────────────────────── */
 @page {
   size: A4;
   margin: 2cm;
   @bottom-center {
-    content: "Confidential — IIT Kanpur Computer Centre — Authorized Use Only  |  Page " counter(page) " of " counter(pages);
+    content: "Confidential - IIT Kanpur Computer Centre - Authorized Use Only  |  Page " counter(page) " of " counter(pages);
     font-family: Arial, Helvetica, sans-serif;
     font-size: 8pt;
     color: #666;
@@ -212,7 +212,7 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   <p class="cover-domain">{{ domain }}</p>
   <p class="cover-date">Scan Date: {{ scan_date }}</p>
 
-  {# Risk score badge — color computed in template per spec requirement #}
+  {# Risk score badge - color computed in template per spec requirement #}
   {% if risk_score >= 70 %}
     {% set badge_color = '#C0392B' %}
     {% set risk_label  = 'CRITICAL RISK' %}
@@ -228,7 +228,7 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   <p class="risk-label"><strong>Overall Risk Score: {{ risk_score }}/100</strong><br/>{{ risk_label }}</p>
 
   <p class="cover-footer-note">
-    Classification: Confidential — Internal Use Only<br/>
+    Classification: Confidential - Internal Use Only<br/>
     Prepared by: Aayush Yadav (B.Tech CSE, Bennett University)<br/>
     Supervised by: Navpreet Singh, IIT Kanpur Computer Centre<br/>
     This report is for authorized use only. Unauthorized disclosure is prohibited.
@@ -252,27 +252,27 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   <tr class="sev-row-critical">
     <td>{{ severity_badge('Critical') }}</td>
     <td><strong>{{ total_critical }}</strong></td>
-    <td>Immediate exploitation risk — fix within 24 hours</td>
+    <td>Immediate exploitation risk - fix within 24 hours</td>
   </tr>
   <tr class="sev-row-high">
     <td>{{ severity_badge('High') }}</td>
     <td><strong>{{ total_high }}</strong></td>
-    <td>Significant risk — fix within one week</td>
+    <td>Significant risk - fix within one week</td>
   </tr>
   <tr class="sev-row-medium">
     <td>{{ severity_badge('Medium') }}</td>
     <td><strong>{{ total_medium }}</strong></td>
-    <td>Moderate risk — fix within one month</td>
+    <td>Moderate risk - fix within one month</td>
   </tr>
   <tr class="sev-row-low">
     <td>{{ severity_badge('Low') }}</td>
     <td><strong>{{ total_low }}</strong></td>
-    <td>Minor risk — fix at next maintenance window</td>
+    <td>Minor risk - fix at next maintenance window</td>
   </tr>
   <tr class="sev-row-info">
     <td>{{ severity_badge('Informational') }}</td>
     <td><strong>{{ total_informational }}</strong></td>
-    <td>Informational — review as needed</td>
+    <td>Informational - review as needed</td>
   </tr>
 </table>
 
@@ -288,7 +288,7 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
       &nbsp;<strong>CVSS {{ '%.1f'|format(finding.cvss_score) }}</strong>
     {% endif %}
     &nbsp;
-    <span style="font-size:8pt;color:#666;">Priority {{ finding.priority or '—' }}</span>
+    <span style="font-size:8pt;color:#666;">Priority {{ finding.priority or '-' }}</span>
   </div>
   <div class="finding-card-body">
     <h3>{{ finding.title }}</h3>

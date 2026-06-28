@@ -18,7 +18,7 @@ def create_scan(request: ScanRequest, db: Session = Depends(get_db)):
     if not request.authorized:
         raise HTTPException(status_code=403, detail="Scan requires explicit authorization")
 
-    # Duplicate detection — same domain, active scan in last 10 minutes
+    # Duplicate detection - same domain, active scan in last 10 minutes
     ten_minutes_ago = datetime.utcnow() - timedelta(minutes=10)
     existing = db.query(Scan).filter(
         and_(

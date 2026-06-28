@@ -28,7 +28,7 @@ def safe_filename(domain: str, date) -> str:
 def generate_pdf(scan, analysis: dict, store_in_db: bool = True) -> bytes:
     """
     Render report.html via Jinja2, convert to PDF with WeasyPrint, optionally
-    persist a Report row in PostgreSQL (idempotent — updates existing row).
+    persist a Report row in PostgreSQL (idempotent - updates existing row).
 
     Args:
         scan:        SQLAlchemy Scan ORM instance

@@ -106,7 +106,7 @@ def _nmap_phase(scan_id: str, domain: str, port_args: List[str],
 
 
 # High-value ports scanned explicitly on filtered hosts (where a full -p- can't
-# complete). Covers ports NOT reliably in nmap's top-100 — dev servers, modern
+# complete). Covers ports NOT reliably in nmap's top-100 - dev servers, modern
 # infra, databases, message brokers, container orchestration, monitoring, CI/CD.
 # ~50 ports complete in well under 60s even on a fully-filtered host.
 _APP_PORTS = ','.join([
@@ -140,7 +140,7 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
     the host and report ZERO ports. The only scan that reliably returns results on
     such a host is one small enough to run to completion. So:
 
-      Phase 1 (top 100 ports, NO host-timeout) — always runs; allowed to finish.
+      Phase 1 (top 100 ports, NO host-timeout) - always runs; allowed to finish.
                Captures the services that matter (web/ssh/mail/db). Instant on a
                normal host; ~2 min on a fully-filtered host but it COMPLETES.
 
@@ -157,7 +157,7 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
     """
     ports = {}
 
-    # Phase 1: top 100 ports, no host-timeout — must run to completion to report.
+    # Phase 1: top 100 ports, no host-timeout - must run to completion to report.
     # 180s cap (was 130s, barely above Vercel's ~122s): gives slower filtered
     # hosts room to finish instead of being SIGKILL'd mid-scan (→ zero ports).
     # Free now that recon has a generous per-task limit. Normal hosts finish in
@@ -170,14 +170,14 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
     phase1_elapsed = time.monotonic() - t0
 
     if phase1_elapsed < 30:
-        # Phase 2a: responsive host — full port range for complete coverage.
+        # Phase 2a: responsive host - full port range for complete coverage.
         for portid, finding in _nmap_phase(
             scan_id, domain, port_args=['-p-'],
             host_timeout='60s', subproc_timeout=70, tag='full',
         ).items():
             ports.setdefault(portid, finding)
     else:
-        # Phase 2b: filtered host — full -p- can't finish, so target high-value
+        # Phase 2b: filtered host - full -p- can't finish, so target high-value
         # application/admin ports explicitly instead of skipping coverage entirely.
         logger.info(
             "recon nmap: host appears filtered for scan %s (Phase 1 took %.0fs); "
@@ -195,7 +195,7 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
         findings.append(normalize_finding(
             module=MODULE, tool='nmap', type_='scan_timeout',
             title='nmap found no open ports (or scan timed out)',
-            evidence='No open ports confirmed within the scan budget — '
+            evidence='No open ports confirmed within the scan budget - '
                      'host may be filtered/firewalled or behind a CDN.',
             severity='Info', target=domain,
         ))
@@ -239,7 +239,7 @@ def _run_subfinder(scan_id: str, domain: str) -> List[dict]:
     except subprocess.TimeoutExpired:
         logger.warning("subfinder timed out (30s) for scan %s", scan_id)
     except FileNotFoundError:
-        logger.warning("subfinder not installed — subdomain enumeration skipped")
+        logger.warning("subfinder not installed - subdomain enumeration skipped")
     except Exception as e:
         logger.error("subfinder error for scan %s: %s", scan_id, e)
     finally:
@@ -311,7 +311,7 @@ def _run_whois(scan_id: str, domain: str) -> List[dict]:
         name_servers = w.get('name_servers')
         if name_servers:
             raw_ns = name_servers if isinstance(name_servers, list) else [name_servers]
-            # WHOIS frequently returns duplicates (mixed case / repeated) — dedup.
+            # WHOIS frequently returns duplicates (mixed case / repeated) - dedup.
             ns_list = sorted({str(ns).strip().lower().rstrip('.') for ns in raw_ns if ns})
             ns_str = ', '.join(ns_list[:5])
             findings.append(normalize_finding(
@@ -335,10 +335,10 @@ def _run_whois(scan_id: str, domain: str) -> List[dict]:
     except subprocess.TimeoutExpired:
         logger.warning("whois timed out (20s) for scan %s", scan_id)
     except FileNotFoundError:
-        # The `whois` binary is missing — findings would otherwise vanish silently.
+        # The `whois` binary is missing - findings would otherwise vanish silently.
         # The Step 9 Dockerfile MUST `apt install whois`.
         logger.error(
-            "whois binary not found for scan %s — WHOIS recon skipped. "
+            "whois binary not found for scan %s - WHOIS recon skipped. "
             "Install it (apt install whois); the Docker image must include it.",
             scan_id,
         )
@@ -382,7 +382,7 @@ def _run_dns(scan_id: str, domain: str) -> List[dict]:
         except dns.exception.DNSException as e:
             logger.debug("DNS %s lookup failed for %s: %s", rtype, domain, e)
 
-    # SPF check — reuse the TXT answers already fetched above (no extra query).
+    # SPF check - reuse the TXT answers already fetched above (no extra query).
     spf_found = any(str(r).strip('"').startswith('v=spf1') for r in txt_records)
     if not spf_found:
         findings.append(normalize_finding(
@@ -409,7 +409,7 @@ def _run_dns(scan_id: str, domain: str) -> List[dict]:
             severity='Medium', target=domain,
         ))
 
-    # DKIM check — probe a few common selectors (bounded).
+    # DKIM check - probe a few common selectors (bounded).
     dkim_found = False
     for selector in ('default', 'google', 'selector1'):
         try:
@@ -435,7 +435,7 @@ def _run_dns(scan_id: str, domain: str) -> List[dict]:
 
 # Recon's worst case grew past the default 300s soft limit after subfinder was
 # raised to 60s (API sources) and the nmap app-ports phase was added. It runs
-# with a generous per-task ceiling — free, because webscan (~430s) gates total
+# with a generous per-task ceiling - free, because webscan (~430s) gates total
 # scan time anyway, and recon's INTERNAL budgets (nmap/subfinder/whois/dns
 # subprocess timeouts) hard-cap the real work at ~356s regardless. The high
 # ceiling only adds safety headroom; it never changes normal-run behaviour.
