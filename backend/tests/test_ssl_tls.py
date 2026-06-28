@@ -156,9 +156,10 @@ class TestSslTlsSchema:
         assert 'weak_cipher_rc4' in types, "RC4 must be flagged"
         assert 'weak_cipher_des' in types, "DES must be flagged"
         assert 'weak_cipher_bits' in types, "Sub-128-bit cipher must be flagged"
-        # Rejected cipher must NOT appear
-        rc4_titles = [f['title'] for f in findings if 'RC4' in f['title']]
-        rejected = [t for t in rc4_titles if 'RC4-MD5' in t]
+        # Rejected cipher (RC4-MD5) must NOT appear — check exact cipher name,
+        # not substring (EXP-RC4-MD5 is accepted and also contains 'RC4-MD5').
+        rejected = [f for f in findings
+                    if f.get('title', '').endswith(': RC4-MD5')]
         assert not rejected, "Rejected ciphers must not be reported"
         # Good cipher must NOT be flagged
         aes_titles = [f['title'] for f in findings if 'AES256' in f['title']]
