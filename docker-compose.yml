@@ -1,0 +1,105 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vapt
+      POSTGRES_USER: vapt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vapt_secure_2025}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vapt -d vapt"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  zap:
+    image: zaproxy/zap-stable:latest
+    restart: unless-stopped
+    command: zap.sh -daemon -host 0.0.0.0 -port 8090 -config api.disablekey=true -config api.addrs.addr.name=.* -config api.addrs.addr.regex=true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/JSON/core/view/version/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      zap:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://vapt:${POSTGRES_PASSWORD:-vapt_secure_2025}@postgres:5432/vapt
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: http://host.docker.internal:11434
+      ZAP_URL: http://zap:8090
+      SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
+      ALLOWED_HOSTS: localhost,127.0.0.1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/subfinder-config/provider-config.yaml:/root/.config/subfinder/provider-config.yaml:ro
+    command: >
+      sh -c "cd /app && alembic upgrade head &&
+             cd /app/backend && uvicorn main:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://vapt:${POSTGRES_PASSWORD:-vapt_secure_2025}@postgres:5432/vapt
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: http://host.docker.internal:11434
+      ZAP_URL: http://zap:8090
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./backend/subfinder-config/provider-config.yaml:/root/.config/subfinder/provider-config.yaml:ro
+    command: celery -A tasks.celery_app worker --loglevel=info -c 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      # next.config.mjs's rewrites() is baked into routes-manifest.json at
+      # `next build` time, not re-read at container runtime — so this must
+      # be a build arg, not just a runtime `environment:` entry (which is
+      # also kept below, harmlessly, for any future runtime-read usage).
+      args:
+        NEXT_INTERNAL_API_URL: http://backend:8000
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NEXT_INTERNAL_API_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:
+  ollama_data:    # kept for a future containerized-Ollama migration; unused while Ollama runs natively

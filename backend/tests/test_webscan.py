@@ -30,6 +30,81 @@ def _stub_update_status(scan_id, module, status):
     pass
 
 
+class TestWebscanRemoteZap:
+    """Step 9: remote/Docker ZAP mode, selected via settings.ZAP_URL."""
+
+    def test_remote_zap_skips_local_daemon_spawn(self):
+        """When ZAP_URL is set, _start_zap/_kill_zap (local process) must never run."""
+        from tasks.webscan import _run_zap
+
+        mock_zap = MagicMock()
+        mock_zap.spider.scan.return_value = '1'
+        mock_zap.spider.status.return_value = '100'
+        mock_zap.ascan.scan.return_value = '1'
+        mock_zap.ascan.status.return_value = '100'
+        mock_zap.core.alerts.return_value = []
+
+        with patch('tasks.webscan.settings') as mock_settings, \
+             patch('tasks.webscan._wait_for_zap', return_value=True) as mock_wait, \
+             patch('tasks.webscan.ZAPv2', return_value=mock_zap), \
+             patch('tasks.webscan._start_zap') as mock_start, \
+             patch('tasks.webscan._kill_zap') as mock_kill:
+            mock_settings.ZAP_URL = 'http://zap:8090'
+            findings = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+
+        assert findings == []
+        mock_start.assert_not_called()
+        # _kill_zap is still called (no-op on proc=None) - confirm it was called with None
+        mock_kill.assert_called_once_with(None)
+        mock_wait.assert_called_once_with('http://zap:8090', timeout=60)
+
+    def test_remote_zap_creates_session_per_scan(self):
+        """Remote mode must isolate scans via a named ZAP session, not a port."""
+        from tasks.webscan import _run_zap
+
+        mock_zap = MagicMock()
+        mock_zap.spider.scan.return_value = '1'
+        mock_zap.spider.status.return_value = '100'
+        mock_zap.ascan.scan.return_value = '1'
+        mock_zap.ascan.status.return_value = '100'
+        mock_zap.core.alerts.return_value = []
+
+        with patch('tasks.webscan.settings') as mock_settings, \
+             patch('tasks.webscan._wait_for_zap', return_value=True), \
+             patch('tasks.webscan.ZAPv2', return_value=mock_zap), \
+             patch('tasks.webscan._kill_zap'):
+            mock_settings.ZAP_URL = 'http://zap:8090'
+            _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+
+        mock_zap.core.new_session.assert_called_once_with(
+            name=TEST_SCAN_ID, overwrite='true')
+
+    def test_remote_zap_not_ready_returns_empty_no_local_spawn(self):
+        """Remote ZAP unreachable must return [] without ever touching local daemon code."""
+        from tasks.webscan import _run_zap
+
+        with patch('tasks.webscan.settings') as mock_settings, \
+             patch('tasks.webscan._wait_for_zap', return_value=False), \
+             patch('tasks.webscan._start_zap') as mock_start:
+            mock_settings.ZAP_URL = 'http://zap:8090'
+            findings = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+
+        assert findings == []
+        mock_start.assert_not_called()
+
+    def test_local_mode_unaffected_when_zap_url_empty(self):
+        """Empty ZAP_URL (native dev default) must still use the local daemon path."""
+        from tasks.webscan import _run_zap
+
+        with patch('tasks.webscan.settings') as mock_settings, \
+             patch('tasks.webscan._start_zap', return_value=None) as mock_start:
+            mock_settings.ZAP_URL = ''
+            findings = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+
+        assert findings == []
+        mock_start.assert_called_once()
+
+
 class TestWebscanSchema:
     """Schema and contract tests - run without ZAP/Nikto/DB."""
 

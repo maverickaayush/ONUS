@@ -54,7 +54,15 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
     chord(scanning_group)(aggregate_and_analyse.s(scan_id, domain))
 
 
-@app.task(name='tasks.scan_orchestrator.aggregate_and_analyse')
+# Per-task limit raised from the global 300s/360s default. With Ollama's
+# own timeout raised to 240s (see ollama_client.py - empirically measured
+# 130.2s for a 23-finding scan), the default 300s soft limit left only
+# ~50-60s of margin over Ollama + aggregation + PDF generation - too tight
+# given GPU/network run-to-run variance. Same pattern as recon (600/660)
+# and webscan (480/540): the module doing genuinely variable-duration work
+# gets a deliberately generous ceiling.
+@app.task(name='tasks.scan_orchestrator.aggregate_and_analyse',
+          soft_time_limit=360, time_limit=420)
 def aggregate_and_analyse(results: list, scan_id: str, domain: str) -> None:
     """
     Chord callback: called once all five scanning subtasks complete.

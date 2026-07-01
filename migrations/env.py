@@ -7,6 +7,7 @@ from alembic import context
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
 
+from config import settings
 from database import Base
 import models  # noqa: F401 - ensures all models are registered
 
@@ -14,6 +15,12 @@ config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# Override alembic.ini's static sqlalchemy.url with the app's own env-driven
+# DATABASE_URL (config.py / .env), so migrations always target the same DB
+# the app connects to — critical in Docker, where the ini's hardcoded
+# 'localhost' would never reach the 'postgres' service.
+config.set_main_option('sqlalchemy.url', settings.DATABASE_URL)
 
 target_metadata = Base.metadata
 

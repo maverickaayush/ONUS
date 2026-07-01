@@ -38,6 +38,32 @@ _SEVERITY_SCORES = {
 }
 
 
+def _backfill_module(ai_result: dict, aggregated: dict) -> dict:
+    """
+    Add the 'module' field to each AI-returned finding.
+
+    Real bug, only surfaced once a genuine (non-fallback) Ollama response was
+    obtained for the first time: the system prompt (the project docs Section 4.5,
+    byte-for-byte, cannot be reworded) never asks the model for a 'module'
+    field per finding, but schemas.FindingSchema requires one (and the
+    frontend's findings table displays it). The rule-based fallback happened
+    to work because it manually copies 'module' from the raw finding - the
+    real AI path had no equivalent step. Match AI findings back to the input
+    aggregated findings by title (the field most likely to survive the model's
+    pass-through) and copy 'module' across; default to '' if no match is
+    found rather than raising - this is enrichment, not validation.
+    """
+    title_to_module = {
+        f.get('title', ''): f.get('module', '')
+        for f in aggregated.get('findings', [])
+        if f.get('title')
+    }
+    for finding in ai_result.get('findings', []):
+        if not finding.get('module'):
+            finding['module'] = title_to_module.get(finding.get('title', ''), '')
+    return ai_result
+
+
 def _strip_emdashes(obj):
     """
     Recursively replace em-dashes (U+2014) with hyphens in every string of a
@@ -83,10 +109,18 @@ def analyse(aggregated: dict, domain: str) -> dict:
             ],
         }
 
+        # Timeout raised from the project docs Section 4.5's stated 120s to 240s -
+        # empirically measured: a real analysis call for a 23-finding scan
+        # took 130.2s on the reference hardware (RTX 4060 Laptop, 8GB VRAM,
+        # qwen2.5:7b Q4), so 120s was routinely triggering the rule-based
+        # fallback instead of genuine AI analysis. 240s gives headroom for
+        # run-to-run variance and larger finding sets. Same category of
+        # deliberate, measured deviation as the nmap/webscan timing tuning
+        # elsewhere in this build.
         resp = requests.post(
             f'{settings.OLLAMA_URL}/api/chat',
             json=payload,
-            timeout=120,
+            timeout=240,
         )
         resp.raise_for_status()
 
@@ -99,6 +133,7 @@ def analyse(aggregated: dict, domain: str) -> dict:
 
         logger.info("Ollama analysis complete for %s - risk_score=%s",
                     domain, result.get('risk_score'))
+        result = _backfill_module(result, aggregated)
         return _strip_emdashes(result)
 
     except requests.exceptions.Timeout:

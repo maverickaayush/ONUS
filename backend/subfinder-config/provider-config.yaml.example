@@ -1,0 +1,21 @@
+# subfinder provider config — optional API keys to deepen subdomain
+# enumeration beyond free/public sources.
+#
+# Setup: cp provider-config.yaml.example provider-config.yaml, then fill in
+# keys below. Leaving it as-is (no keys) is fine — recon still works, just
+# with shallower subdomain coverage (free sources only).
+#
+# Free options (see the project docs Step 3 note for the full list):
+#   - Chaos (ProjectDiscovery): completely free — chaos.projectdiscovery.io
+#   - GitHub: free with account — Settings > Developer settings > PAT
+#
+# This file (without the .example suffix) is gitignored and excluded from
+# the Docker build context (backend/.dockerignore) — real keys reach the
+# container only via the docker-compose.yml runtime bind mount, never via
+# the image itself.
+
+# github:
+#   - YOUR_GITHUB_TOKEN
+
+# chaos:
+#   - YOUR_CHAOS_API_KEY
