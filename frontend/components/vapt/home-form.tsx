@@ -1,0 +1,392 @@
+"use client"
+
+import { useState } from "react"
+import { useRouter } from "next/navigation"
+import { cn } from "@/lib/utils"
+import { VaptBackground } from "@/components/vapt/background"
+import { submitScan, ApiError } from "@/lib/api"
+
+function isValidDomain(value: string) {
+  return /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/.test(
+    value.trim(),
+  )
+}
+
+const MODULES = [
+  {
+    label: "Recon",
+    icon: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+        <path d="M9 9a2 2 0 114 0 2 2 0 01-4 0z" />
+        <path
+          fillRule="evenodd"
+          d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a4 4 0 00-3.446 6.032l-2.261 2.26a1 1 0 101.414 1.415l2.261-2.261A4 4 0 1011 5z"
+          clipRule="evenodd"
+        />
+      </svg>
+    ),
+  },
+  {
+    label: "Web Scan",
+    icon: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+        <path
+          fillRule="evenodd"
+          d="M4.083 9h1.946c.089-1.546.383-2.97.837-4.118A6.004 6.004 0 004.083 9zM10 2a8 8 0 100 16A8 8 0 0010 2zm0 2c-.076 0-.232.032-.465.262-.238.234-.497.623-.737 1.182-.389.907-.673 2.142-.766 3.556h3.936c-.093-1.414-.377-2.649-.766-3.556-.24-.56-.5-.948-.737-1.182C10.232 4.032 10.076 4 10 4zm3.971 5c-.089-1.546-.383-2.97-.837-4.118A6.004 6.004 0 0115.917 9h-1.946zm-2.003 2H8.032c.093 1.414.377 2.649.766 3.556.24.56.5.948.737 1.182.233.23.389.262.465.262.076 0 .232-.032.465-.262.238-.234.498-.623.737-1.182.389-.907.673-2.142.766-3.556zm1.166 4.118c.454-1.147.748-2.572.837-4.118h1.946a6.004 6.004 0 01-2.783 4.118zm-6.268 0C6.412 13.97 6.118 12.546 6.03 11H4.083a6.004 6.004 0 002.783 4.118z"
+          clipRule="evenodd"
+        />
+      </svg>
+    ),
+  },
+  {
+    label: "SSL/TLS",
+    icon: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+        <path
+          fillRule="evenodd"
+          d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"
+          clipRule="evenodd"
+        />
+      </svg>
+    ),
+  },
+  {
+    label: "Headers",
+    icon: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+        <path
+          fillRule="evenodd"
+          d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h8a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h6a1 1 0 110 2H4a1 1 0 01-1-1z"
+          clipRule="evenodd"
+        />
+      </svg>
+    ),
+  },
+  {
+    label: "OWASP Top 10",
+    icon: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+        <path
+          fillRule="evenodd"
+          d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+          clipRule="evenodd"
+        />
+      </svg>
+    ),
+  },
+]
+
+const ACCORDION_CONTENT = [
+  { step: "1. Recon", desc: "DNS enumeration, subdomain discovery, WHOIS lookups, and open port detection." },
+  { step: "2. Web Scan", desc: "HTTP method testing, directory brute-force, and technology fingerprinting." },
+  { step: "3. SSL/TLS", desc: "Certificate validity, cipher strength, protocol versions, and HSTS enforcement." },
+  { step: "4. Headers", desc: "Checks all security response headers: CSP, X-Frame-Options, HSTS, CORS, and more." },
+  { step: "5. OWASP Top 10", desc: "Tests for injection, broken auth, XSS, IDOR, security misconfigurations, and open redirects." },
+]
+
+export function HomeForm() {
+  const router = useRouter()
+  const [domain, setDomain] = useState("")
+  const [authorized, setAuthorized] = useState(false)
+  const [touched, setTouched] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [accordionOpen, setAccordionOpen] = useState(false)
+  const [submitError, setSubmitError] = useState("")
+
+  const valid = isValidDomain(domain)
+  const canSubmit = valid && authorized
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!canSubmit) return
+    setLoading(true)
+    setSubmitError("")
+    try {
+      const response = await submitScan(domain.trim(), authorized)
+      router.push(`/scan/${response.job_id}/status`)
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 403) {
+          setSubmitError("Authorization confirmation required - check the box to confirm you are authorized.")
+        } else if (err.status === 409) {
+          // Duplicate scan - extract existing job_id and redirect
+          try {
+            const detail = JSON.parse(err.message)
+            if (detail?.job_id) {
+              router.push(`/scan/${detail.job_id}/status`)
+              return
+            }
+          } catch {
+            // message wasn't JSON, fall through to generic error
+          }
+          setSubmitError(err.message)
+        } else {
+          setSubmitError(err.message || "Submission failed. Please try again.")
+        }
+      } else {
+        setSubmitError("Cannot reach scan server. Is the backend running?")
+      }
+      setLoading(false)
+    }
+  }
+
+  return (
+    <main className="vapt-noise relative min-h-[calc(100vh-56px)] flex items-center justify-center px-4 py-12 overflow-hidden">
+      <VaptBackground />
+
+      <div className="relative z-10 w-full max-w-xl">
+        {/* Hero */}
+        <div
+          className="text-center mb-8 vapt-fade-up"
+          style={{ animationDelay: "60ms" }}
+        >
+          <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full backdrop-blur-sm bg-white/5 border border-blue-500/30 text-xs font-medium text-blue-300 tracking-wide mb-6">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            IIT Kanpur Computer Centre
+          </span>
+          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-balance bg-gradient-to-r from-slate-100 via-blue-200 to-slate-100 bg-clip-text text-transparent leading-tight">
+            Automated Vulnerability
+            <br />
+            Assessment Platform
+          </h1>
+          <p className="mt-4 text-slate-400 text-base leading-relaxed max-w-md mx-auto">
+            Scan any authorized domain and receive a professional security
+            report in minutes.
+          </p>
+        </div>
+
+        {/* Form card */}
+        <div
+          className="vapt-fade-up backdrop-blur-md bg-white/5 border border-white/10 rounded-3xl p-8 shadow-2xl"
+          style={{ animationDelay: "200ms" }}
+        >
+          <form onSubmit={handleSubmit} noValidate>
+            {/* Domain Input */}
+            <div className="mb-5">
+              <label
+                htmlFor="domain"
+                className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-2"
+              >
+                Target Domain
+              </label>
+              <div className="relative">
+                <input
+                  id="domain"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={domain}
+                  onChange={(e) => {
+                    setDomain(e.target.value)
+                    setTouched(true)
+                  }}
+                  placeholder="Enter target domain e.g. example.com"
+                  className={cn(
+                    "w-full px-4 py-3 pr-10 rounded-xl bg-white/5 border text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 transition-all",
+                    touched && domain && !valid
+                      ? "border-red-500/50 focus:border-red-500/60 focus:ring-red-500/20 shadow-[0_0_18px_-4px_rgba(239,68,68,0.4)]"
+                      : touched && valid
+                        ? "border-emerald-500/50 focus:border-emerald-500/60 focus:ring-emerald-500/20 shadow-[0_0_18px_-4px_rgba(16,185,129,0.4)]"
+                        : "border-white/10 focus:border-blue-500/60 focus:ring-blue-500/20 focus:bg-white/[0.07]",
+                  )}
+                  aria-describedby={
+                    touched && domain && !valid ? "domain-error" : undefined
+                  }
+                  aria-invalid={touched && domain ? !valid : undefined}
+                />
+                {touched && domain && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2">
+                    {valid ? (
+                      <svg
+                        className="h-5 w-5 text-emerald-400"
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                    ) : (
+                      <svg
+                        className="h-5 w-5 text-red-400"
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                    )}
+                  </span>
+                )}
+              </div>
+              {touched && domain && !valid && (
+                <p id="domain-error" className="mt-2 text-xs text-red-400" role="alert">
+                  Please enter a valid domain name (e.g. example.com or sub.example.org)
+                </p>
+              )}
+            </div>
+
+            {/* Authorization checkbox */}
+            <div className="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={authorized}
+                  onChange={(e) => setAuthorized(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-amber-500/40 bg-transparent text-blue-500 focus:ring-blue-500/40 cursor-pointer accent-blue-500"
+                  aria-label="Authorization confirmation"
+                />
+                <span className="flex items-start gap-1.5 text-sm text-amber-200/90">
+                  <svg
+                    className="h-4 w-4 text-amber-400 mt-0.5 flex-shrink-0"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  <span>
+                    <span className="font-semibold text-amber-100">I confirm</span> I am
+                    authorized to perform security testing on this domain.
+                    Unauthorized scanning may violate applicable laws.
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            {/* Submission error */}
+            {submitError && (
+              <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-sm" role="alert">
+                {submitError}
+              </div>
+            )}
+
+            {/* Submit button */}
+            <button
+              type="submit"
+              disabled={!canSubmit || loading}
+              className={cn(
+                "w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold transition-all",
+                canSubmit && !loading
+                  ? "bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-lg shadow-blue-500/25 hover:shadow-blue-500/40 hover:brightness-110"
+                  : "bg-white/5 border border-white/8 text-slate-600 cursor-not-allowed",
+              )}
+            >
+              {loading ? (
+                <>
+                  <svg
+                    className="animate-spin h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                    />
+                  </svg>
+                  Initiating scan...
+                </>
+              ) : (
+                <>
+                  <svg
+                    className="h-4 w-4"
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  Start Scan
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+
+        {/* Module pills */}
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+          <span className="text-xs text-slate-500 mr-1 font-medium">Covers:</span>
+          {MODULES.map((m, i) => (
+            <span
+              key={m.label}
+              className="vapt-fade-up inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-sm bg-white/5 border border-white/10 text-xs font-medium text-slate-300 hover:border-blue-500/40 hover:bg-blue-500/10 hover:text-blue-200 transition-all duration-200"
+              style={{ animationDelay: `${300 + i * 50}ms` }}
+            >
+              <span className="text-slate-500">{m.icon}</span>
+              {m.label}
+            </span>
+          ))}
+        </div>
+
+        {/* Expandable accordion */}
+        <div
+          className="vapt-fade-up mt-4 border border-white/10 rounded-2xl backdrop-blur-sm bg-white/5 overflow-hidden"
+          style={{ animationDelay: "560ms" }}
+        >
+          <button
+            type="button"
+            onClick={() => setAccordionOpen((o) => !o)}
+            className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-slate-300 hover:bg-white/5 transition-colors"
+            aria-expanded={accordionOpen}
+          >
+            <span>What does this scan check?</span>
+            <svg
+              className={cn(
+                "h-4 w-4 text-slate-500 transition-transform",
+                accordionOpen && "rotate-180",
+              )}
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
+          {accordionOpen && (
+            <div className="px-4 pb-4 pt-1 border-t border-white/8">
+              <ul className="space-y-2.5">
+                {ACCORDION_CONTENT.map((item) => (
+                  <li key={item.step} className="text-sm">
+                    <span className="font-semibold text-slate-200">{item.step}:</span>{" "}
+                    <span className="text-slate-400">{item.desc}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
+  )
+}

@@ -1,6 +1,6 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, field_serializer
 from typing import Optional, Dict, List
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 
@@ -65,6 +65,24 @@ class ScanStatusResponse(BaseModel):
     progress: int
     started_at: Optional[datetime]
     modules: Dict[str, str]
+
+    @field_serializer('started_at')
+    def _serialize_started_at(self, dt: Optional[datetime]) -> Optional[str]:
+        """
+        Always emit an explicit UTC-marked ISO8601 string, regardless of
+        whether the underlying datetime is naive or aware. Real bug found
+        in production use: scan_orchestrator.py writes datetime.utcnow()
+        (naive) into a plain DateTime column, so this was being serialized
+        without a timezone suffix - the browser's `new Date(...)` then
+        parsed it as LOCAL time (IST, UTC+5:30), inflating the computed
+        elapsed-time display by exactly the timezone offset (~330 minutes
+        observed as "Running for 331m" on a scan that had run for ~1 minute).
+        """
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
 
 
 class FindingSchema(BaseModel):

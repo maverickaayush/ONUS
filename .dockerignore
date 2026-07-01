@@ -1,0 +1,41 @@
+# Root-level .dockerignore — applies to the backend/worker build context
+# (context: . in docker-compose.yml, needed so the image can copy alembic.ini
+# and migrations/ alongside backend/ — see backend/Dockerfile comment).
+# The frontend service builds with its own context (./frontend) and is
+# unaffected by this file.
+
+# Frontend — irrelevant to the backend image, large (node_modules etc.)
+frontend/
+frontend_vite_backup/
+
+# VCS / editor / session metadata
+.git/
+.vscode/
+.idea/
+
+# Python
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+backend/**/*.pyc
+backend/.pytest_cache/
+backend/**/.pytest_cache/
+backend/.venv/
+backend/venv/
+backend/tests/
+migrations/__pycache__/
+
+# Env files — real secrets never enter the image; compose injects them at
+# runtime via `environment:`
+.env
+.env.*
+!.env.example
+backend/.env
+
+# Real subfinder API keys — reach the container only via the runtime bind
+# mount in docker-compose.yml, never baked into the image
+backend/subfinder-config/provider-config.yaml
+
+# Docs (not needed at runtime)
+*.md
+!README.md

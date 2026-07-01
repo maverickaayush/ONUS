@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+.pytest_cache
+.venv
+venv
+.env
+tests/
+*.md
+
+# Real subfinder API keys must never be baked into the image — they reach
+# the container only via the runtime bind mount in docker-compose.yml.
+subfinder-config/provider-config.yaml

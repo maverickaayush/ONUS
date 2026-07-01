@@ -10,6 +10,7 @@ import psutil
 import requests
 from zapv2 import ZAPv2
 
+from config import settings
 from tasks.base_task import BaseTask, normalize_finding, update_module_status
 from tasks.celery_app import app
 
@@ -127,23 +128,25 @@ def _start_zap(scan_id: str, port: int) -> Optional[subprocess.Popen]:
         return None
 
 
-def _wait_for_zap(port: int, timeout: int = _ZAP_READY_TIMEOUT) -> bool:
+def _wait_for_zap(base_url: str, timeout: int = _ZAP_READY_TIMEOUT) -> bool:
     """
     Poll ZAP's version endpoint every 2s for up to timeout seconds.
+    base_url is e.g. 'http://localhost:8090' (local daemon) or
+    'http://zap:8090' (Docker sidecar) - no trailing slash.
     Returns True when ZAP is ready, False if it never responds.
     """
-    url = f'http://localhost:{port}/JSON/core/view/version/'
+    url = f'{base_url}/JSON/core/view/version/'
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             r = requests.get(url, timeout=2)
             if r.status_code == 200:
-                logger.info("ZAP ready on port %d", port)
+                logger.info("ZAP ready at %s", base_url)
                 return True
         except Exception:
             pass
         time.sleep(2)
-    logger.warning("ZAP did not become ready within %ds on port %d", timeout, port)
+    logger.warning("ZAP did not become ready within %ds at %s", timeout, base_url)
     return False
 
 
@@ -153,29 +156,54 @@ def _wait_for_zap(port: int, timeout: int = _ZAP_READY_TIMEOUT) -> bool:
 
 def _run_zap(scan_id: str, domain: str, target_url: str) -> List[dict]:
     """
-    Run OWASP ZAP daemon: spider + active scan + collect alerts.
-    Returns normalized findings. Kills the daemon even on exception.
+    Run OWASP ZAP: spider + active scan + collect alerts.
+    Returns normalized findings.
+
+    Two modes, chosen by settings.ZAP_URL:
+    - Remote (Docker): ZAP runs as a separate sidecar container reachable at
+      ZAP_URL (e.g. http://zap:8090). No local process to spawn or kill.
+      A unique session per scan_id replaces the port-hash isolation scheme,
+      since the daemon is shared across concurrent scans.
+    - Local (native dev, ZAP_URL unset): spawn+kill a local ZAP daemon on a
+      per-scan port, exactly as before.
     """
     findings = []
-    port = _zap_port(scan_id)
     proc = None
+    remote_zap_url = settings.ZAP_URL.rstrip('/')
 
     try:
-        proc = _start_zap(scan_id, port)
-        if proc is None:
-            return findings
+        if remote_zap_url:
+            if not _wait_for_zap(remote_zap_url, timeout=_ZAP_READY_TIMEOUT):
+                logger.warning("Remote ZAP not ready for scan %s - skipping ZAP", scan_id)
+                return findings
 
-        if not _wait_for_zap(port, timeout=_ZAP_READY_TIMEOUT):
-            logger.warning("ZAP not ready for scan %s - skipping ZAP", scan_id)
-            return findings
+            zap = ZAPv2(
+                apikey='',
+                proxies={'http': remote_zap_url, 'https': remote_zap_url},
+            )
+            try:
+                zap.core.new_session(name=scan_id, overwrite='true')
+            except Exception as e:
+                logger.warning("ZAP new_session failed for scan %s (continuing "
+                               "on shared session): %s", scan_id, e)
+        else:
+            port = _zap_port(scan_id)
+            proc = _start_zap(scan_id, port)
+            if proc is None:
+                return findings
 
-        zap = ZAPv2(
-            apikey='',
-            proxies={
-                'http': f'http://127.0.0.1:{port}',
-                'https': f'http://127.0.0.1:{port}',
-            },
-        )
+            local_base_url = f'http://localhost:{port}'
+            if not _wait_for_zap(local_base_url, timeout=_ZAP_READY_TIMEOUT):
+                logger.warning("ZAP not ready for scan %s - skipping ZAP", scan_id)
+                return findings
+
+            zap = ZAPv2(
+                apikey='',
+                proxies={
+                    'http': f'http://127.0.0.1:{port}',
+                    'https': f'http://127.0.0.1:{port}',
+                },
+            )
 
         scan_deadline = time.monotonic() + _ZAP_SCAN_BUDGET
 
@@ -236,8 +264,8 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> List[dict]:
     except Exception as e:
         logger.error("ZAP unexpected error for scan %s: %s", scan_id, e)
     finally:
-        _kill_zap(proc)
-        logger.info("ZAP process cleaned up for scan %s", scan_id)
+        _kill_zap(proc)  # no-op when proc is None (remote ZAP mode)
+        logger.info("ZAP scan finished for scan %s", scan_id)
 
     return findings
 
