@@ -5,11 +5,17 @@ import shutil
 import socket
 import ssl
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-from tasks.base_task import BaseTask, normalize_finding, update_module_status
+from celery.exceptions import SoftTimeLimitExceeded
+
+from tasks.base_task import (
+    BaseTask, normalize_finding, update_module_status,
+    get_tool_version, build_module_result,
+)
 from tasks.celery_app import app
 
 logger = logging.getLogger(__name__)
@@ -396,12 +402,14 @@ def _dedup(findings: List[dict]) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 @app.task(base=BaseTask, name='tasks.ssl_tls.run_ssl_tls')
-def run_ssl_tls(scan_id: str, domain: str) -> list:
+def run_ssl_tls(scan_id: str, domain: str) -> dict:
     """
     SSL/TLS module: testssl.sh + sslscan + pure-Python cert expiry check.
     Either tool can be missing - the module degrades gracefully.
+    Returns a build_module_result() envelope (Section 4.3 schema note).
     """
     update_module_status(scan_id, MODULE, 'running')
+    start = time.monotonic()
     findings = []
 
     testssl_avail = bool(shutil.which('testssl.sh'))
@@ -417,16 +425,20 @@ def run_ssl_tls(scan_id: str, domain: str) -> list:
                 severity='Informational', target=domain,
             ))
             update_module_status(scan_id, MODULE, 'complete')
-            return findings
+            return build_module_result(MODULE, findings, {}, status='success',
+                                        duration_seconds=time.monotonic() - start)
 
-        # Both tools missing → failed
+        # Both tools missing → failed (a deployment problem, not a scan result)
         if not testssl_avail and not sslscan_avail:
             logger.error(
                 "ssl_tls scan %s: both testssl.sh and sslscan missing - "
                 "install them in the Docker image", scan_id,
             )
             update_module_status(scan_id, MODULE, 'failed')
-            return findings
+            return build_module_result(
+                MODULE, findings, {}, status='failed',
+                error='testssl.sh and sslscan are both missing from the image',
+                duration_seconds=time.monotonic() - start)
 
         # Run available tools
         if testssl_avail:
@@ -442,10 +454,22 @@ def run_ssl_tls(scan_id: str, domain: str) -> list:
         # Dedup cross-tool duplicates
         findings = _dedup(findings)
 
+        tool_versions = {
+            'testssl': get_tool_version('testssl.sh', '--version'),
+            'sslscan': get_tool_version('sslscan', '--version'),
+        }
         update_module_status(scan_id, MODULE, 'complete')
-        return findings
+        return build_module_result(MODULE, findings, tool_versions, status='success',
+                                    duration_seconds=time.monotonic() - start)
 
+    except SoftTimeLimitExceeded:
+        logger.warning("ssl_tls hit its soft time limit for scan %s", scan_id)
+        update_module_status(scan_id, MODULE, 'failed')
+        return build_module_result(MODULE, findings, {}, status='timeout',
+                                    error='Module exceeded its soft time limit',
+                                    duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("ssl_tls unexpected error scan=%s: %s", scan_id, e)
         update_module_status(scan_id, MODULE, 'failed')
-        return findings
+        return build_module_result(MODULE, findings, {}, status='failed',
+                                    error=str(e), duration_seconds=time.monotonic() - start)

@@ -264,9 +264,17 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   </p>
 </div>
 
+{% if incomplete_modules_warning %}
+<p style="margin-bottom:16px;">
+  <span class="ai-unavailable-tag" style="float:none;">Incomplete Scan</span>
+  &nbsp;<span style="font-size:9pt;color:#C0392B;font-weight:bold;">{{ incomplete_modules_warning }}</span>
+</p>
+{% endif %}
+
 {# ── Severity Breakdown ─────────────────────────────────────── #}
 {# Section order per the project docs Section 4.6: risk badge (cover page, above)
-   -> severity counts -> AI executive summary prose, in that order. #}
+   -> incomplete-scan warning (if any) -> severity counts -> AI executive
+   summary prose, in that order. #}
 <h2>Severity Breakdown</h2>
 <table class="sev-table">
   <tr>
@@ -420,6 +428,39 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   </table>
   {% endif %}
 </div>
+
+{% if module_execution %}
+<div class="summary-box" style="margin-top:16px;">
+  <p><strong>Module Execution Status</strong></p>
+  <table class="sev-table">
+    <tr>
+      <th>Module</th>
+      <th>Status</th>
+      <th>Findings</th>
+      <th>Duration</th>
+    </tr>
+    {% for m in module_execution %}
+    <tr>
+      <td>{{ m.module }}</td>
+      <td>
+        {% if m.status == 'success' %}
+          <span class="badge" style="background:#27AE60">Success</span>
+        {% elif m.status == 'partial' %}
+          <span class="ai-unavailable-tag" style="float:none;background:#D4870A;">Partial</span>
+        {% else %}
+          <span class="ai-unavailable-tag" style="float:none;">{{ m.status | title }}</span>
+        {% endif %}
+        {% if m.error %}
+          <br/><span style="font-size:7pt;color:#888;">{{ m.error }}</span>
+        {% endif %}
+      </td>
+      <td>{{ m.finding_count }}</td>
+      <td>{{ '%.1f'|format(m.duration_seconds or 0) }}s</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
 
 </body>
 </html>

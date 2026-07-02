@@ -237,7 +237,9 @@ class TestEnumerationModuleStatus:
             from tasks.enumeration import run_enumeration
             result = run_enumeration.run(SCAN_ID, 'example.com')
 
-        assert isinstance(result, list)
+        assert isinstance(result, dict)
+        assert result['status'] == 'success'
+        assert isinstance(result['findings'], list)
         assert status_calls[0] == 'running'
         assert status_calls[-1] == 'complete'
 

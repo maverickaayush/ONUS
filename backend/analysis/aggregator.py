@@ -1,6 +1,4 @@
 import logging
-import shutil
-import subprocess
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -146,42 +144,58 @@ def _collapse_response_fingerprints(findings: List[dict]) -> List[dict]:
     return result
 
 
-def _tool_version(tool: str, *flags: str) -> str:
-    """Return first line of tool version output, or 'not installed'."""
-    if not shutil.which(tool):
-        return 'not installed'
-    try:
-        r = subprocess.run([tool, *flags], capture_output=True,
-                           timeout=5, check=False)
-        out = (r.stdout or r.stderr or b'').decode(errors='ignore').strip()
-        return out.splitlines()[0] if out else 'unknown'
-    except Exception:
-        return 'unknown'
-
-
-def aggregate(findings_list: List[List[dict]]) -> dict:
+def aggregate(module_results: List[dict]) -> dict:
     """
-    Merge, deduplicate, enrich and sort findings from all five scanning modules.
+    Merge, deduplicate, enrich and sort findings from all 8 scanning modules,
+    and roll up their tool_versions + execution status.
 
     Args:
-        findings_list: list of per-module finding lists in any order
-                       e.g. [[recon_findings], [webscan], [ssl], [headers], [owasp]]
+        module_results: list of per-module result dicts, each built by
+            tasks/base_task.py's build_module_result() -
+            {module, status, findings, tool_versions, finding_count,
+             duration_seconds, error}. A bare list (the pre-Fix-1 module
+             contract) is tolerated defensively but logged as unexpected -
+             every module should emit the envelope shape now.
 
     Returns:
         {
-            'findings': [...],       # deduplicated, sorted, enriched
+            'findings': [...],       # deduplicated, collapsed, sorted, enriched
             'total': int,
-            'scan_metadata': { 'timestamp': ISO8601, 'tool_versions': {...} }
+            'scan_metadata': { 'timestamp': ISO8601, 'tool_versions': {...} },
+            'module_execution': [ {module, status, finding_count,
+                                    duration_seconds, error}, ... ],
         }
     """
-    # 1. Flatten - skip None / non-list module results gracefully
+    # 1. Flatten findings + roll up tool_versions/module_execution from every
+    #    module's envelope - including modules that produced zero findings,
+    #    so a module that ran cleanly still shows up in both tables.
     flat: List[dict] = []
-    for module_result in findings_list:
-        if isinstance(module_result, list):
-            flat.extend(f for f in module_result if isinstance(f, dict))
+    tool_versions: Dict[str, str] = {}
+    module_execution: List[dict] = []
+
+    for result in module_results:
+        if isinstance(result, dict) and 'findings' in result:
+            module_findings = result.get('findings', [])
+            if isinstance(module_findings, list):
+                flat.extend(f for f in module_findings if isinstance(f, dict))
+            tool_versions.update(result.get('tool_versions') or {})
+            module_execution.append({
+                'module': result.get('module', 'unknown'),
+                'status': result.get('status', 'success'),
+                'finding_count': result.get('finding_count', len(module_findings)),
+                'duration_seconds': result.get('duration_seconds', 0.0),
+                'error': result.get('error'),
+            })
+        elif isinstance(result, list):
+            # Defensive fallback for a module not yet updated to the new
+            # envelope - findings still get aggregated, just without
+            # tool_versions/execution visibility for that module.
+            logger.warning("aggregator: module result is a bare list, not the "
+                            "build_module_result() envelope - update that module")
+            flat.extend(f for f in result if isinstance(f, dict))
 
     logger.info("aggregator: %d raw findings from %d modules",
-                len(flat), len(findings_list))
+                len(flat), len(module_results))
 
     # 2. Deduplicate on (type, evidence[:100])
     #    When the same vuln is found by multiple modules, merge their
@@ -238,12 +252,7 @@ def aggregate(findings_list: List[List[dict]]) -> dict:
         'total': len(merged),
         'scan_metadata': {
             'timestamp': datetime.now(timezone.utc).isoformat(),
-            'tool_versions': {
-                'nmap':      _tool_version('nmap', '--version'),
-                'subfinder': _tool_version('subfinder', '-version'),
-                'testssl':   _tool_version('testssl.sh', '--version'),
-                'sslscan':   _tool_version('sslscan', '--version'),
-                'nikto':     _tool_version('nikto', '-Version'),
-            },
+            'tool_versions': tool_versions,
         },
+        'module_execution': module_execution,
     }

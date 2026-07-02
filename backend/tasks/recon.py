@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import subprocess
@@ -5,13 +6,19 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import List
+from urllib.parse import urlparse
 
 import dns.exception
 import dns.resolver
+from celery.exceptions import SoftTimeLimitExceeded
 from whois.parser import WhoisEntry
 
-from tasks.base_task import BaseTask, normalize_finding, update_module_status
+from tasks.base_task import (
+    BaseTask, normalize_finding, update_module_status,
+    get_tool_version, build_module_result,
+)
 from tasks.celery_app import app
+from tasks.tech_fingerprint import _eol_threshold, _parse_version
 
 logger = logging.getLogger(__name__)
 MODULE = 'recon'
@@ -253,6 +260,209 @@ def _run_subfinder(scan_id: str, domain: str) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Amass -> httpx -> Naabu (chained: deep subdomains -> liveness -> ports)
+# ---------------------------------------------------------------------------
+
+def _run_amass(scan_id: str, domain: str) -> List[str]:
+    """
+    Deep passive subdomain enumeration (CT logs, Wayback, passive DNS).
+    Returns a deduplicated list of subdomain names - no findings are emitted
+    here, the union of subfinder + Amass names feeds httpx, which is where
+    the liveness-checked 'live_subdomain' findings get created.
+    """
+    out_path = f'/tmp/amass_{scan_id}.json'
+    subdomains = []
+    try:
+        subprocess.run(
+            ['amass', 'enum', '-passive', '-d', domain,
+             '-json', out_path, '-timeout', '5'],
+            timeout=300, capture_output=True, check=False,
+        )
+        if os.path.exists(out_path):
+            with open(out_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        name = json.loads(line).get('name')
+                    except json.JSONDecodeError:
+                        continue
+                    if name:
+                        subdomains.append(name)
+    except subprocess.TimeoutExpired:
+        logger.warning("amass timed out (300s) for scan %s", scan_id)
+    except FileNotFoundError:
+        logger.warning("amass not installed - deep subdomain enum skipped")
+    except Exception as e:
+        logger.error("amass error for scan %s: %s", scan_id, e)
+    finally:
+        if os.path.exists(out_path):
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+    return sorted(set(subdomains))
+
+
+def _run_httpx(scan_id: str, domain: str, subdomains: List[str]) -> List[dict]:
+    """
+    Probe the subfinder+Amass subdomain union for live HTTP hosts + tech stack.
+    Returns the live-host dicts (also consumed by _run_naabu next) -
+    'live_subdomain'/'outdated_tech' findings are built separately by
+    _httpx_findings() from this same return value.
+    """
+    if not subdomains:
+        return []
+
+    subs_path = f'/tmp/subs_{scan_id}.txt'
+    out_path = f'/tmp/httpx_{scan_id}.json'
+    live_hosts = []
+    try:
+        with open(subs_path, 'w') as f:
+            f.write('\n'.join(subdomains))
+
+        subprocess.run(
+            ['httpx', '-l', subs_path, '-json', '-status-code', '-title',
+             '-tech-detect', '-tls-probe', '-timeout', '10', '-threads', '20',
+             '-silent', '-o', out_path],
+            timeout=180, capture_output=True, check=False,
+        )
+
+        if os.path.exists(out_path):
+            with open(out_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    live_hosts.append({
+                        'url': entry.get('url', ''),
+                        'status_code': entry.get('status_code', ''),
+                        'title': entry.get('title', ''),
+                        'tech': entry.get('tech') or [],
+                        'tls_grade': entry.get('tls_grade'),
+                    })
+    except subprocess.TimeoutExpired:
+        logger.warning("httpx timed out (180s) for scan %s", scan_id)
+    except FileNotFoundError:
+        logger.warning("httpx not installed - live-host probing skipped")
+    except Exception as e:
+        logger.error("httpx error for scan %s: %s", scan_id, e)
+    finally:
+        for p in (subs_path, out_path):
+            if os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+    return live_hosts
+
+
+def _httpx_findings(live_hosts: List[dict], domain: str) -> List[dict]:
+    """Convert httpx's live-host dicts into normalized findings. EOL/outdated
+    tech detection reuses tech_fingerprint's threshold table (same 'outdated_tech'
+    type key) rather than duplicating it - keeps scoring consistent."""
+    findings = []
+    for host in live_hosts:
+        url = host.get('url', '')
+        findings.append(normalize_finding(
+            module=MODULE, tool='httpx', type_='live_subdomain',
+            title=f'Live subdomain: {url}',
+            evidence=f'HTTP {host.get("status_code", "")} - {host.get("title", "")}',
+            severity='Informational', target=domain,
+        ))
+        for tech in host.get('tech') or []:
+            threshold = _eol_threshold(tech)
+            parsed = _parse_version(tech)
+            if threshold and parsed and parsed < threshold:
+                findings.append(normalize_finding(
+                    module=MODULE, tool='httpx', type_='outdated_tech',
+                    title=f'Outdated {tech} - end of life',
+                    evidence=f'{tech} detected on {url} via httpx tech-detect',
+                    severity='Medium', cvss=5.4, target=domain,
+                ))
+    return findings
+
+
+def _run_naabu(scan_id: str, domain: str, live_hosts: List[dict]) -> List[dict]:
+    """
+    Fast top-1000-port pre-scan on live subdomains discovered by httpx.
+    SYN mode needs CAP_NET_RAW; if the worker is unprivileged (permission
+    denied), falls back to a CONNECT scan (-sT) and logs a warning.
+    These are ADDITIONAL findings on newly-discovered subdomains - they
+    supplement, not replace, nmap's scan of the primary domain.
+    """
+    hosts = sorted({
+        urlparse(h['url']).hostname
+        for h in live_hosts if h.get('url') and urlparse(h['url']).hostname
+    })
+    if not hosts:
+        return []
+
+    hosts_path = f'/tmp/naabu_hosts_{scan_id}.txt'
+    out_path = f'/tmp/naabu_{scan_id}.json'
+    findings = []
+    seen = set()
+    try:
+        with open(hosts_path, 'w') as f:
+            f.write('\n'.join(hosts))
+
+        cmd = ['naabu', '-list', hosts_path, '-top-ports', '1000',
+               '-rate', '1000', '-c', '25', '-json', '-o', out_path,
+               '-silent', '-no-color']
+        proc = subprocess.run(cmd, timeout=240, capture_output=True, check=False)
+        stderr = (proc.stderr or b'').decode(errors='ignore').lower()
+
+        if 'permission denied' in stderr or 'operation not permitted' in stderr:
+            logger.warning(
+                "naabu SYN scan unavailable (needs CAP_NET_RAW) for scan %s - "
+                "falling back to CONNECT scan (-sT)", scan_id,
+            )
+            subprocess.run(cmd + ['-sT'], timeout=240, capture_output=True, check=False)
+
+        if os.path.exists(out_path):
+            with open(out_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    host, port = entry.get('host'), entry.get('port')
+                    if not host or not port or (host, port) in seen:
+                        continue
+                    seen.add((host, port))
+                    findings.append(normalize_finding(
+                        module=MODULE, tool='naabu', type_='open_port_naabu',
+                        title=f'Open port {port} on {host}',
+                        evidence=f'{host}:{port} discovered by Naabu SYN scan',
+                        severity='Informational', target=domain,
+                    ))
+    except subprocess.TimeoutExpired:
+        logger.warning("naabu timed out (240s) for scan %s", scan_id)
+    except FileNotFoundError:
+        logger.warning("naabu not installed - subdomain port pre-scan skipped")
+    except Exception as e:
+        logger.error("naabu error for scan %s: %s", scan_id, e)
+    finally:
+        for p in (hosts_path, out_path):
+            if os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # WHOIS
 # ---------------------------------------------------------------------------
 
@@ -433,32 +643,63 @@ def _run_dns(scan_id: str, domain: str) -> List[dict]:
 # Main task
 # ---------------------------------------------------------------------------
 
-# Recon's worst case grew past the default 300s soft limit after subfinder was
-# raised to 60s (API sources) and the nmap app-ports phase was added. It runs
-# with a generous per-task ceiling - free, because webscan (~430s) gates total
-# scan time anyway, and recon's INTERNAL budgets (nmap/subfinder/whois/dns
-# subprocess timeouts) hard-cap the real work at ~356s regardless. The high
-# ceiling only adds safety headroom; it never changes normal-run behaviour.
-#   Worst case: nmap (180s phase1 + 60s phase2b) + subfinder 60s + WHOIS 20s
-#   + DNS 36s = ~356s, far under the 600s soft limit.
+# Recon's worst case was ~356s (nmap + subfinder + WHOIS + DNS) under the
+# previous 600s/660s ceiling. Amass/httpx/Naabu were added as a chained
+# subdomain -> liveness -> port pipeline (added post-Step 9), pushing the
+# worst case to roughly: previous ~356s + Amass 300s + httpx 180s + Naabu
+# 240s (x2 if the SYN->CONNECT fallback fires) = ~1080-1320s. Rather than
+# let a slow-but-legitimate run get SIGKILL'd mid-chain, the ceiling is
+# raised again to soft=900s/hard=1080s - still free (webscan is not the
+# gating module anymore, but recon runs in parallel with it either way and
+# is never on the pipeline's critical path for aggregation to start).
 @app.task(base=BaseTask, name='tasks.recon.run_recon',
-          soft_time_limit=600, time_limit=660)
-def run_recon(scan_id: str, domain: str) -> list:
+          soft_time_limit=900, time_limit=1080)
+def run_recon(scan_id: str, domain: str) -> dict:
     """
-    Recon module: nmap port scan, subfinder subdomain enumeration,
+    Recon module: nmap port scan, subfinder + Amass subdomain enumeration,
+    httpx liveness/tech probing, Naabu port pre-scan on live subdomains,
     WHOIS lookup, DNS record checks (SPF/DMARC/DKIM).
-    Returns a list of normalized findings (Section 4.3 schema).
+    Returns a build_module_result() envelope (Section 4.3 schema note).
     """
     update_module_status(scan_id, MODULE, 'running')
+    start = time.monotonic()
     findings = []
     try:
         findings.extend(_run_nmap(scan_id, domain))
-        findings.extend(_run_subfinder(scan_id, domain))
+
+        subfinder_findings = _run_subfinder(scan_id, domain)
+        findings.extend(subfinder_findings)
+        subfinder_subs = {f['evidence'] for f in subfinder_findings}
+
+        amass_subs = _run_amass(scan_id, domain)
+        combined_subs = sorted(subfinder_subs | set(amass_subs))
+
+        live_hosts = _run_httpx(scan_id, domain, combined_subs)
+        findings.extend(_httpx_findings(live_hosts, domain))
+        findings.extend(_run_naabu(scan_id, domain, live_hosts))
+
         findings.extend(_run_whois(scan_id, domain))
         findings.extend(_run_dns(scan_id, domain))
+
+        tool_versions = {
+            'nmap':      get_tool_version('nmap', '--version'),
+            'subfinder': get_tool_version('subfinder', '-version'),
+            'amass':     get_tool_version('amass', '-version'),
+            'httpx':     get_tool_version('httpx', '-version'),
+            'naabu':     get_tool_version('naabu', '-version'),
+            'whois':     get_tool_version('whois', '--version'),
+        }
         update_module_status(scan_id, MODULE, 'complete')
-        return findings
+        return build_module_result(MODULE, findings, tool_versions, status='success',
+                                    duration_seconds=time.monotonic() - start)
+    except SoftTimeLimitExceeded:
+        logger.warning("recon hit its soft time limit (900s) for scan %s", scan_id)
+        update_module_status(scan_id, MODULE, 'failed')
+        return build_module_result(MODULE, findings, {}, status='timeout',
+                                    error='Module exceeded its soft time limit (900s)',
+                                    duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("recon unexpected error scan=%s: %s", scan_id, e)
         update_module_status(scan_id, MODULE, 'failed')
-        return findings
+        return build_module_result(MODULE, findings, {}, status='failed',
+                                    error=str(e), duration_seconds=time.monotonic() - start)

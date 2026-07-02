@@ -50,7 +50,7 @@ class TestWebscanRemoteZap:
              patch('tasks.webscan._start_zap') as mock_start, \
              patch('tasks.webscan._kill_zap') as mock_kill:
             mock_settings.ZAP_URL = 'http://zap:8090'
-            findings = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
 
         assert findings == []
         mock_start.assert_not_called()
@@ -87,7 +87,7 @@ class TestWebscanRemoteZap:
              patch('tasks.webscan._wait_for_zap', return_value=False), \
              patch('tasks.webscan._start_zap') as mock_start:
             mock_settings.ZAP_URL = 'http://zap:8090'
-            findings = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
 
         assert findings == []
         mock_start.assert_not_called()
@@ -99,7 +99,7 @@ class TestWebscanRemoteZap:
         with patch('tasks.webscan.settings') as mock_settings, \
              patch('tasks.webscan._start_zap', return_value=None) as mock_start:
             mock_settings.ZAP_URL = ''
-            findings = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
 
         assert findings == []
         mock_start.assert_called_once()
@@ -168,7 +168,7 @@ class TestWebscanSchema:
         from tasks.webscan import _run_zap
 
         with patch('tasks.webscan._start_zap', return_value=None):
-            findings = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
+            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
                                 f'https://{TEST_DOMAIN}')
         assert findings == [], "ZAP missing must return empty list"
 
@@ -182,7 +182,7 @@ class TestWebscanSchema:
         with patch('tasks.webscan._start_zap', return_value=mock_proc), \
              patch('tasks.webscan._wait_for_zap', return_value=False), \
              patch('tasks.webscan._kill_zap') as mock_kill:
-            findings = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
+            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
                                 f'https://{TEST_DOMAIN}')
 
         assert findings == [], "ZAP not-ready must return empty list"
@@ -217,7 +217,7 @@ class TestWebscanSchema:
              patch('tasks.webscan._wait_for_zap', return_value=True), \
              patch('tasks.webscan.ZAPv2', return_value=mock_zap), \
              patch('tasks.webscan._kill_zap'):
-            findings = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
+            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
                                 f'https://{TEST_DOMAIN}')
 
         assert len(findings) == 3
@@ -281,6 +281,78 @@ class TestWebscanSchema:
         assert str(port) in proxies['https'], "Proxy URL must use per-scan port"
 
 
+class TestKatana:
+    """Katana supplemental crawler - runs alongside ZAP, not instead of it."""
+
+    def test_parses_endpoints_and_tags_finding_with_endpoint_key(self):
+        import json as _json
+        from unittest.mock import mock_open
+        from tasks import webscan
+
+        katana_output = '\n'.join(_json.dumps(o) for o in [
+            {'endpoint': f'https://{TEST_DOMAIN}/app.js', 'method': 'GET', 'status_code': 200},
+            {'endpoint': f'https://{TEST_DOMAIN}/api/data', 'method': 'GET', 'status_code': 200},
+        ])
+
+        with patch('tasks.webscan.subprocess.run'), \
+             patch('tasks.webscan.os.path.exists', return_value=True), \
+             patch('tasks.webscan.os.unlink'), \
+             patch('builtins.open', mock_open(read_data=katana_output)):
+            findings = webscan._run_katana(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+
+        assert len(findings) == 2
+        for f in findings:
+            missing = REQUIRED_FIELDS - set(f.keys())
+            assert not missing, f"Missing keys: {missing}"
+            assert f['type'] == 'crawled_endpoint_katana'
+            assert f['found_by'] == ['webscan']
+            assert 'endpoint' in f, "Katana findings must carry the extra 'endpoint' key"
+
+    def test_js_hidden_endpoints_flags_only_katana_exclusive_routes(self):
+        from tasks.webscan import _js_hidden_endpoints_finding
+
+        zap_findings = [
+            {'evidence': f'https://{TEST_DOMAIN}/ | some html alert'},
+        ]
+        katana_findings = [
+            {'endpoint': f'https://{TEST_DOMAIN}/'},          # also seen by ZAP
+            {'endpoint': f'https://{TEST_DOMAIN}/api/hidden'},  # JS-only
+        ]
+
+        finding = _js_hidden_endpoints_finding(TEST_DOMAIN, zap_findings, katana_findings)
+
+        assert finding is not None
+        assert finding['type'] == 'js_hidden_endpoints'
+        assert finding['severity'] == 'Low'
+        assert '1 endpoints' in finding['title']
+
+    def test_no_hidden_endpoints_returns_none(self):
+        from tasks.webscan import _js_hidden_endpoints_finding
+
+        zap_findings = [{'evidence': f'https://{TEST_DOMAIN}/ | x'}]
+        katana_findings = [{'endpoint': f'https://{TEST_DOMAIN}/'}]
+
+        assert _js_hidden_endpoints_finding(TEST_DOMAIN, zap_findings, katana_findings) is None
+
+    def test_run_webscan_executes_zap_and_katana_in_parallel(self):
+        """ZAP and Katana must both be invoked via the thread pool, and Nikto
+        must still run afterward - confirms Katana doesn't replace anything."""
+        status_calls = []
+
+        with patch('tasks.webscan.update_module_status',
+                   side_effect=lambda sid, mod, status: status_calls.append(status)), \
+             patch('tasks.webscan._run_zap', return_value=([], None)) as mock_zap, \
+             patch('tasks.webscan._run_katana', return_value=[]) as mock_katana, \
+             patch('tasks.webscan._run_nikto', return_value=[]) as mock_nikto:
+            from tasks.webscan import run_webscan
+            run_webscan.run(TEST_SCAN_ID, TEST_DOMAIN)
+
+        mock_zap.assert_called_once()
+        mock_katana.assert_called_once()
+        mock_nikto.assert_called_once()
+        assert status_calls[-1] == 'complete'
+
+
 class TestWebscanModuleStatus:
     """Module status state-machine tests."""
 
@@ -292,7 +364,7 @@ class TestWebscanModuleStatus:
             status_calls.append(status)
 
         with patch('tasks.webscan.update_module_status', side_effect=record_status), \
-             patch('tasks.webscan._run_zap', return_value=[]), \
+             patch('tasks.webscan._run_zap', return_value=([], None)), \
              patch('tasks.webscan._run_nikto', return_value=[]):
             from tasks.webscan import run_webscan
             run_webscan.run(TEST_SCAN_ID, TEST_DOMAIN)
@@ -309,7 +381,7 @@ class TestWebscanModuleStatus:
             status_calls.append(status)
 
         with patch('tasks.webscan.update_module_status', side_effect=record_status), \
-             patch('tasks.webscan._run_zap', return_value=[]), \
+             patch('tasks.webscan._run_zap', return_value=([], None)), \
              patch('tasks.webscan._run_nikto', return_value=[
                  {'module': 'webscan', 'tool': 'nikto', 'type': 'nikto_finding',
                   'title': 'Test', 'evidence': 'test', 'severity': 'Low',

@@ -1,12 +1,14 @@
 import logging
 import re
+import time
 import urllib.parse
 import urllib3
 from typing import List
 
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
 
-from tasks.base_task import BaseTask, normalize_finding, update_module_status
+from tasks.base_task import BaseTask, normalize_finding, update_module_status, build_module_result
 from tasks.celery_app import app
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -270,12 +272,15 @@ def test_error_disclosure(target: str, domain: str) -> List[dict]:
 
 
 @app.task(base=BaseTask, name='tasks.owasp.run_owasp')
-def run_owasp(scan_id: str, domain: str) -> list:
+def run_owasp(scan_id: str, domain: str) -> dict:
     """
     OWASP Top 10 module: 5 non-destructive active tests.
     All payloads are read-only GET requests - no data modification ever.
+    Pure Python (requests) - tool_versions is always empty for this module.
+    Returns a build_module_result() envelope (Section 4.3 schema note).
     """
     update_module_status(scan_id, MODULE, 'running')
+    start = time.monotonic()
     findings = []
     target = f'https://{domain}'
 
@@ -289,8 +294,16 @@ def run_owasp(scan_id: str, domain: str) -> list:
                              test_fn.__name__, scan_id, e)
 
         update_module_status(scan_id, MODULE, 'complete')
-        return findings
+        return build_module_result(MODULE, findings, {}, status='success',
+                                    duration_seconds=time.monotonic() - start)
+    except SoftTimeLimitExceeded:
+        logger.warning("owasp hit its soft time limit for scan %s", scan_id)
+        update_module_status(scan_id, MODULE, 'failed')
+        return build_module_result(MODULE, findings, {}, status='timeout',
+                                    error='Module exceeded its soft time limit',
+                                    duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("owasp unexpected error scan=%s: %s", scan_id, e)
         update_module_status(scan_id, MODULE, 'failed')
-        return findings
+        return build_module_result(MODULE, findings, {}, status='failed',
+                                    error=str(e), duration_seconds=time.monotonic() - start)

@@ -1,12 +1,14 @@
 import json
 import logging
 import re
+import time
 import urllib3
 from typing import List, Tuple
 
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
 
-from tasks.base_task import BaseTask, normalize_finding, update_module_status
+from tasks.base_task import BaseTask, normalize_finding, update_module_status, build_module_result
 from tasks.celery_app import app
 
 # verify=False is a deliberate scanner design choice - test targets commonly
@@ -327,15 +329,28 @@ def _run_headers(scan_id: str, domain: str) -> List[dict]:
 # ---------------------------------------------------------------------------
 
 @app.task(base=BaseTask, name='tasks.headers.run_headers')
-def run_headers(scan_id: str, domain: str) -> list:
-    """HTTP security headers analysis - single GET request, pure Python."""
+def run_headers(scan_id: str, domain: str) -> dict:
+    """
+    HTTP security headers analysis - single GET request, pure Python, no
+    external tool (tool_versions is always empty for this module).
+    Returns a build_module_result() envelope (Section 4.3 schema note).
+    """
     update_module_status(scan_id, MODULE, 'running')
+    start = time.monotonic()
     findings = []
     try:
         findings = _run_headers(scan_id, domain)
         update_module_status(scan_id, MODULE, 'complete')
-        return findings
+        return build_module_result(MODULE, findings, {}, status='success',
+                                    duration_seconds=time.monotonic() - start)
+    except SoftTimeLimitExceeded:
+        logger.warning("headers hit its soft time limit for scan %s", scan_id)
+        update_module_status(scan_id, MODULE, 'failed')
+        return build_module_result(MODULE, findings, {}, status='timeout',
+                                    error='Module exceeded its soft time limit',
+                                    duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("headers unexpected error scan=%s: %s", scan_id, e)
         update_module_status(scan_id, MODULE, 'failed')
-        return findings
+        return build_module_result(MODULE, findings, {}, status='failed',
+                                    error=str(e), duration_seconds=time.monotonic() - start)

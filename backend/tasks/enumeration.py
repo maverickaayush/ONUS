@@ -5,14 +5,19 @@ import os
 import random
 import re
 import subprocess
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Tuple
 
 import requests
 import urllib3
+from celery.exceptions import SoftTimeLimitExceeded
 
-from tasks.base_task import BaseTask, normalize_finding, update_module_status
+from tasks.base_task import (
+    BaseTask, normalize_finding, update_module_status,
+    get_tool_version, build_module_result,
+)
 from tasks.celery_app import app
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -293,16 +298,29 @@ def _run_ffuf(scan_id: str, target: str, domain: str) -> List[dict]:
     soft_time_limit=_SOFT_LIMIT,
     time_limit=_HARD_LIMIT,
 )
-def run_enumeration(scan_id: str, domain: str) -> list:
-    """Directory/file enumeration via FFUF - finds hidden paths ZAP's crawler misses."""
+def run_enumeration(scan_id: str, domain: str) -> dict:
+    """
+    Directory/file enumeration via FFUF - finds hidden paths ZAP's crawler misses.
+    Returns a build_module_result() envelope (Section 4.3 schema note).
+    """
     update_module_status(scan_id, MODULE, 'running')
+    start = time.monotonic()
     findings = []
     target = f'https://{domain}'
     try:
         findings = _run_ffuf(scan_id, target, domain)
+        tool_versions = {'ffuf': get_tool_version('ffuf', '-V')}
         update_module_status(scan_id, MODULE, 'complete')
-        return findings
+        return build_module_result(MODULE, findings, tool_versions, status='success',
+                                    duration_seconds=time.monotonic() - start)
+    except SoftTimeLimitExceeded:
+        logger.warning("enumeration hit its soft time limit for scan %s", scan_id)
+        update_module_status(scan_id, MODULE, 'failed')
+        return build_module_result(MODULE, findings, {}, status='timeout',
+                                    error='Module exceeded its soft time limit',
+                                    duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("enumeration unexpected error scan=%s: %s", scan_id, e)
         update_module_status(scan_id, MODULE, 'failed')
-        return findings
+        return build_module_result(MODULE, findings, {}, status='failed',
+                                    error=str(e), duration_seconds=time.monotonic() - start)
