@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Dict, List, Optional, Tuple
 
 import requests
 
@@ -7,70 +8,96 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Section 4.5 - byte-for-byte. Do NOT paraphrase or reorder.
+# Descriptive-only prompt (verbatim, do not paraphrase or reorder). Ollama no
+# longer produces severity/cvss/priority/risk_score - those are computed
+# deterministically by analysis/cvss_scorer.py before this module ever runs.
 _SYSTEM_PROMPT = (
-    "You are a professional cybersecurity analyst. You will be given raw vulnerability\n"
-    "findings from an automated VAPT scan in JSON format. Your task is to analyze\n"
-    "these findings and return ONLY valid JSON with no markdown, no explanation,\n"
-    "and no text outside the JSON object.\n"
+    "You are a security writer explaining vulnerability findings to a non-technical\n"
+    "audience. You will receive a JSON list of vulnerability findings that have\n"
+    "already been scored and categorized by a separate system. Your ONLY job is to\n"
+    "produce plain-English descriptions and actionable remediation steps.\n"
     "\n"
-    "For each finding, provide:\n"
-    "- title: concise vulnerability name\n"
-    "- description: what this vulnerability is and why it matters\n"
-    "- severity: one of Critical / High / Medium / Low / Informational\n"
-    "- cvss_score: CVSS v3.1 base score (0.0-10.0)\n"
-    "- cvss_vector: CVSS v3.1 vector string\n"
-    "- owasp_category: OWASP Top 10 2021 category if applicable\n"
-    "- cve_reference: most relevant CVE if known, else null\n"
-    "- evidence: the most significant evidence snippet\n"
-    "- remediation: specific, actionable remediation steps\n"
-    "- priority: 1 (fix immediately) to 5 (fix when convenient)\n"
+    "For each finding, produce:\n"
+    "- description: 2 to 3 sentences explaining what this vulnerability is in plain\n"
+    "  English, as if explaining to a project manager. Avoid jargon; when a\n"
+    "  technical term is unavoidable, briefly explain it in the same sentence. Do\n"
+    "  NOT mention CVSS scores, severity levels, priority numbers, or any numeric\n"
+    "  ratings. Those are handled elsewhere.\n"
+    "- remediation: 3 to 5 concrete steps a developer should take to fix this.\n"
+    "  Technical language is fine here; the audience is a developer.\n"
     "\n"
-    "Return: { executive_summary, risk_score (0-100), findings[], total_critical,\n"
-    "total_high, total_medium, total_low, total_informational }"
+    "Also produce:\n"
+    "- executive_summary: 3 to 4 sentences overviewing the scan results in plain\n"
+    "  English, suitable for a non-technical stakeholder. Mention the target, the\n"
+    "  general categories of issues found, and the overall security posture in\n"
+    "  qualitative terms. Do NOT invent numbers, counts, or percentages.\n"
+    "\n"
+    "Return valid JSON only, no markdown, no explanation outside the JSON:\n"
+    "{\n"
+    '  "executive_summary": "...",\n'
+    '  "findings": [\n'
+    '    { "finding_id": "...", "description": "...", "remediation": "..." },\n'
+    "    ...\n"
+    "  ]\n"
+    "}"
 )
 
-_REQUIRED_KEYS = {'executive_summary', 'findings', 'risk_score'}
+_REQUIRED_KEYS = {'executive_summary', 'findings'}
+_MAX_SENT_TO_AI = 50
+_JSON_RETRY_ATTEMPTS = 3  # 1 initial attempt + 2 retries, per spec
+_OLLAMA_TIMEOUT = 240  # docs/ai.md - empirically measured, unchanged by this refactor
 
-_SEVERITY_SCORES = {
-    'Critical': 10.0, 'High': 7.5, 'Medium': 5.0,
-    'Low': 2.5, 'Informational': 0.0, 'Info': 0.0,
+# Generic per-category remediation, used whenever a finding doesn't have an
+# AI-generated description: either Ollama failed outright (ai_unavailable),
+# or the finding was beyond the top-50-by-priority cutoff sent to the model.
+_GENERIC_REMEDIATION = {
+    'A01:2021 - Broken Access Control': (
+        'Review this endpoint or file for unintended public exposure.',
+        'Restrict access via authentication/authorization checks, remove the '
+        'resource from the web root if it should not be served, and audit '
+        'related paths for the same misconfiguration.',
+    ),
+    'A02:2021 - Cryptographic Failures': (
+        'This finding relates to weak or misconfigured transport encryption.',
+        'Disable outdated protocol versions and weak cipher suites, renew or '
+        'replace the certificate as needed, and re-scan with testssl.sh/sslscan '
+        'to confirm the fix.',
+    ),
+    'A03:2021 - Injection': (
+        'This finding indicates unsanitized input may reach a sensitive sink.',
+        'Use parameterized queries/prepared statements, apply context-aware '
+        'output encoding, and validate all user input server-side before use.',
+    ),
+    'A05:2021 - Security Misconfiguration': (
+        'This finding reflects a configuration gap rather than a code defect.',
+        'Apply the missing security header or configuration directive at the '
+        'web server/application level, and add a regression test or config '
+        'check so it does not silently regress.',
+    ),
+    'A06:2021 - Vulnerable and Outdated Components': (
+        'This finding flags software running an outdated or end-of-life version.',
+        'Upgrade the affected component to a supported version, subscribe to '
+        'its security advisories, and track it in a dependency inventory.',
+    ),
 }
+_DEFAULT_REMEDIATION = (
+    'See the evidence above for details on this finding.',
+    'Review this finding against current security best practices for its '
+    'category and remediate accordingly.',
+)
 
 
-def _backfill_module(ai_result: dict, aggregated: dict) -> dict:
-    """
-    Add the 'module' field to each AI-returned finding.
-
-    Real bug, only surfaced once a genuine (non-fallback) Ollama response was
-    obtained for the first time: the system prompt (the project docs Section 4.5,
-    byte-for-byte, cannot be reworded) never asks the model for a 'module'
-    field per finding, but schemas.FindingSchema requires one (and the
-    frontend's findings table displays it). The rule-based fallback happened
-    to work because it manually copies 'module' from the raw finding - the
-    real AI path had no equivalent step. Match AI findings back to the input
-    aggregated findings by title (the field most likely to survive the model's
-    pass-through) and copy 'module' across; default to '' if no match is
-    found rather than raising - this is enrichment, not validation.
-    """
-    title_to_module = {
-        f.get('title', ''): f.get('module', '')
-        for f in aggregated.get('findings', [])
-        if f.get('title')
-    }
-    for finding in ai_result.get('findings', []):
-        if not finding.get('module'):
-            finding['module'] = title_to_module.get(finding.get('title', ''), '')
-    return ai_result
+def _generic_remediation(finding: dict) -> Tuple[str, str]:
+    category = finding.get('owasp_category', '')
+    return _GENERIC_REMEDIATION.get(category, _DEFAULT_REMEDIATION)
 
 
 def _strip_emdashes(obj):
     """
     Recursively replace em-dashes (U+2014) with hyphens in every string of a
     nested dict/list structure. Qwen 2.5 frequently emits em-dashes in the
-    free-text fields it generates (executive_summary, description, remediation),
-    which would otherwise reach the PDF and dashboard. Applied to whatever
-    analyse() returns so the AI output is always em-dash free.
+    free-text fields it generates, which would otherwise reach the PDF and
+    dashboard.
     """
     if isinstance(obj, str):
         return obj.replace('—', '-')
@@ -81,129 +108,162 @@ def _strip_emdashes(obj):
     return obj
 
 
-def analyse(aggregated: dict, domain: str) -> dict:
-    """
-    Send aggregated findings to Ollama (Qwen 2.5 7B) for AI analysis.
+def _shape_for_prompt(findings: List[dict]) -> List[dict]:
+    return [
+        {
+            'finding_id': f.get('finding_id', ''),
+            'title': f.get('title', ''),
+            'evidence': str(f.get('evidence', ''))[:300],
+            'owasp_category': f.get('owasp_category', ''),
+            'severity_hint': str(f.get('severity', 'Informational')).lower(),
+        }
+        for f in findings
+    ]
 
-    On timeout (120s) or invalid JSON, falls back to rule-based scoring so
-    the pipeline never hard-fails here regardless of Ollama availability.
 
-    Returns a dict matching the schema expected by the PDF generator and the
-    /api/scan/{id}/findings endpoint.
+def _call_ollama(shaped: List[dict], overflow: int, domain: str) -> dict:
+    """One HTTP round-trip to Ollama. Raises on any failure - callers handle
+    retry/fallback. Returns the parsed {'executive_summary','findings'} dict."""
+    note = ''
+    if overflow:
+        note = (
+            f'NOTE: {overflow} additional lower-severity findings exist and '
+            f'are grouped in the appendix; do not describe them individually. '
+        )
+    user_content = f'{note}Analyze these VAPT findings for {domain}: {json.dumps(shaped)}'
+
+    payload = {
+        'model': 'qwen2.5:7b',
+        'format': 'json',
+        'stream': False,
+        'options': {
+            'temperature': 0.1,
+            'num_predict': 4096,
+            'num_ctx': 8192,
+        },
+        'messages': [
+            {'role': 'system', 'content': _SYSTEM_PROMPT},
+            {'role': 'user', 'content': user_content},
+        ],
+    }
+
+    resp = requests.post(
+        f'{settings.OLLAMA_URL}/api/chat',
+        json=payload,
+        timeout=_OLLAMA_TIMEOUT,
+    )
+    resp.raise_for_status()
+
+    content = resp.json()['message']['content']
+    result = json.loads(content)
+
+    missing = _REQUIRED_KEYS - set(result.keys())
+    if missing:
+        raise ValueError(f'Ollama response missing required keys: {missing}')
+    if not isinstance(result.get('findings'), list):
+        raise ValueError('Ollama response "findings" is not a list')
+
+    return result
+
+
+def analyse(findings: List[dict], domain: str) -> dict:
     """
-    try:
-        payload = {
-            'model': 'qwen2.5:7b',
-            'format': 'json',
-            'stream': False,
-            'options': {
-                'temperature': 0.1,
-                'num_predict': 4096,
-                'num_ctx': 8192,
-            },
-            'messages': [
-                {'role': 'system', 'content': _SYSTEM_PROMPT},
-                {'role': 'user',
-                 'content': f'Analyze these VAPT findings for {domain}: '
-                            f'{json.dumps(aggregated)}'},
-            ],
+    Generate plain-English description/remediation text for already-scored
+    findings (severity/cvss/priority/owasp_category must already be set by
+    analysis/cvss_scorer.py before this is called - this function never
+    computes or overrides those).
+
+    Sends only the top _MAX_SENT_TO_AI findings by priority to keep the
+    prompt within Ollama's context window (the root cause of the original
+    demo-target.example bug: 4658 findings blew past num_ctx=8192 and silently forced
+    every scan onto the rule-based fallback).
+
+    Returns:
+        {
+            'executive_summary': str,
+            'descriptions': {finding_id: {'description': str, 'remediation': str}},
+            'ai_unavailable': bool,
+        }
+    Never raises - on any failure, falls back to a deterministic per-category
+    template so the pipeline never hard-fails here.
+    """
+    ordered = sorted(findings, key=lambda f: f.get('priority', 5))
+    top = ordered[:_MAX_SENT_TO_AI]
+    overflow = max(0, len(ordered) - _MAX_SENT_TO_AI)
+    shaped = _shape_for_prompt(top)
+
+    last_error: Optional[Exception] = None
+    for attempt in range(1, _JSON_RETRY_ATTEMPTS + 1):
+        try:
+            result = _call_ollama(shaped, overflow, domain)
+            descriptions = {
+                f.get('finding_id', ''): {
+                    'description': f.get('description', ''),
+                    'remediation': f.get('remediation', ''),
+                }
+                for f in result['findings']
+                if f.get('finding_id')
+            }
+            logger.info("Ollama description pass complete for %s - %d/%d findings described",
+                        domain, len(descriptions), len(findings))
+            return _strip_emdashes({
+                'executive_summary': result.get('executive_summary', ''),
+                'descriptions': descriptions,
+                'ai_unavailable': False,
+            })
+
+        except requests.exceptions.Timeout:
+            logger.warning("Ollama timed out for %s - using rule-based fallback", domain)
+            break  # don't retry a slow/hung Ollama - fail straight to fallback
+        except requests.exceptions.ConnectionError:
+            logger.warning("Ollama not reachable for %s - using rule-based fallback", domain)
+            break  # don't retry an unreachable Ollama
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            last_error = e
+            logger.warning("Ollama response invalid for %s (attempt %d/%d): %s",
+                            domain, attempt, _JSON_RETRY_ATTEMPTS, e)
+            continue  # malformed JSON from a 7B model is often worth retrying
+        except Exception as e:
+            logger.error("Ollama unexpected error for %s: %s - using fallback", domain, e)
+            break
+
+    if last_error:
+        logger.warning("Ollama gave up after %d attempts for %s - using rule-based fallback",
+                        _JSON_RETRY_ATTEMPTS, domain)
+
+    return _strip_emdashes(_rule_based_fallback(findings, domain))
+
+
+def _rule_based_fallback(findings: List[dict], domain: str) -> dict:
+    """
+    Used when Ollama is unreachable, times out, or never returns valid JSON.
+    Every finding gets a placeholder description (so nobody mistakes this for
+    real AI analysis) and a generic per-category remediation template.
+    """
+    descriptions = {}
+    for f in findings:
+        fid = f.get('finding_id', '')
+        if not fid:
+            continue
+        _, remediation = _generic_remediation(f)
+        descriptions[fid] = {
+            'description': 'AI-generated description unavailable | see remediation and evidence below.',
+            'remediation': remediation,
         }
 
-        # Timeout raised from the project docs Section 4.5's stated 120s to 240s -
-        # empirically measured: a real analysis call for a 23-finding scan
-        # took 130.2s on the reference hardware (RTX 4060 Laptop, 8GB VRAM,
-        # qwen2.5:7b Q4), so 120s was routinely triggering the rule-based
-        # fallback instead of genuine AI analysis. 240s gives headroom for
-        # run-to-run variance and larger finding sets. Same category of
-        # deliberate, measured deviation as the nmap/webscan timing tuning
-        # elsewhere in this build.
-        resp = requests.post(
-            f'{settings.OLLAMA_URL}/api/chat',
-            json=payload,
-            timeout=240,
-        )
-        resp.raise_for_status()
-
-        content = resp.json()['message']['content']
-        result = json.loads(content)
-
-        missing = _REQUIRED_KEYS - set(result.keys())
-        if missing:
-            raise ValueError(f"Ollama response missing required keys: {missing}")
-
-        logger.info("Ollama analysis complete for %s - risk_score=%s",
-                    domain, result.get('risk_score'))
-        result = _backfill_module(result, aggregated)
-        return _strip_emdashes(result)
-
-    except requests.exceptions.Timeout:
-        logger.warning("Ollama timed out for %s - using rule-based fallback", domain)
-    except requests.exceptions.ConnectionError:
-        logger.warning("Ollama not reachable for %s - using rule-based fallback", domain)
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        logger.warning("Ollama response invalid for %s (%s) - using fallback", domain, e)
-    except Exception as e:
-        logger.error("Ollama unexpected error for %s: %s - using fallback", domain, e)
-
-    return _strip_emdashes(_rule_based_fallback(aggregated, domain))
-
-
-def _rule_based_fallback(aggregated: dict, domain: str) -> dict:
-    """
-    Rule-based analysis used when Ollama is unavailable or returns bad output.
-    Produces the same output shape as the Ollama response so the rest of the
-    pipeline (PDF generator, findings endpoint) works identically either way.
-    """
-    findings = aggregated.get('findings', [])
-
-    counts = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0, 'Informational': 0}
-    enriched = []
-
+    counts: Dict[str, int] = {}
     for f in findings:
-        raw_sev = f.get('severity', 'Informational')
-        sev = raw_sev if raw_sev in counts else 'Informational'
-        counts[sev] += 1
+        sev = f.get('severity', 'Informational')
+        counts[sev] = counts.get(sev, 0) + 1
+    top_titles = [f.get('title', '') for f in findings if f.get('severity') == 'Critical'][:3]
 
-        cvss = _SEVERITY_SCORES.get(sev, 0.0)
-        priority = (1 if sev == 'Critical' else
-                    2 if sev == 'High' else
-                    3 if sev == 'Medium' else
-                    4 if sev == 'Low' else 5)
-
-        enriched.append({
-            'title':          f.get('title', 'Unknown finding'),
-            'description':    f.get('title', ''),
-            'severity':       sev,
-            'cvss_score':     cvss,
-            'cvss_vector':    None,
-            'owasp_category': f.get('owasp_category', ''),
-            'cve_reference':  None,
-            'evidence':       f.get('evidence', ''),
-            'remediation':    'Review and remediate this finding per security best practices.',
-            'priority':       priority,
-            'module':         f.get('module', ''),
-        })
-
-    # Risk score: weighted sum capped at 100
-    raw_score = (counts['Critical'] * 10 + counts['High'] * 7 +
-                 counts['Medium'] * 4 + counts['Low'] * 1)
-    risk_score = min(100, raw_score)
-
-    top_issues = [f['title'] for f in enriched
-                  if f['severity'] in ('Critical', 'High')][:3]
-    summary_parts = [f'Automated VAPT scan of {domain} identified '
-                     f'{len(findings)} findings.']
-    if top_issues:
-        summary_parts.append(f'Top issues: {", ".join(top_issues)}.')
-    summary_parts.append('(AI analysis unavailable - rule-based scoring applied.)')
+    summary_parts = [f'Automated VAPT scan of {domain} identified {len(findings)} findings.']
+    if top_titles:
+        summary_parts.append(f'Top issues: {", ".join(top_titles)}.')
+    summary_parts.append('(AI analysis unavailable - rule-based descriptions applied.)')
 
     return {
-        'executive_summary':   ' '.join(summary_parts),
-        'risk_score':          risk_score,
-        'findings':            enriched,
-        'total_critical':      counts['Critical'],
-        'total_high':          counts['High'],
-        'total_medium':        counts['Medium'],
-        'total_low':           counts['Low'],
-        'total_informational': counts['Informational'],
+        'executive_summary': ' '.join(summary_parts),
+        'descriptions': descriptions,
+        'ai_unavailable': True,
     }
