@@ -93,6 +93,7 @@ class FindingSchema(BaseModel):
     owasp_category: Optional[str] = None
     cve_reference: Optional[str] = None
     evidence: str
+    description: Optional[str] = None
     remediation: str
     priority: int
     module: str
