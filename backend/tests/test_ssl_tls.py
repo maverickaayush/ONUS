@@ -226,9 +226,11 @@ class TestSslTlsModuleStatus:
             result = run_ssl_tls.run(TEST_SCAN_ID, TEST_DOMAIN)
 
         assert status_calls[-1] == 'complete'
-        assert len(result) == 1
-        assert result[0]['type'] == 'no_https'
-        assert result[0]['severity'] == 'Informational'
+        assert result['status'] == 'success'
+        findings = result['findings']
+        assert len(findings) == 1
+        assert findings[0]['type'] == 'no_https'
+        assert findings[0]['severity'] == 'Informational'
 
     def test_partial_success_marks_complete(self):
         """One tool present + other missing = partial success = 'complete'."""
@@ -352,8 +354,11 @@ class TestSslTlsLive:
             result = run_ssl_tls.run(TEST_SCAN_ID, 'badssl.com')
 
         # Both tools missing with reachable host → failed (by spec)
-        # but result is still a list
-        assert isinstance(result, list), "Must always return a list"
+        # but result is still a build_module_result() envelope with a list
+        # of findings inside it.
+        assert isinstance(result, dict)
+        assert isinstance(result['findings'], list), "findings must always be a list"
+        assert result['status'] in ('success', 'failed')
         # status must be either complete or failed - never silent None
         assert status_calls[-1] in ('complete', 'failed'), \
             f"Final status must be complete or failed, got {status_calls}"
@@ -374,11 +379,13 @@ class TestSslTlsLive:
             from tasks.ssl_tls import run_ssl_tls
             result = run_ssl_tls.run(TEST_SCAN_ID, 'badssl.com')
 
-        assert isinstance(result, list)
+        assert isinstance(result, dict)
         assert status_calls[-1] == 'failed'  # both tools missing
+        assert result['status'] == 'failed'
+        assert result['error']
         # No findings expected (both tools absent, cert_expiry not reached
         # because we return early on both-missing)
-        assert result == []
+        assert result['findings'] == []
 
     def test_run_ssl_tls_no_https(self):
         """Unreachable port 443 → single Informational finding, status complete."""
@@ -393,10 +400,12 @@ class TestSslTlsLive:
             result = run_ssl_tls.run(TEST_SCAN_ID, 'badssl.com')
 
         assert status_calls[-1] == 'complete'
-        assert len(result) == 1
-        assert result[0]['type'] == 'no_https'
-        assert result[0]['found_by'] == [MODULE]
-        missing = REQUIRED_FIELDS - set(result[0].keys())
+        assert result['status'] == 'success'
+        findings = result['findings']
+        assert len(findings) == 1
+        assert findings[0]['type'] == 'no_https'
+        assert findings[0]['found_by'] == [MODULE]
+        missing = REQUIRED_FIELDS - set(findings[0].keys())
         assert not missing
 
 

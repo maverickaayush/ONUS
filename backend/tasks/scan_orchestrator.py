@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from typing import Optional
 from celery import group, chord
 from tasks.celery_app import app
 
@@ -74,9 +75,11 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
           soft_time_limit=360, time_limit=420)
 def aggregate_and_analyse(results: list, scan_id: str, domain: str) -> None:
     """
-    Chord callback: called once all five scanning subtasks complete.
-    results is a list of per-module finding lists:
-    [[recon_findings], [webscan_findings], [ssl_tls_findings], ...]
+    Chord callback: called once all 8 scanning subtasks complete.
+    results is a list of per-module result envelopes (base_task.py's
+    build_module_result()): [{module, status, findings, tool_versions,
+    finding_count, duration_seconds, error}, ...] - one per module,
+    regardless of whether that module found anything.
     """
     from database import SessionLocal
     from models import Scan, Report, ScanStatus
@@ -141,6 +144,22 @@ def aggregate_and_analyse(results: list, scan_id: str, domain: str) -> None:
         db.close()
 
 
+def _incomplete_modules_warning(module_execution: list) -> Optional[str]:
+    """
+    Deterministic warning line for the report's executive summary page -
+    never left to the AI to decide whether to mention. A report that hides
+    a failed/timed-out module is actively misleading about the target's
+    security posture (the project docs Section 4.4).
+    """
+    incomplete = [m for m in module_execution if m.get('status') not in ('success', 'partial')]
+    if not incomplete:
+        return None
+    return (
+        f'Note: {len(incomplete)} of {len(module_execution)} scan modules did not '
+        f'complete successfully. Results may be incomplete - see Technical Appendix.'
+    )
+
+
 def _score_and_describe(aggregated: dict, domain: str) -> dict:
     """
     Deterministic scoring (analysis/cvss_scorer.py) followed by an AI
@@ -180,6 +199,8 @@ def _score_and_describe(aggregated: dict, domain: str) -> dict:
 
     findings.sort(key=lambda f: (f.get('priority', 5), -f.get('cvss_score', 0)))
 
+    module_execution = aggregated.get('module_execution', [])
+
     return {
         'executive_summary': ai_result.get('executive_summary', ''),
         'risk_score': risk_score,
@@ -191,6 +212,8 @@ def _score_and_describe(aggregated: dict, domain: str) -> dict:
         'total_informational': counts['Informational'],
         'ai_unavailable': ai_result.get('ai_unavailable', False),
         'scan_metadata': aggregated.get('scan_metadata', {}),
+        'module_execution': module_execution,
+        'incomplete_modules_warning': _incomplete_modules_warning(module_execution),
     }
 
 
@@ -223,6 +246,8 @@ def _rule_based_fallback(aggregated: dict) -> dict:
     risk_score = compute_risk_score(counts)
     findings.sort(key=lambda f: (f.get('priority', 5), -f.get('cvss_score', 0)))
 
+    module_execution = aggregated.get('module_execution', [])
+
     return {
         'executive_summary': f'Rule-based analysis: {len(findings)} findings detected (AI analysis unavailable).',
         'risk_score': risk_score,
@@ -234,4 +259,6 @@ def _rule_based_fallback(aggregated: dict) -> dict:
         'total_informational': counts['Informational'],
         'ai_unavailable': True,
         'scan_metadata': aggregated.get('scan_metadata', {}),
+        'module_execution': module_execution,
+        'incomplete_modules_warning': _incomplete_modules_warning(module_execution),
     }

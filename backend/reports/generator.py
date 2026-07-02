@@ -85,6 +85,8 @@ def generate_pdf(scan, analysis: dict, store_in_db: bool = True) -> bytes:
         'total_low':          analysis.get('total_low', 0),
         'total_informational': analysis.get('total_informational', 0),
         'scan_metadata':      analysis.get('scan_metadata', {}),
+        'module_execution':   analysis.get('module_execution', []),
+        'incomplete_modules_warning': analysis.get('incomplete_modules_warning'),
     }
 
     html = template.render(**context)

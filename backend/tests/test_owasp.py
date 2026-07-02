@@ -195,7 +195,9 @@ class TestOwaspModuleStatus:
 
         assert status_calls[-1] == 'complete', \
             "Module must still complete even when some tests time out"
-        assert isinstance(result, list)
+        assert isinstance(result, dict)
+        assert result['status'] == 'success'
+        assert isinstance(result['findings'], list)
 
     def test_all_findings_have_required_fields(self):
         """Every finding from a full run must match Section 4.3 schema."""

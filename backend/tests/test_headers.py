@@ -285,9 +285,10 @@ class TestHeadersLive:
             from tasks.headers import run_headers
             result = run_headers.run(SCAN_ID, 'example.com')
 
-        assert isinstance(result, list)
+        assert isinstance(result, dict)
+        assert result['status'] == 'success'
         assert status_calls[-1] == 'complete'
-        for f in result:
+        for f in result['findings']:
             assert f.get('found_by') == [MODULE], \
                 f"found_by missing or wrong in: {f.get('title')}"
 

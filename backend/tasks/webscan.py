@@ -4,14 +4,19 @@ import os
 import shutil
 import subprocess
 import time
-from typing import List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Optional, Tuple
 
 import psutil
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
 from zapv2 import ZAPv2
 
 from config import settings
-from tasks.base_task import BaseTask, normalize_finding, update_module_status
+from tasks.base_task import (
+    BaseTask, normalize_finding, update_module_status,
+    get_tool_version, build_module_result,
+)
 from tasks.celery_app import app
 
 logger = logging.getLogger(__name__)
@@ -34,11 +39,16 @@ _ZAP_RISK_MAP = {
 #
 #   ZAP readiness wait   : <= 60s   (_ZAP_READY_TIMEOUT)
 #   ZAP spider + ascan   : <= 240s  (_ZAP_SCAN_BUDGET, combined hard cap)
+#   Katana               : <= 180s  (_KATANA_TIMEOUT) - runs in a thread
+#                                    ALONGSIDE ZAP (see run_webscan), so it
+#                                    adds no wall-clock time of its own; the
+#                                    worst case below is still gated by ZAP.
 #   Nikto                : <= 130s  (subprocess timeout; -maxtime 120s)
 #   ----------------------------------------------------------------------
 #   worst case           : <= ~430s  (well under the 480s soft / 540s hard limit)
 _ZAP_READY_TIMEOUT = 60
 _ZAP_SCAN_BUDGET = 240
+_KATANA_TIMEOUT = 180
 _NIKTO_TIMEOUT = 130
 _WEBSCAN_SOFT_LIMIT = 480
 _WEBSCAN_HARD_LIMIT = 540
@@ -154,10 +164,12 @@ def _wait_for_zap(base_url: str, timeout: int = _ZAP_READY_TIMEOUT) -> bool:
 # ZAP scanning
 # ---------------------------------------------------------------------------
 
-def _run_zap(scan_id: str, domain: str, target_url: str) -> List[dict]:
+def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Optional[str]]:
     """
     Run OWASP ZAP: spider + active scan + collect alerts.
-    Returns normalized findings.
+    Returns (normalized findings, zap_version) - zap_version comes from the
+    ZAP API itself (zap.core.version), not subprocess, since ZAP is a daemon/
+    sidecar rather than a plain CLI tool. None if ZAP never became reachable.
 
     Two modes, chosen by settings.ZAP_URL:
     - Remote (Docker): ZAP runs as a separate sidecar container reachable at
@@ -169,13 +181,14 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> List[dict]:
     """
     findings = []
     proc = None
+    zap_version = None
     remote_zap_url = settings.ZAP_URL.rstrip('/')
 
     try:
         if remote_zap_url:
             if not _wait_for_zap(remote_zap_url, timeout=_ZAP_READY_TIMEOUT):
                 logger.warning("Remote ZAP not ready for scan %s - skipping ZAP", scan_id)
-                return findings
+                return findings, zap_version
 
             zap = ZAPv2(
                 apikey='',
@@ -190,12 +203,12 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> List[dict]:
             port = _zap_port(scan_id)
             proc = _start_zap(scan_id, port)
             if proc is None:
-                return findings
+                return findings, zap_version
 
             local_base_url = f'http://localhost:{port}'
             if not _wait_for_zap(local_base_url, timeout=_ZAP_READY_TIMEOUT):
                 logger.warning("ZAP not ready for scan %s - skipping ZAP", scan_id)
-                return findings
+                return findings, zap_version
 
             zap = ZAPv2(
                 apikey='',
@@ -204,6 +217,11 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> List[dict]:
                     'https': f'http://127.0.0.1:{port}',
                 },
             )
+
+        try:
+            zap_version = zap.core.version
+        except Exception as e:
+            logger.debug("ZAP version lookup failed for scan %s: %s", scan_id, e)
 
         scan_deadline = time.monotonic() + _ZAP_SCAN_BUDGET
 
@@ -267,7 +285,95 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> List[dict]:
         _kill_zap(proc)  # no-op when proc is None (remote ZAP mode)
         logger.info("ZAP scan finished for scan %s", scan_id)
 
+    return findings, zap_version
+
+
+# ---------------------------------------------------------------------------
+# Katana (JS-aware crawler, supplements ZAP's HTML spider)
+# ---------------------------------------------------------------------------
+
+def _run_katana(scan_id: str, domain: str, target_url: str) -> List[dict]:
+    """
+    Run Katana as a supplemental crawler for SPA/JS-heavy targets that ZAP's
+    HTML spider misses. Does not replace ZAP - runs alongside it in a thread
+    (see run_webscan). Returns normalized 'crawled_endpoint_katana' findings,
+    each tagged with an extra 'endpoint' key (same pattern as tech_fingerprint's
+    finding['technology']) so run_webscan can diff them against ZAP's URLs
+    once both threads finish, to flag JS-only routes as 'js_hidden_endpoints'.
+    """
+    findings = []
+    out_path = f'/tmp/katana_{scan_id}.txt'
+    try:
+        subprocess.run(
+            ['katana', '-u', target_url,
+             '-jc', '-kf', 'all', '-d', '3', '-c', '10', '-rate-limit', '50',
+             '-timeout', '15', '-o', out_path, '-silent', '-no-color', '-json'],
+            timeout=_KATANA_TIMEOUT,
+            capture_output=True,
+            check=False,
+        )
+
+        if not os.path.exists(out_path):
+            return findings
+        with open(out_path) as f:
+            raw = f.read().strip()
+        if not raw:
+            return findings
+
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            endpoint = entry.get('endpoint', '')
+            if not endpoint:
+                continue
+            method = entry.get('method', 'GET')
+            status_code = entry.get('status_code', '')
+            finding = normalize_finding(
+                module=MODULE, tool='katana', type_='crawled_endpoint_katana',
+                title=f'Endpoint discovered: {method} {endpoint}',
+                evidence=f'Discovered by Katana JS crawler | Status: {status_code}',
+                severity='Informational', target=domain,
+            )
+            finding['endpoint'] = endpoint
+            findings.append(finding)
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Katana timed out (%ds) for scan %s", _KATANA_TIMEOUT, scan_id)
+    except FileNotFoundError:
+        logger.warning("Katana not installed - skipping for scan %s", scan_id)
+    except Exception as e:
+        logger.error("Katana error for scan %s: %s", scan_id, e)
+    finally:
+        if os.path.exists(out_path):
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
+
     return findings
+
+
+def _js_hidden_endpoints_finding(domain: str, zap_findings: List[dict],
+                                  katana_findings: List[dict]) -> Optional[dict]:
+    """Diff Katana's crawled endpoints against ZAP's alert URLs (once both
+    threads have finished) and flag routes ZAP's HTML spider never saw."""
+    zap_urls = {f['evidence'].split(' | ', 1)[0] for f in zap_findings if f.get('evidence')}
+    katana_endpoints = {f['endpoint'] for f in katana_findings if f.get('endpoint')}
+    hidden = katana_endpoints - zap_urls
+    if not hidden:
+        return None
+    return normalize_finding(
+        module=MODULE, tool='katana', type_='js_hidden_endpoints',
+        title=f'{len(hidden)} endpoints only visible to JS crawler',
+        evidence="These routes were not discoverable by ZAP's HTML spider "
+                 "and may not have been actively tested.",
+        severity='Low', cvss=3.5, target=domain,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -365,25 +471,57 @@ def _run_nikto(scan_id: str, domain: str, target_url: str) -> List[dict]:
     soft_time_limit=_WEBSCAN_SOFT_LIMIT,
     time_limit=_WEBSCAN_HARD_LIMIT,
 )
-def run_webscan(scan_id: str, domain: str) -> list:
+def run_webscan(scan_id: str, domain: str) -> dict:
     """
-    Web scan module: OWASP ZAP (spider + active scan) + Nikto.
+    Web scan module: OWASP ZAP (spider + active scan) + Katana (parallel,
+    JS-aware supplemental crawl) + Nikto.
 
-    ZAP and Nikto are both optional - if either is missing the module continues
-    with whatever is available. Partial results are still reported as 'complete'
-    (not 'failed'). Runs with a raised per-task time limit because ZAP active
-    scanning is the pipeline's long pole (see the timing-budget note above).
+    ZAP, Katana and Nikto are all optional - if any is missing the module
+    continues with whatever is available. Partial results are still reported
+    as 'complete' (not 'failed'). Runs with a raised per-task time limit
+    because ZAP active scanning is the pipeline's long pole (see the
+    timing-budget note above). Katana runs in a thread ALONGSIDE ZAP so it
+    adds no wall-clock time; Nikto still runs sequentially after both finish.
+    Returns a build_module_result() envelope (Section 4.3 schema note).
     """
     update_module_status(scan_id, MODULE, 'running')
+    start = time.monotonic()
     findings = []
     target_url = f'https://{domain}'
 
     try:
-        findings.extend(_run_zap(scan_id, domain, target_url))
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            zap_future = executor.submit(_run_zap, scan_id, domain, target_url)
+            katana_future = executor.submit(_run_katana, scan_id, domain, target_url)
+            zap_findings, zap_version = zap_future.result()
+            katana_findings = katana_future.result()
+
+        findings.extend(zap_findings)
+        findings.extend(katana_findings)
+        hidden_finding = _js_hidden_endpoints_finding(domain, zap_findings, katana_findings)
+        if hidden_finding:
+            findings.append(hidden_finding)
+
         findings.extend(_run_nikto(scan_id, domain, target_url))
+
+        tool_versions = {
+            'zap':    zap_version or 'unknown',
+            'katana': get_tool_version('katana', '-version'),
+            'nikto':  get_tool_version('nikto', '-Version'),
+        }
         update_module_status(scan_id, MODULE, 'complete')
-        return findings
+        return build_module_result(MODULE, findings, tool_versions, status='success',
+                                    duration_seconds=time.monotonic() - start)
+    except SoftTimeLimitExceeded:
+        logger.warning("webscan hit its soft time limit (%ds) for scan %s",
+                        _WEBSCAN_SOFT_LIMIT, scan_id)
+        update_module_status(scan_id, MODULE, 'failed')
+        return build_module_result(
+            MODULE, findings, {}, status='timeout',
+            error=f'Module exceeded its soft time limit ({_WEBSCAN_SOFT_LIMIT}s)',
+            duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("webscan unexpected error scan=%s: %s", scan_id, e)
         update_module_status(scan_id, MODULE, 'failed')
-        return findings
+        return build_module_result(MODULE, findings, {}, status='failed',
+                                    error=str(e), duration_seconds=time.monotonic() - start)
