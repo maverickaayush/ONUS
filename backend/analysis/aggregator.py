@@ -2,9 +2,14 @@ import logging
 import shutil
 import subprocess
 from datetime import datetime, timezone
-from typing import List
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Groups larger than this are collapsed into one finding (Fix 2) - a single
+# WAF/catch-all deny page hit by every wordlist entry should not become
+# thousands of "distinct" findings.
+_FINGERPRINT_COLLAPSE_THRESHOLD = 5
 
 _SEVERITY_ORDER = {
     'Critical': 0, 'High': 1, 'Medium': 2,
@@ -50,6 +55,18 @@ _OWASP_MAP = {
     'missing_dmarc':          'A05:2021 - Security Misconfiguration',
     'missing_dkim':           'A05:2021 - Security Misconfiguration',
     'zap_':                   'A03:2021 - Injection',
+    # Added for the deterministic CVSS scorer (analysis/cvss_scorer.py) -
+    # substring matching already covers every type variant below without
+    # needing a separate entry per variant, e.g. 'exposed_admin_panel'
+    # matches 'exposed_admin_panel_open'/'_login'/'_denied' alike.
+    'exposed_sensitive_file': 'A05:2021 - Security Misconfiguration',
+    'exposed_backup_file':    'A05:2021 - Security Misconfiguration',
+    'exposed_admin_panel':    'A01:2021 - Broken Access Control',
+    'exposed_path':           'A05:2021 - Security Misconfiguration',
+    'directory_listing':      'A05:2021 - Security Misconfiguration',
+    'outdated_tech':          'A06:2021 - Vulnerable and Outdated Components',
+    'nuclei_':                'A06:2021 - Vulnerable and Outdated Components',
+    'js_hidden_endpoints':    'A05:2021 - Security Misconfiguration',
 }
 
 
@@ -59,6 +76,74 @@ def _owasp_category(finding_type: str) -> str:
         if key in t:
             return cat
     return ''
+
+
+def _http_fingerprint(f: dict) -> Optional[Tuple[str, int, int]]:
+    """
+    (finding_type, status_code, size_bucket) for findings carrying
+    http_status/http_size (set directly on the finding dict by
+    tasks/enumeration.py - see normalize_finding call sites there).
+    Findings without HTTP response data return None and are left ungrouped;
+    not every finding type has - or needs - this signal.
+    """
+    status = f.get('http_status')
+    size = f.get('http_size')
+    if status is None or size is None:
+        return None
+    bucket = round(size / 100) * 100
+    return (f.get('type', ''), status, bucket)
+
+
+def _collapse_response_fingerprints(findings: List[dict]) -> List[dict]:
+    """
+    Collapse >5 findings sharing the same (type, status, ~size) signature
+    into a single finding. Defense-in-depth against a WAF/catch-all deny
+    page being logged as one "finding" per wordlist entry - independent of
+    enumeration.py's own baseline filtering, since any module could in
+    principle produce a flood.
+    """
+    groups: Dict[Tuple[str, int, int], List[dict]] = {}
+    ungrouped: List[dict] = []
+
+    for f in findings:
+        fp = _http_fingerprint(f)
+        if fp is None:
+            ungrouped.append(f)
+            continue
+        groups.setdefault(fp, []).append(f)
+
+    result = list(ungrouped)
+    for (_, status, _bucket), members in groups.items():
+        if len(members) <= _FINGERPRINT_COLLAPSE_THRESHOLD:
+            result.extend(members)
+            continue
+
+        sizes = [m.get('http_size', 0) for m in members]
+        size_avg = round(sum(sizes) / len(sizes))
+        paths = [m.get('evidence', '') for m in members]
+        example_paths = paths[:3]
+
+        # Inherit everything from the representative member (type, severity,
+        # module, http_status, http_size, etc.) - the CVSS scorer keys off
+        # `type`, so it must survive the collapse. Only title/evidence/
+        # details/found_by are overridden below.
+        collapsed = dict(members[0])
+        collapsed['title'] = (
+            f'{len(members)} paths returned identical HTTP {status} '
+            f'response (~{size_avg} bytes)'
+        )
+        collapsed['evidence'] = (
+            '; '.join(example_paths) +
+            (f'; ...and {len(members) - 3} others (full list in appendix)'
+             if len(members) > 3 else '')
+        )[:500]
+        collapsed['details'] = {'matched_paths': paths}
+        collapsed['found_by'] = sorted({
+            source for m in members for source in m.get('found_by', [])
+        })
+        result.append(collapsed)
+
+    return result
 
 
 def _tool_version(tool: str, *flags: str) -> str:
@@ -124,6 +209,11 @@ def aggregate(findings_list: List[List[dict]]) -> dict:
             seen[key] = len(merged)
             merged.append(entry)
 
+    # 2b. Collapse near-duplicate HTTP findings (>5 sharing type+status+size)
+    #     into one grouped finding - independent second dedup pass, see
+    #     _collapse_response_fingerprints docstring.
+    merged = _collapse_response_fingerprints(merged)
+
     # 3. OWASP category enrichment
     for f in merged:
         if not f.get('owasp_category'):
@@ -136,6 +226,12 @@ def aggregate(findings_list: List[List[dict]]) -> dict:
     for f in merged:
         if len(f.get('evidence', '')) > 500:
             f['evidence'] = f['evidence'][:500]
+
+    # 6. Stable finding_id - lets the CVSS scorer and the Ollama description
+    #    merge (analysis/ollama_client.py) match findings back up after the
+    #    list gets trimmed/reshaped downstream.
+    for i, f in enumerate(merged):
+        f['finding_id'] = f'f{i}'
 
     return {
         'findings': merged,
