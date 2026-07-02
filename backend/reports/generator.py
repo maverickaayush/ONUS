@@ -55,16 +55,17 @@ def generate_pdf(scan, analysis: dict, store_in_db: bool = True) -> bytes:
         scan_date = scan_date.replace(tzinfo=timezone.utc)
 
     findings = analysis.get('findings', [])
-    # Sort by severity then CVSS descending
-    _order = {'Critical': 0, 'High': 1, 'Medium': 2,
-               'Low': 3, 'Informational': 4, 'Info': 4}
+    # Findings catalogue order: priority ascending, then CVSS descending
+    # (the project docs Section 4.6) - priority and cvss_score are both computed
+    # deterministically by analysis/cvss_scorer.py, not by Ollama.
     findings_sorted = sorted(
         findings,
         key=lambda f: (
-            _order.get(str(f.get('severity', 'Info')).title(), 4),
+            f.get('priority', 5),
             -(f.get('cvss_score') or 0),
         ),
     )
+    grouped_findings = [f for f in findings_sorted if f.get('details', {}).get('matched_paths')]
 
     context = {
         'iitk_logo_text': 'IIT Kanpur Computer Centre',
@@ -76,6 +77,8 @@ def generate_pdf(scan, analysis: dict, store_in_db: bool = True) -> bytes:
             'Automated VAPT analysis complete.'
         ),
         'findings':           findings_sorted,
+        'grouped_findings':   grouped_findings,
+        'ai_unavailable':     bool(analysis.get('ai_unavailable')),
         'total_critical':     analysis.get('total_critical', 0),
         'total_high':         analysis.get('total_high', 0),
         'total_medium':       analysis.get('total_medium', 0),

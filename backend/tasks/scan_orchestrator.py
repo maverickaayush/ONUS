@@ -30,6 +30,9 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
             'ssl_tls': 'queued',
             'headers': 'queued',
             'owasp': 'queued',
+            'tech_fingerprint': 'queued',
+            'nuclei': 'queued',
+            'enumeration': 'queued',
         }
         db.commit()
         logger.info("scan_orchestrator: scan %s started for %s", scan_id, domain)
@@ -42,6 +45,9 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
     from tasks.ssl_tls import run_ssl_tls
     from tasks.headers import run_headers
     from tasks.owasp import run_owasp
+    from tasks.tech_fingerprint import run_tech_fingerprint
+    from tasks.nuclei_scan import run_nuclei
+    from tasks.enumeration import run_enumeration
 
     scanning_group = group(
         run_recon.s(scan_id, domain),
@@ -49,6 +55,9 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
         run_ssl_tls.s(scan_id, domain),
         run_headers.s(scan_id, domain),
         run_owasp.s(scan_id, domain),
+        run_tech_fingerprint.s(scan_id, domain),
+        run_nuclei.s(scan_id, domain),
+        run_enumeration.s(scan_id, domain),
     )
 
     chord(scanning_group)(aggregate_and_analyse.s(scan_id, domain))
@@ -95,12 +104,11 @@ def aggregate_and_analyse(results: list, scan_id: str, domain: str) -> None:
             logger.error("Aggregation failed for scan %s: %s", scan_id, e)
             aggregated = {'findings': [], 'total': 0}
 
-        # --- Step 6: AI analysis via Ollama ---
+        # --- Step 6: deterministic scoring, then AI description pass ---
         try:
-            from analysis.ollama_client import analyse
-            ai_result = analyse(aggregated, domain)
+            ai_result = _score_and_describe(aggregated, domain)
         except Exception as e:
-            logger.error("Ollama analysis failed for scan %s: %s", scan_id, e)
+            logger.error("Scoring/analysis failed for scan %s: %s", scan_id, e)
             ai_result = _rule_based_fallback(aggregated)
 
         scan.ai_analysis = ai_result
@@ -133,44 +141,97 @@ def aggregate_and_analyse(results: list, scan_id: str, domain: str) -> None:
         db.close()
 
 
-def _rule_based_fallback(aggregated: dict) -> dict:
+def _score_and_describe(aggregated: dict, domain: str) -> dict:
     """
-    Minimal rule-based analysis used when Ollama is unavailable.
-    Counts findings by severity and returns a bare-bones response shape
-    matching the Ollama output schema so the rest of the pipeline doesn't break.
+    Deterministic scoring (analysis/cvss_scorer.py) followed by an AI
+    description pass (analysis/ollama_client.py). Numbers - severity, cvss,
+    priority, owasp_category, risk_score - are computed here and never
+    touched by Ollama; Ollama only ever supplies description/remediation/
+    executive_summary prose (the project docs Section 4.5/4.6).
     """
+    from analysis.cvss_scorer import score_finding, compute_risk_score
+    from analysis.ollama_client import analyse, _generic_remediation
+
     findings = aggregated.get('findings', [])
-    severity_scores = {'Critical': 10, 'High': 7, 'Medium': 4, 'Low': 2, 'Info': 0, 'Informational': 0}
     counts = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0, 'Informational': 0}
 
-    enriched = []
     for f in findings:
-        sev = f.get('severity', 'Informational')
-        counts[sev if sev in counts else 'Informational'] += 1
-        enriched.append({
-            'title': f.get('title', 'Unknown'),
-            'description': f.get('title', ''),
-            'severity': sev,
-            'cvss_score': severity_scores.get(sev, 0.0),
-            'cvss_vector': None,
-            'owasp_category': f.get('owasp_category'),
-            'cve_reference': None,
-            'evidence': f.get('evidence', ''),
-            'remediation': 'Review and remediate this finding per security best practices.',
-            'priority': 1 if sev == 'Critical' else (2 if sev == 'High' else 3),
-            'module': f.get('module', ''),
-        })
+        f.update(score_finding(f))
+        sev = f['severity'] if f['severity'] in counts else 'Informational'
+        counts[sev] += 1
 
-    total = counts['Critical'] * 10 + counts['High'] * 7 + counts['Medium'] * 4 + counts['Low'] * 2
-    risk_score = min(100, total)
+    risk_score = compute_risk_score(counts)
+
+    ai_result = analyse(findings, domain)
+    descriptions = ai_result.get('descriptions', {})
+    for f in findings:
+        d = descriptions.get(f.get('finding_id', ''))
+        if d:
+            f['description'] = d['description']
+            f['remediation'] = d['remediation']
+        else:
+            # Ollama succeeded overall but this finding was beyond the
+            # top-priority cutoff sent to it - no error, just not individually
+            # described. No "AI unavailable" badge for these (that's reserved
+            # for a real ai_unavailable failure, checked scan-wide below).
+            description, remediation = _generic_remediation(f)
+            f['description'] = description
+            f['remediation'] = remediation
+
+    findings.sort(key=lambda f: (f.get('priority', 5), -f.get('cvss_score', 0)))
 
     return {
-        'executive_summary': f'Rule-based analysis: {len(findings)} findings detected (Ollama unavailable).',
+        'executive_summary': ai_result.get('executive_summary', ''),
         'risk_score': risk_score,
-        'findings': enriched,
+        'findings': findings,
         'total_critical': counts['Critical'],
         'total_high': counts['High'],
         'total_medium': counts['Medium'],
         'total_low': counts['Low'],
         'total_informational': counts['Informational'],
+        'ai_unavailable': ai_result.get('ai_unavailable', False),
+        'scan_metadata': aggregated.get('scan_metadata', {}),
+    }
+
+
+def _rule_based_fallback(aggregated: dict) -> dict:
+    """
+    Outer safety net used only if _score_and_describe() itself raises (e.g.
+    cvss_scorer import fails) - analyse()/score_finding() already have their
+    own internal fallbacks, so this path is a last resort, not the common
+    failure mode.
+    """
+    from analysis.cvss_scorer import score_finding, compute_risk_score
+    from analysis.ollama_client import _generic_remediation
+
+    findings = aggregated.get('findings', [])
+    counts = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0, 'Informational': 0}
+
+    for f in findings:
+        try:
+            f.update(score_finding(f))
+        except Exception:
+            f.setdefault('severity', 'Informational')
+            f.setdefault('cvss_score', 0.0)
+            f.setdefault('priority', 5)
+        sev = f.get('severity', 'Informational')
+        counts[sev if sev in counts else 'Informational'] += 1
+        description, remediation = _generic_remediation(f)
+        f['description'] = description
+        f['remediation'] = remediation
+
+    risk_score = compute_risk_score(counts)
+    findings.sort(key=lambda f: (f.get('priority', 5), -f.get('cvss_score', 0)))
+
+    return {
+        'executive_summary': f'Rule-based analysis: {len(findings)} findings detected (AI analysis unavailable).',
+        'risk_score': risk_score,
+        'findings': findings,
+        'total_critical': counts['Critical'],
+        'total_high': counts['High'],
+        'total_medium': counts['Medium'],
+        'total_low': counts['Low'],
+        'total_informational': counts['Informational'],
+        'ai_unavailable': True,
+        'scan_metadata': aggregated.get('scan_metadata', {}),
     }

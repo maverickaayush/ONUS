@@ -184,6 +184,35 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   font-size: 9pt;
   white-space: pre-wrap;
 }
+.ai-unavailable-tag {
+  float: right;
+  background: #C0392B;
+  color: #fff;
+  font-size: 7pt;
+  font-weight: bold;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 8px;
+}
+.methodology-note {
+  margin-top: 24px;
+  font-size: 8pt;
+  color: #888;
+  border-top: 1px solid #eee;
+  padding-top: 8px;
+}
+.appendix-path-list {
+  font-family: "Courier New", Courier, monospace;
+  font-size: 8pt;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 10px 12px;
+  border-radius: 3px;
+  max-height: 200px;
+  overflow: hidden;
+}
 </style>
 </head>
 <body>
@@ -235,13 +264,9 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   </p>
 </div>
 
-{# ── Executive Summary ──────────────────────────────────────── #}
-<h2>Executive Summary</h2>
-<div class="summary-box">
-  <p>{{ executive_summary }}</p>
-</div>
-
 {# ── Severity Breakdown ─────────────────────────────────────── #}
+{# Section order per the project docs Section 4.6: risk badge (cover page, above)
+   -> severity counts -> AI executive summary prose, in that order. #}
 <h2>Severity Breakdown</h2>
 <table class="sev-table">
   <tr>
@@ -276,6 +301,21 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   </tr>
 </table>
 
+{# ── Executive Summary ──────────────────────────────────────── #}
+<h2>Executive Summary</h2>
+<div class="summary-box">
+  <p>{{ executive_summary }}</p>
+  {% if ai_unavailable %}
+  <p><span class="ai-unavailable-tag" style="float:none;">AI analysis unavailable</span>
+     &nbsp;<span style="font-size:8pt;color:#888;">Descriptions below use generic per-category guidance instead of AI-generated text.</span></p>
+  {% endif %}
+</div>
+<p class="methodology-note">
+  Methodology: Numeric scores (CVSS, severity, priority) are computed
+  deterministically from finding characteristics per CVSS v3.1. Narrative
+  descriptions are AI-generated.
+</p>
+
 {# ── Findings Catalogue ─────────────────────────────────────── #}
 <h2>Findings Catalogue</h2>
 
@@ -283,6 +323,9 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
 {% for finding in findings %}
 <div class="finding-card">
   <div class="finding-card-header">
+    {% if ai_unavailable %}
+      <span class="ai-unavailable-tag">AI analysis unavailable</span>
+    {% endif %}
     {{ severity_badge(finding.severity or 'Informational') }}
     {% if finding.cvss_score is not none and finding.cvss_score > 0 %}
       &nbsp;<strong>CVSS {{ '%.1f'|format(finding.cvss_score) }}</strong>
@@ -335,6 +378,24 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
 <p style="color:#27AE60;font-weight:bold;">
   No vulnerabilities found. The target appears to be well-configured.
 </p>
+{% endif %}
+
+{# ── Grouped Findings Appendix ──────────────────────────────── #}
+{% if grouped_findings %}
+<h2>Grouped Findings</h2>
+<p>
+  The findings below represent more than {{ 5 }} paths that returned an
+  identical HTTP response and were collapsed into a single catalogue entry.
+  Full path lists are provided here for reference.
+</p>
+{% for finding in grouped_findings %}
+<div class="finding-card">
+  <div class="finding-card-body">
+    <h3>{{ finding.title }}</h3>
+    <div class="appendix-path-list">{{ finding.details.matched_paths | join('\n') }}</div>
+  </div>
+</div>
+{% endfor %}
 {% endif %}
 
 {# ── Technical Appendix ─────────────────────────────────────── #}
