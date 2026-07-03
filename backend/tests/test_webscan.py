@@ -162,6 +162,45 @@ class TestWebscanSchema:
             assert f['found_by'] == ['webscan']
             assert '/admin/' in findings[0]['evidence'] or \
                    '/config.php' in findings[1]['evidence']
+        # Neither msg here is a directory-listing hit - not verifiable.
+        for f in findings:
+            assert f['verifiable'] is False
+
+    def test_nikto_directory_listing_is_verifiable(self):
+        """A Nikto 'Directory indexing found' hit must be flagged verifiable
+        with an absolute verification_target URL - the source for
+        verify_directory_listing (analysis/verifier.py), per the correction
+        that this is dispatched off Nikto's own text-match, not a dedicated
+        headers.py autoindex check."""
+        import json as _json
+        from unittest.mock import mock_open
+        from tasks import webscan
+
+        nikto_output = _json.dumps([{
+            "host": TEST_DOMAIN,
+            "vulnerabilities": [
+                {"id": "999992", "method": "GET", "url": "/images/",
+                 "msg": "Directory indexing found."},
+                {"id": "999993", "method": "GET", "url": "/old/",
+                 "msg": "Outdated software version detected."},
+            ],
+        }])
+
+        with patch('tasks.webscan.subprocess.run'), \
+             patch('tasks.webscan.os.path.exists', return_value=True), \
+             patch('tasks.webscan.os.unlink'), \
+             patch('builtins.open', mock_open(read_data=nikto_output)):
+            findings = webscan._run_nikto(TEST_SCAN_ID, TEST_DOMAIN,
+                                          f'http://{TEST_DOMAIN}')
+
+        by_msg = {f['title']: f for f in findings}
+        listing = by_msg['Directory indexing found.']
+        assert listing['confidence'] == 'probable'
+        assert listing['verifiable'] is True
+        assert listing['verification_target'] == {'url': f'http://{TEST_DOMAIN}/images/'}
+
+        other = by_msg['Outdated software version detected.']
+        assert other['verifiable'] is False
 
     def test_zap_not_installed_returns_empty_list(self):
         """If ZAP is not installed, _run_zap must return [] gracefully."""
