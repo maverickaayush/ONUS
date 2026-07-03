@@ -71,7 +71,7 @@ alembic revision --autogenerate -m "description"
 | Folder | Responsibility |
 |---|---|
 | `backend/tasks/` | The 5 Celery scanning modules (`recon.py`, `webscan.py`, `ssl_tls.py`, `headers.py`, `owasp.py`) + `scan_orchestrator.py` (dispatch) + `base_task.py` (shared `normalize_finding`/`update_module_status`) |
-| `backend/analysis/` | `aggregator.py` (merge/dedup/collapse/sort findings) + `cvss_scorer.py` (deterministic severity/CVSS/priority/risk_score) + `ollama_client.py` (AI description/remediation prose + fallback) |
+| `backend/analysis/` | `aggregator.py` (merge/dedup/collapse/sort findings) + `verifier.py` (passive re-observation, confidence tiers — Phase 1 only, no Playwright/XSS yet) + `cvss_scorer.py` (deterministic severity/CVSS/priority/risk_score, confidence-shifted) + `ollama_client.py` (AI description/remediation prose + fallback) |
 | `backend/reports/` | `generator.py` (WeasyPrint PDF) + `templates/report.html` (Jinja2, autoescaped) |
 | `backend/routers/` | FastAPI HTTP endpoints (`scan.py`, `report.py`) — validation + DB only, no scanning logic |
 | `backend/models.py` / `schemas.py` | SQLAlchemy ORM (`Scan`, `Report`) / Pydantic request-response schemas |
@@ -103,6 +103,7 @@ finding. Missing it breaks dedup silently.
 | Add a new check to an existing scanner | `backend/tasks/{module}.py` — then add a matching rule in `backend/analysis/cvss_scorer.py`, or the new type falls back to a generic band vector |
 | Change how findings are deduplicated/collapsed | `backend/analysis/aggregator.py` |
 | Change severity/CVSS/priority/risk_score logic | `backend/analysis/cvss_scorer.py` — deterministic only, per the project docs §4.5. Never let Ollama produce these |
+| Add/change a confidence verifier | `backend/analysis/verifier.py` — passive re-observation only (the project docs §4.4b); on failure, demote to `confidence='unverified'` with a note, never drop the finding |
 | Change the AI prompt or model config | `backend/analysis/ollama_client.py` — prompt is byte-for-byte per the project docs §4.6, don't reword it; it must never ask for numbers |
 | Change PDF layout/styling | `backend/reports/templates/report.html` (all CSS inline — WeasyPrint can't load external resources) |
 | Add an API endpoint | `backend/routers/scan.py` or `report.py` |
