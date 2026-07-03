@@ -392,7 +392,7 @@ def _score_and_describe(aggregated: dict, domain: str) -> dict:
         sev = f['severity'] if f['severity'] in counts else 'Informational'
         counts[sev] += 1
 
-    risk_score = compute_risk_score(counts)
+    risk_score = compute_risk_score(findings)
 
     ai_result = analyse(findings, domain)
     descriptions = ai_result.get('descriptions', {})
@@ -456,7 +456,7 @@ def _rule_based_fallback(aggregated: dict) -> dict:
         f['description'] = description
         f['remediation'] = remediation
 
-    risk_score = compute_risk_score(counts)
+    risk_score = compute_risk_score(findings)
     findings.sort(key=lambda f: (f.get('priority', 5), -f.get('cvss_score', 0)))
 
     module_execution = aggregated.get('module_execution', [])
