@@ -45,6 +45,30 @@ against the same site's response headers in browser devtools.
 For `owasp.py`: re-read the code (not just the prompt) to confirm it's only
 sending GET-style read-only payloads.
 
+## Confidence verification (analysis/verifier.py)
+Feed it a hand-built finding with `verifiable=True` and a `verification_target`
+matching one of the Phase 1 types (`open_redirect`, `path_traversal`,
+`exposed_sensitive_file`, or a `nikto_finding` whose evidence contains a
+directory-listing phrase):
+```python
+from analysis.verifier import verify_findings
+findings = [{
+    'type': 'open_redirect', 'severity': 'Medium', 'confidence': 'probable',
+    'verifiable': True,
+    'verification_target': {'url': 'https://testphp.vulnweb.com', 'param': 'next',
+                             'payload': 'https://evil-vapt-test.example.com'},
+}]
+verify_findings(findings, enabled=True)
+print(findings[0]['confidence'], findings[0].get('verification_note'))
+```
+Expect `confidence` to end up `confirmed` or `unverified` (never for the
+finding to disappear from the list — that's the one behavior that must
+never regress, see the project docs §4.4b). Set `config.ENABLE_VERIFICATION=False`
+(or pass `enabled=False`) and confirm it's a full no-op — `requests.get`
+never called, `confidence` stays at its module-assigned baseline.
+`verify_reflected_xss` does not exist yet (Phase 2/Playwright) — don't
+expect `reflected_xss` findings to change confidence in Phase 1.
+
 ## Aggregator + Ollama
 Feed the aggregator a small hand-written list of findings first — confirms
 dedup/sort/OWASP-mapping without burning Ollama calls. Then:
