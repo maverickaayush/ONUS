@@ -102,3 +102,47 @@ failure, not new logic.
 60s measured verification budget + 20s margin = **soft 440s / hard 500s**
 (same 60s soft→hard gap as before). `continue_after_decision` (the other
 caller of `_finalize()`) got the identical bump for consistency.
+
+## Phase 2: `verify_reflected_xss` (Playwright/headless Chromium) timing
+
+Measured the same way as everything else in this file - real numbers, in
+the actual worker Docker container (not the host), against a local fixture
+(a stdlib `http.server` reflecting a GET param unescaped into the body,
+matching the response shape a real reflected-XSS target has).
+
+**Dependency size:** `playwright install --with-deps chromium` downloaded
+**~293MB** (Chrome for Testing 177MB + Chrome Headless Shell 114MB + FFmpeg
+2.3MB) - matches the pre-implementation "~300MB" estimate exactly. The
+final `backend`/`worker` image grew by **~1.56GB** on disk (1.34GB → 2.9GB,
+measured via `docker images`), not just the raw download - `--with-deps`
+also installs Chromium's apt runtime libraries (fonts, GTK/NSS/ALSA, etc.),
+and browser binaries expand once unpacked. Budget for the larger figure
+when sizing registry/deploy storage, not the smaller download number.
+
+**Per-check latency** (fresh browser launch → navigate → dialog-listen →
+close, 15 runs): **median 0.649s, p95 0.678s**. `owasp.py`'s `test_xss`
+returns on its first match (same "one confirmed finding is enough" pattern
+as its other four tests), so at most **one** `reflected_xss` verification
+runs per scan - this cost is folded into the existing Phase 1 60s
+`_TIME_BUDGET_SECONDS` rather than getting its own budget or a separate
+Celery limit bump; 0.65s is negligible against 60s at n=1.
+
+**Memory** (`docker stats` on the worker container): baseline ~318MB RSS →
++3 concurrent headless Chromium instances → ~609MB RSS, i.e. **~97MB per
+instance** - lighter than the "150-300MB per headless Chromium" estimate
+often quoted for GUI/non-headless Chrome. Worst-case concurrent Chromium
+count is bounded by the existing "max 3 concurrent scans" system-wide
+guardrail (the project docs §8), not Celery's raw `worker_concurrency=5` - each
+concurrent scan dispatches at most one XSS check, so 3 concurrent scans
+means at most 3 concurrent Chromium instances (~290MB), not 5.
+
+**Design decisions this measurement drove:**
+- **Fresh browser per check, no pool.** At ≤1 check/scan, a shared/pooled
+  browser instance would add real complexity (fork-safety under Celery's
+  prefork workers, cross-task state leakage) to save ~0.15s of launch
+  time that's never actually paid more than once per scan anyway.
+- **No separate timeout/budget for XSS.** The existing Phase 1 60s budget
+  and 440s/500s Celery limits (above) already comfortably cover it.
+- **No new concurrency guard.** The existing "max 3 concurrent scans" rule
+  already bounds worst-case memory; adding a second, XSS-specific limiter
+  would be solving a problem the system already solves elsewhere.
