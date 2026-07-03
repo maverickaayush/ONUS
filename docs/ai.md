@@ -61,3 +61,44 @@ and PDF generation, too tight given GPU/network variance. Same pattern as
 recon (900s/1080s) and webscan (480s/540s): the stage doing genuinely
 variable-duration work gets a deliberately generous, documented ceiling
 rather than the tight default.
+
+## Phase 1 confidence verification (`analysis/verifier.py`) timing
+
+Same measure-don't-guess discipline as the Ollama timeout above. Two
+measurements, both real:
+
+**Verifier logic overhead (localhost fixture):** a stdlib `http.server`
+fixture standing in for a target with known instances of each Phase 1
+finding type, timed 15 runs per verifier. All four checks (`open_redirect`,
+`path_traversal`, `exposed_sensitive_file`, `directory_listing`) came back
+at **median ~1ms, p95 ~3ms** — negligible. This confirms the verifiers
+themselves add essentially no cost; the real cost is network round-trip
+time to the actual scan target, which a local fixture can't simulate.
+
+**Real network cost (measured against the approved `demo-target.example` target):**
+20 live GET requests mixing root-path and off-path probes (the same
+request shape the verifiers issue - a plain GET, `allow_redirects=False`)
+came back at **median 0.39s, p95 0.93s** per request (one outlier at
+1.7s). This is the real binding constraint. It also **contradicts** the
+original sum-of-medians/rate-limiter design assumption: at this RTT, a
+self-imposed rate limit (e.g. 5 req/s = 200ms spacing) would be *slower*
+than the network already is — so Phase 1 does **not** add an artificial
+throttle. `# ponytail:` note in `verifier.py`'s module docstring calls
+this out — add real rate limiting only if a future fast/local target ever
+floods the verifier; not needed for `demo-target.example`-class targets, where
+network latency alone keeps request rate well under any sane limit.
+
+**Time budget:** `_TIME_BUDGET_SECONDS = 60` in `verifier.py`, dispatched
+sequentially. At the measured p95 (0.93s/request), 60s covers ~65
+verifiable findings — comfortably above realistic Phase 1 counts, since
+`open_redirect`/`path_traversal`/`exposed_sensitive_file`/Nikto
+directory-listing hits are inherently rare after the aggregator's own
+dedup/response-fingerprint collapse (Section 4.4). Findings not reached
+before the budget expires are demoted to `unverified` with a
+`verification_note` — the same mechanism as any other verification
+failure, not new logic.
+
+**Celery limit:** existing `aggregate_and_analyse` soft 360s/hard 420s +
+60s measured verification budget + 20s margin = **soft 440s / hard 500s**
+(same 60s soft→hard gap as before). `continue_after_decision` (the other
+caller of `_finalize()`) got the identical bump for consistency.
