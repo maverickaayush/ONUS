@@ -225,26 +225,93 @@ class TestPriority:
         assert _priority('Informational', 'N', 'N') == 5
 
 
-class TestRiskScore:
+class TestConfidencePriorityShift:
+    """Phase 1 verification (analysis/verifier.py) sets confidence on a
+    finding before it reaches score_finding() - confirmed bumps priority
+    more urgent (capped at 1), unverified bumps it less urgent (capped at
+    5), probable (the default) is a no-op."""
 
-    def test_formula(self):
-        assert compute_risk_score({'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0}) == 0
-        assert compute_risk_score({'Critical': 1, 'High': 0, 'Medium': 0, 'Low': 0}) == 25
-        assert compute_risk_score({'Critical': 2, 'High': 0, 'Medium': 0, 'Low': 0}) == 50
-        assert compute_risk_score({'Critical': 0, 'High': 0, 'Medium': 100, 'Low': 0}) == 100
-        assert compute_risk_score({'Critical': 0, 'High': 0, 'Medium': 30, 'Low': 0}) == 60
+    def test_confirmed_shifts_priority_more_urgent(self):
+        # idor is priority 2 (High) at the default 'probable' confidence.
+        probable = score_finding({'type': 'idor', 'severity': 'Info', 'confidence': 'probable'})
+        confirmed = score_finding({'type': 'idor', 'severity': 'Info', 'confidence': 'confirmed'})
+        assert probable['priority'] == 2
+        assert confirmed['priority'] == 1
+
+    def test_confirmed_priority_is_capped_at_1(self):
+        result = score_finding({'type': 'sqli_error_based', 'severity': 'Info', 'confidence': 'confirmed'})
+        assert result['priority'] == 1  # already priority 1 - shift must not go below 1
+
+    def test_unverified_shifts_priority_less_urgent(self):
+        probable = score_finding({'type': 'idor', 'severity': 'Info', 'confidence': 'probable'})
+        unverified = score_finding({'type': 'idor', 'severity': 'Info', 'confidence': 'unverified'})
+        assert probable['priority'] == 2
+        assert unverified['priority'] == 3
+
+    def test_unverified_priority_is_capped_at_5(self):
+        result = score_finding({'type': 'no_https', 'severity': 'Info', 'confidence': 'unverified'})
+        assert result['priority'] == 5  # already priority 5 - shift must not exceed 5
+
+    def test_missing_confidence_key_defaults_to_probable_no_shift(self):
+        # A finding type Phase 1 doesn't verify (e.g. reflected_xss) never
+        # gets a confidence key overwritten - normalize_finding()'s own
+        # 'probable' default should mean no shift here either.
+        result = score_finding({'type': 'idor', 'severity': 'Info'})
+        assert result['priority'] == 2
+
+
+def _findings(severity, confidence, n):
+    kwargs = {} if confidence is None else {'confidence': confidence}
+    return [{'severity': severity, **kwargs} for _ in range(n)]
+
+
+class TestRiskScore:
+    """compute_risk_score() takes the scored findings list (not a counts
+    dict) since confidence isn't visible at the counts level - Phase 1
+    verification (analysis/verifier.py) weights each finding by confidence."""
+
+    def test_formula_confirmed_matches_original_per_severity_weights(self):
+        # confirmed findings (multiplier 1.0) reproduce the pre-verification
+        # per-severity weights exactly.
+        assert compute_risk_score([]) == 0
+        assert compute_risk_score(_findings('Critical', 'confirmed', 1)) == 25
+        assert compute_risk_score(_findings('Critical', 'confirmed', 2)) == 50
+        assert compute_risk_score(_findings('Medium', 'confirmed', 100)) == 100
+        assert compute_risk_score(_findings('Medium', 'confirmed', 30)) == 60
+
+    def test_confidence_weighting(self):
+        confirmed = compute_risk_score(_findings('High', 'confirmed', 4))
+        probable = compute_risk_score(_findings('High', 'probable', 4))
+        unverified = compute_risk_score(_findings('High', 'unverified', 4))
+        assert confirmed == 40   # 4 * 10 * 1.0
+        assert probable == 30    # 4 * 10 * 0.75
+        assert unverified == 20  # 4 * 10 * 0.5
+        assert confirmed > probable > unverified
+
+    def test_default_confidence_is_probable(self):
+        # A finding with no confidence key (e.g. a type Phase 1 doesn't
+        # verify, like reflected_xss) defaults to the same 'probable'
+        # multiplier normalize_finding() itself defaults to.
+        no_key = compute_risk_score(_findings('High', None, 1))
+        explicit_probable = compute_risk_score(_findings('High', 'probable', 1))
+        assert no_key == explicit_probable
+
+    def test_informational_findings_do_not_contribute(self):
+        assert compute_risk_score(_findings('Informational', 'confirmed', 50)) == 0
 
     def test_flood_of_mediums_cannot_alone_hit_100_from_a_single_source(self):
         # Regression test for the demo-target.example bug: thousands of Medium/Low
         # enumeration findings should not alone produce a 100/100 score
         # the way a real Critical vulnerability would.
-        flood_score = compute_risk_score({'Critical': 0, 'High': 0, 'Medium': 20, 'Low': 0})
-        two_criticals_score = compute_risk_score({'Critical': 2, 'High': 0, 'Medium': 0, 'Low': 0})
+        flood_score = compute_risk_score(_findings('Medium', 'confirmed', 20))
+        two_criticals_score = compute_risk_score(_findings('Critical', 'confirmed', 2))
         assert flood_score < 100
         assert two_criticals_score > flood_score
 
     def test_capped_at_100(self):
-        assert compute_risk_score({'Critical': 10, 'High': 10, 'Medium': 10, 'Low': 10}) == 100
+        many = (_findings('Critical', 'confirmed', 10) + _findings('High', 'confirmed', 10)
+                + _findings('Medium', 'confirmed', 10) + _findings('Low', 'confirmed', 10))
+        assert compute_risk_score(many) == 100
 
 
 class TestDeterminism:

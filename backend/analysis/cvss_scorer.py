@@ -246,6 +246,23 @@ def _priority(severity: str, av: str, pr: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Confidence-driven priority shift (Phase 1 verification, analysis/verifier.py).
+# A confirmed finding (re-verified proof) is more urgent than the severity
+# band alone suggests; an unverified one (failed to reproduce, or never
+# dispatched to a verifier) is less urgent. 'probable' - the default for
+# every finding a verifier didn't touch - is unchanged, so this is a no-op
+# for any finding type Phase 1 doesn't verify yet (e.g. reflected_xss).
+# ---------------------------------------------------------------------------
+
+def _shift_priority_by_confidence(priority: int, confidence: str) -> int:
+    if confidence == 'confirmed':
+        return max(1, priority - 1)
+    if confidence == 'unverified':
+        return min(5, priority + 1)
+    return priority
+
+
+# ---------------------------------------------------------------------------
 # Rule resolution
 # ---------------------------------------------------------------------------
 
@@ -300,6 +317,7 @@ def score_finding(finding: dict, target_context: Optional[dict] = None) -> dict:
     score = trusted_score if trusted_score is not None else base_score(vector)
     severity = severity_from_score(score)
     priority = _priority(severity, metrics['AV'], metrics['PR'])
+    priority = _shift_priority_by_confidence(priority, finding.get('confidence', 'probable'))
     owasp = _owasp_category(ftype) or ''
 
     return {
@@ -314,13 +332,25 @@ def score_finding(finding: dict, target_context: Optional[dict] = None) -> dict:
 # ---------------------------------------------------------------------------
 # Overall risk score - deliberately non-linear on the low end so a flood of
 # Mediums (the demo-target.example bug) cannot alone drive the score to 100.
+#
+# Confidence-weighted (Phase 1 verification): a confirmed finding counts at
+# full severity weight, an unverified one at half - a scan full of
+# unverified Criticals should not read as identically dangerous as one
+# where those Criticals were actually re-confirmed. Signature takes the
+# scored findings list, not counts - confidence isn't visible at the
+# counts-dict level.
 # ---------------------------------------------------------------------------
 
-def compute_risk_score(counts: Dict[str, int]) -> int:
-    raw = (
-        counts.get('Critical', 0) * 25 +
-        counts.get('High', 0) * 10 +
-        counts.get('Medium', 0) * 2 +
-        counts.get('Low', 0) * 0.5
-    )
+_RISK_SEVERITY_WEIGHT = {'Critical': 25, 'High': 10, 'Medium': 2, 'Low': 0.5}
+_RISK_CONFIDENCE_MULTIPLIER = {'confirmed': 1.0, 'probable': 0.75, 'unverified': 0.5}
+
+
+def compute_risk_score(findings: list) -> int:
+    raw = 0.0
+    for f in findings:
+        weight = _RISK_SEVERITY_WEIGHT.get(f.get('severity', 'Informational'), 0)
+        if not weight:
+            continue
+        multiplier = _RISK_CONFIDENCE_MULTIPLIER.get(f.get('confidence', 'probable'), 0.75)
+        raw += weight * multiplier
     return int(min(100, raw))
