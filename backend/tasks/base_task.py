@@ -8,6 +8,40 @@ from celery import Task
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Canonical scan-module list - the single source of truth for "what modules
+# exist." Order matches scan_orchestrator.py's scanning_group() dispatch
+# order. Every place that previously hardcoded its own copy of these 8
+# module names (scan_orchestrator.py's and routers/scan.py's module_statuses
+# initializers, the GET /api/scan/modules endpoint the frontend's module
+# list and stepper are wired to) now derives from this list instead - see
+# the project docs Section 4.3 for where to register a 9th module.
+#
+# icon_hint is a semantic category, not a specific icon file - the frontend
+# maps known hints to bespoke icons and falls back to a generic icon for any
+# hint it doesn't recognize yet, so a new module here renders correctly on
+# day one without a matching frontend code change.
+# ---------------------------------------------------------------------------
+SCAN_MODULES = [
+    {'id': 'recon', 'label': 'Recon', 'icon_hint': 'network',
+     'description': 'DNS enumeration, subdomain discovery, WHOIS lookups, and open port detection.'},
+    {'id': 'webscan', 'label': 'Web Scan', 'icon_hint': 'web',
+     'description': 'Active vulnerability scanning via OWASP ZAP and Nikto, plus JS-aware crawling with Katana.'},
+    {'id': 'ssl_tls', 'label': 'SSL/TLS', 'icon_hint': 'lock',
+     'description': 'Certificate validity, cipher strength, protocol versions, and HSTS enforcement.'},
+    {'id': 'headers', 'label': 'Headers', 'icon_hint': 'list',
+     'description': 'Checks all security response headers: CSP, X-Frame-Options, HSTS, CORS, and more.'},
+    {'id': 'owasp', 'label': 'OWASP Top 10', 'icon_hint': 'alert',
+     'description': 'Tests for injection, broken auth, XSS, IDOR, security misconfigurations, and open redirects.'},
+    {'id': 'tech_fingerprint', 'label': 'Tech Fingerprint', 'icon_hint': 'fingerprint',
+     'description': 'Identifies CMS, frameworks, and outdated software; detects WAF presence.'},
+    {'id': 'nuclei', 'label': 'Nuclei CVE Scan', 'icon_hint': 'target',
+     'description': 'Template-based scanning for known CVEs, misconfigurations, and exposed panels.'},
+    {'id': 'enumeration', 'label': 'Dir Enumeration', 'icon_hint': 'folder',
+     'description': 'Brute-forces hidden files, directories, and admin panels via FFUF.'},
+]
+SCAN_MODULE_IDS = [m['id'] for m in SCAN_MODULES]
+
 # Several ProjectDiscovery/CLI tools (subfinder, nuclei, sslscan, wafw00f)
 # color their --version/-version output even with stdout piped to a
 # non-tty subprocess - the raw escape bytes otherwise leak straight into

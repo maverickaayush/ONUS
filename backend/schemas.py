@@ -1,5 +1,5 @@
 from pydantic import BaseModel, field_validator, field_serializer
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Literal
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -65,6 +65,10 @@ class ScanStatusResponse(BaseModel):
     progress: int
     started_at: Optional[datetime]
     modules: Dict[str, str]
+    # Only populated while status == 'awaiting_user_decision' - the operator
+    # decision modal's reason for existing is showing exactly what failed.
+    module_errors: Optional[Dict[str, str]] = None
+    can_retry: Optional[bool] = None
 
     @field_serializer('started_at')
     def _serialize_started_at(self, dt: Optional[datetime]) -> Optional[str]:
@@ -83,6 +87,21 @@ class ScanStatusResponse(BaseModel):
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.isoformat()
+
+
+class ScanDecisionRequest(BaseModel):
+    action: Literal['retry', 'continue', 'cancel']
+
+
+class ScanModuleInfo(BaseModel):
+    id: str
+    label: str
+    icon_hint: str
+    description: str
+
+
+class ScanModulesResponse(BaseModel):
+    modules: List[ScanModuleInfo]
 
 
 class FindingSchema(BaseModel):

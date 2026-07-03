@@ -7,10 +7,24 @@ import logging
 
 from database import get_db
 from models import Scan, ScanStatus
-from schemas import ScanRequest, ScanResponse, ScanStatusResponse, FindingsResponse
+from schemas import (
+    ScanRequest, ScanResponse, ScanStatusResponse, FindingsResponse,
+    ScanDecisionRequest, ScanModulesResponse,
+)
+from tasks.base_task import SCAN_MODULES, SCAN_MODULE_IDS
 
 router = APIRouter(prefix="/api", tags=["scan"])
 logger = logging.getLogger(__name__)
+
+# A hard Celery time_limit SIGKILLs a module mid-task with no chance to report
+# back, so the chord waiting on it never fires and the scan hangs at
+# 'running' forever. Nothing can catch that from inside the task, so this is
+# an outside check: if a scan is older than every module could plausibly take
+# even in the worst case, the next status poll gives up on it instead of
+# leaving it stuck. Deadline = slowest single module's hard time_limit
+# (recon, 1080s) + aggregate_and_analyse's hard time_limit (420s) + buffer,
+# since modules run in parallel via group(), not sequentially.
+STUCK_SCAN_DEADLINE = timedelta(seconds=1080 + 420 + 120)
 
 
 @router.post("/scan", response_model=ScanResponse, status_code=202)
@@ -37,13 +51,7 @@ def create_scan(request: ScanRequest, db: Session = Depends(get_db)):
         authorized=request.authorized,
         notes=request.notes,
         status=ScanStatus.queued,
-        module_statuses={
-            "recon": "queued",
-            "webscan": "queued",
-            "ssl_tls": "queued",
-            "headers": "queued",
-            "owasp": "queued",
-        },
+        module_statuses={module_id: "queued" for module_id in SCAN_MODULE_IDS},
     )
     db.add(scan)
     db.commit()
@@ -64,11 +72,35 @@ def create_scan(request: ScanRequest, db: Session = Depends(get_db)):
     return ScanResponse(job_id=scan.id, status=scan.status.value, domain=scan.domain)
 
 
+@router.get("/scan/modules", response_model=ScanModulesResponse)
+def get_scan_modules():
+    """
+    Canonical list of scanning modules (id/label/icon_hint), sourced from
+    tasks/base_task.py's SCAN_MODULES - the same constant that drives
+    module_statuses initialization above and scan_orchestrator.py's actual
+    dispatch. The frontend's landing-page "Covers:" badges and the Scan
+    Status page's module list both fetch this instead of hardcoding their
+    own copy, so they can never drift from what actually runs.
+    """
+    return ScanModulesResponse(modules=SCAN_MODULES)
+
+
 @router.get("/scan/{scan_id}/status", response_model=ScanStatusResponse)
 def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
+
+    if scan.status in (ScanStatus.queued, ScanStatus.running, ScanStatus.analysing):
+        reference_time = scan.started_at or scan.created_at
+        if reference_time and datetime.utcnow() - reference_time > STUCK_SCAN_DEADLINE:
+            logger.error(
+                "Scan %s stuck in %s past deadline (reference=%s) - marking failed, "
+                "likely a hard-timeout SIGKILL on one of the scanning modules",
+                scan.id, scan.status.value, reference_time,
+            )
+            scan.status = ScanStatus.failed
+            db.commit()
 
     status_order = {
         ScanStatus.queued: 0,
@@ -83,9 +115,24 @@ def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
     base_progress = status_order.get(scan.status, 0)
 
     if scan.status == ScanStatus.running:
-        progress = 20 + int((completed_modules / 5) * 60)
+        progress = 20 + int((completed_modules / len(SCAN_MODULE_IDS)) * 60)
     else:
         progress = base_progress
+
+    module_errors = None
+    can_retry = None
+    if scan.status == ScanStatus.awaiting_user_decision:
+        from tasks.scan_orchestrator import _failed_modules, _can_retry
+
+        stash = scan.raw_findings or {}
+        results = stash.get("module_results", [])
+        retry_counts = stash.get("retry_counts", {})
+        failed = _failed_modules(results)
+        module_errors = {
+            r["module"]: r.get("error") or f"{r.get('status')} with no error detail"
+            for r in results if isinstance(r, dict) and r.get("module") in failed
+        }
+        can_retry = _can_retry(failed, retry_counts)
 
     return ScanStatusResponse(
         job_id=scan.id,
@@ -94,7 +141,38 @@ def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
         progress=progress,
         started_at=scan.started_at,
         modules=module_statuses,
+        module_errors=module_errors,
+        can_retry=can_retry,
     )
+
+
+@router.post("/scan/{scan_id}/decision", response_model=ScanStatusResponse)
+def submit_scan_decision(scan_id: UUID, request: ScanDecisionRequest, db: Session = Depends(get_db)):
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.status != ScanStatus.awaiting_user_decision:
+        raise HTTPException(status_code=409, detail="Scan is not awaiting a decision")
+
+    # Dispatched as Celery tasks, never run inline - retry re-runs scanning
+    # modules and continue/finalise runs Ollama + PDF generation, both far
+    # too slow for a request/response cycle.
+    from tasks.scan_orchestrator import retry_failed_modules, continue_after_decision, _failed_modules, _can_retry
+
+    if request.action == "retry":
+        stash = scan.raw_findings or {}
+        failed = _failed_modules(stash.get("module_results", []))
+        if not _can_retry(failed, stash.get("retry_counts", {})):
+            raise HTTPException(status_code=409, detail="No retry-eligible modules left")
+        retry_failed_modules.delay(str(scan.id), scan.domain)
+    elif request.action == "continue":
+        continue_after_decision.delay(str(scan.id), scan.domain)
+    elif request.action == "cancel":
+        scan.status = ScanStatus.cancelled
+        db.commit()
+
+    db.refresh(scan)
+    return get_scan_status(scan_id, db)
 
 
 @router.get("/scan/{scan_id}/findings", response_model=FindingsResponse)
