@@ -77,11 +77,21 @@ def normalize_finding(
     severity: str = 'Info',
     cvss: float = 0.0,
     target: str = '',
+    confidence: str = 'probable',
+    verifiable: bool = False,
+    verification_target: Optional[dict] = None,
 ) -> dict:
     """
     Return a normalized finding dict matching the Section 4.3 schema.
     Every scanning module must use this helper - the aggregator depends on
     the presence of found_by and the exact field names.
+
+    confidence: 'confirmed' | 'probable' | 'unverified' - the module's own
+    baseline call. 'confirmed' means the module already has definitive proof
+    (e.g. a DBMS error string) with no verifier dispatch needed. 'probable'
+    (default) is the normal case for a module-level signal that could be a
+    false positive. verifiable/verification_target opt a finding into the
+    verify_findings() re-observation stage (analysis/verifier.py).
     """
     return {
         'module': module,
@@ -93,6 +103,9 @@ def normalize_finding(
         'cvss': cvss,
         'target': target,
         'found_by': [module],
+        'confidence': confidence,
+        'verifiable': verifiable,
+        'verification_target': verification_target,
     }
 
 

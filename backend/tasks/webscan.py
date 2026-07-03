@@ -1,11 +1,13 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Tuple
+from urllib.parse import urljoin
 
 import psutil
 import requests
@@ -21,6 +23,11 @@ from tasks.celery_app import app
 
 logger = logging.getLogger(__name__)
 MODULE = 'webscan'
+
+# Mirrors analysis/cvss_scorer.py's _DIRECTORY_LISTING_RE - kept as a
+# separate copy rather than a shared import (tasks/ modules never import
+# analysis/, only scan_orchestrator.py bridges the two).
+_NIKTO_DIRECTORY_LISTING_RE = re.compile(r'directory index|autoindex|index of /', re.IGNORECASE)
 
 # ZAP risk string → normalized severity
 _ZAP_RISK_MAP = {
@@ -433,6 +440,21 @@ def _run_nikto(scan_id: str, domain: str, target_url: str) -> List[dict]:
                 method = item.get('method', '')
                 parts = [p for p in (method, uri, msg) if p]
                 evidence = ' | '.join(parts) if parts else str(item)
+
+                # Directory-listing verifiability - mirrors the same
+                # text-match analysis/cvss_scorer.py's _resolve_vector()
+                # uses to reclassify this finding's severity later. Set here
+                # (generation time) rather than in the scorer, consistent
+                # with how owasp.py/enumeration.py flag their own verifiable
+                # findings.
+                verify_kwargs = {}
+                if uri and _NIKTO_DIRECTORY_LISTING_RE.search(msg):
+                    verify_kwargs = {
+                        'confidence': 'probable',
+                        'verifiable': True,
+                        'verification_target': {'url': urljoin(target_url, uri)},
+                    }
+
                 findings.append(normalize_finding(
                     module=MODULE,
                     tool='nikto',
@@ -441,6 +463,7 @@ def _run_nikto(scan_id: str, domain: str, target_url: str) -> List[dict]:
                     evidence=evidence,
                     severity='Low',
                     target=domain,
+                    **verify_kwargs,
                 ))
 
     except subprocess.TimeoutExpired:

@@ -150,6 +150,16 @@ def _check_login_form(target: str, path: str) -> bool:
 # (analysis/cvss_scorer.py) is the deterministic source of truth downstream.
 # ---------------------------------------------------------------------------
 
+def _matched_sensitive_file(path: str) -> Optional[str]:
+    """Return the _SENSITIVE_FILES entry `path` matches, or None. Shared by
+    _classify() (severity) and _run_ffuf() (verification_target filename)."""
+    p = f'/{path.lstrip("/")}'.lower()
+    for s in _SENSITIVE_FILES:
+        if p.endswith(f'/{s}') or p == f'/{s}':
+            return s
+    return None
+
+
 def _classify(path: str, status_code: int,
               login_form_detected: Optional[bool] = None) -> Tuple[str, str, float]:
     """Return (type, severity, cvss) for one FFUF hit."""
@@ -256,6 +266,17 @@ def _run_ffuf(scan_id: str, target: str, domain: str) -> List[dict]:
             if type_ == 'exposed_sensitive_file_denied':
                 continue
 
+            verify_kwargs = {}
+            if type_ == 'exposed_sensitive_file':
+                verify_kwargs = {
+                    'confidence': 'probable',
+                    'verifiable': True,
+                    'verification_target': {
+                        'url': f'{target}/{path.lstrip("/")}',
+                        'filename': _matched_sensitive_file(path),
+                    },
+                }
+
             finding = normalize_finding(
                 module=MODULE, tool='ffuf', type_=type_,
                 title=f'Path {path} returned HTTP {status_code}',
@@ -263,6 +284,7 @@ def _run_ffuf(scan_id: str, target: str, domain: str) -> List[dict]:
                 severity=severity,
                 cvss=cvss,
                 target=domain,
+                **verify_kwargs,
             )
             finding['http_status'] = status_code
             finding['http_size'] = length
