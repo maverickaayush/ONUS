@@ -8,9 +8,13 @@ scanning module already used (owasp.py/enumeration.py/webscan.py) and checks
 whether the same evidence still reproduces. No verifier may escalate to a
 new exploitation technique, write data, or use a payload the source module
 didn't already send once during the scan. If you're adding a verifier and
-it does anything beyond "GET the same thing again and compare the response",
-it does not belong in this file - the project docs Section 8's non-destructive
-guardrail applies here exactly as it does to the scanning modules.
+it does anything beyond "GET (or headless-browser-navigate to) the same
+thing again and compare the response", it does not belong in this file -
+the project docs Section 8's non-destructive guardrail applies here exactly as it
+does to the scanning modules. verify_reflected_xss (Phase 2) is the one
+verifier that uses a browser instead of raw `requests` - it still only
+re-issues owasp.py's own already-sent payload and observes whether the
+same alert() call fires, nothing more.
 
 On failure to reproduce (wrong response, timeout, connection error, or
 missing verification_target data), a finding is demoted to
@@ -23,9 +27,11 @@ import logging
 import re
 import time
 from typing import List
+from urllib.parse import urlencode
 
 import requests
 import urllib3
+from playwright.sync_api import sync_playwright
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -37,7 +43,18 @@ _TIMEOUT = 15
 # p95 0.93s per verification request. 60s covers ~65 findings even at the p95
 # rate, comfortably above realistic Phase-1-verifiable finding counts (these
 # types are inherently rare after the aggregator's own dedup/collapse).
+# Phase 2's verify_reflected_xss shares this same budget rather than getting
+# its own - measured at ~0.65s/check (docs/ai.md) and dispatched at most
+# once per scan (test_xss returns on its first match), it's negligible
+# against the 60s ceiling.
 _TIME_BUDGET_SECONDS = 60
+
+# Playwright navigation timeout for the XSS re-check, plus a short buffer
+# after load to catch a payload whose alert() fires asynchronously (the
+# onerror=alert(...) payload fires on the image's error event, not
+# synchronously during parse like the <script> payload does).
+_XSS_NAV_TIMEOUT_MS = 15000
+_XSS_POST_LOAD_WAIT_MS = 300
 
 _TRAVERSAL_SENTINELS = ('root:x:0:', 'root:x:', 'root:!:', '/bin/bash', '/bin/sh')
 
@@ -189,6 +206,57 @@ def verify_sqli_time_based(finding: dict) -> dict:
         return _demote(finding, f'Verification request failed: {e}')
 
 
+def _xss_payload_fires(url: str, params: dict, marker: str) -> bool:
+    """Launch a fresh headless Chromium instance, navigate to the exact
+    same request owasp.py's test_xss already sent, and check whether the
+    payload's own alert(marker) call actually executes as script - a
+    materially stronger signal than substring-matching the response text,
+    since a CSP or output-encoding change can leave the string reflected
+    but non-executing. Fresh browser per call (not a shared/pooled
+    instance): at most one reflected_xss finding per scan (test_xss
+    returns on its first match), so pooling buys nothing and avoids any
+    cross-task state leakage under Celery's prefork workers."""
+    fired = {'v': False}
+
+    def _on_dialog(dialog):
+        fired['v'] = marker in (dialog.message or '')
+        dialog.dismiss()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=['--no-sandbox', '--disable-gpu'])
+        try:
+            page = browser.new_page()
+            page.on('dialog', _on_dialog)
+            page.goto(f'{url}?{urlencode(params)}', timeout=_XSS_NAV_TIMEOUT_MS)
+            page.wait_for_timeout(_XSS_POST_LOAD_WAIT_MS)
+        finally:
+            browser.close()
+
+    return fired['v']
+
+
+def verify_reflected_xss(finding: dict) -> dict:
+    """
+    Phase 2. Source: owasp.py's test_xss. The only Phase 1/2 verifier that
+    uses a browser instead of raw `requests` - see this module's top
+    docstring for why that's still within the passive-re-observation
+    constraint (same payload, same request, just observed via Chromium).
+    """
+    vt = finding.get('verification_target') or {}
+    url, params, marker = vt.get('url'), vt.get('params'), vt.get('marker')
+    if not (url and params and marker):
+        return _demote(finding, 'Verification skipped - missing verification_target data.')
+    try:
+        if _xss_payload_fires(url, params, marker):
+            return _promote(finding, 'Headless-browser re-check confirmed the injected payload '
+                                      'executed as script (alert dialog fired).')
+        return _demote(finding, 'Headless-browser re-check did not observe the payload executing - '
+                                 'target may be patched, a Content-Security-Policy may block it, or '
+                                 'the reflection does not actually execute as script.')
+    except Exception as e:
+        return _demote(finding, f'Headless-browser verification failed: {e}')
+
+
 # Keyed by finding `type` - verification runs before cvss_scorer.py, so a
 # Nikto directory-listing hit still has type='nikto_finding' at this stage
 # (the 'directory_listing_enabled' type only exists as the scorer's own
@@ -199,6 +267,7 @@ _VERIFIERS = {
     'exposed_sensitive_file': verify_sensitive_file_exposure,
     'nikto_finding': verify_directory_listing,
     'sqli_time_based': verify_sqli_time_based,
+    'reflected_xss': verify_reflected_xss,
 }
 
 
