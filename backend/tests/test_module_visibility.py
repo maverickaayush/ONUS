@@ -61,7 +61,6 @@ class TestGetToolVersionAnsiStripping:
         'nuclei': (b'[\x1b[34mINF\x1b[0m] Nuclei Engine Version: v3.3.7',
                    '[INF] Nuclei Engine Version: v3.3.7'),
         'sslscan': (b'\x1b[1;34m\t\t2.0.7', '2.0.7'),
-        'wafw00f': (b'\x1b[1;97m______', '______'),
     }
 
     @pytest.mark.parametrize('tool', list(_REAL_SAMPLES.keys()))
@@ -88,6 +87,89 @@ class TestGetToolVersionAnsiStripping:
         with patch('tasks.base_task.shutil.which', return_value='/usr/bin/faketool'), \
              patch('tasks.base_task.subprocess.run', return_value=mock_result):
             assert get_tool_version('faketool', '--version') == 'unknown'
+
+
+class TestGetToolVersionBannerSkipping:
+    """httpx/naabu/katana/wafw00f print a multi-line ASCII-art banner BEFORE
+    their real version line - taking line 0 (the pre-fix behavior) grabs a
+    banner fragment instead of the version. Real bytes captured by running
+    each tool inside the actual worker container, not hand-typed."""
+
+    _REAL_BANNER_SAMPLES = {
+        'httpx': (
+            b'\n    __    __  __       _  __\n   / /_  / /_/ /_____ | |/ /\n'
+            b'  / __ \\/ __/ __/ __ \\|   /\n / / / / /_/ /_/ /_/ /   |\n'
+            b'/_/ /_/\\__/\\__/ .___/_/|_|\n             /_/\n\n\t\tprojectdiscovery.io\n\n'
+            b'[\x1b[34mINF\x1b[0m] Current Version: v1.6.9\n',
+            '[INF] Current Version: v1.6.9',
+        ),
+        'naabu': (
+            b'\n                  __\n  ___  ___  ___ _/ /  __ __\n'
+            b' / _ \\/ _ \\/ _ \\/ _ \\/ // /\n/_//_/\\_,_/\\_,_/_.__/\\_,_/\n\n'
+            b'\t\tprojectdiscovery.io\n\n[\x1b[34mINF\x1b[0m] Current Version: 2.3.3\n',
+            '[INF] Current Version: 2.3.3',
+        ),
+        'katana': (
+            b"\n   __        __                \n  / /_____ _/ /____ ____  ___ _\n"
+            b" /  '_/ _  / __/ _  / _ \\/ _  /\n/_/\\_\\\\_,_/\\__/\\_,_/_//_/\\_,_/\t\t\t\t\t\t\t \n\n"
+            b'\t\tprojectdiscovery.io\n\n[\x1b[34mINF\x1b[0m] Current version: v1.1.2\n',
+            '[INF] Current version: v1.1.2',
+        ),
+        'wafw00f': (
+            b'\n                \x1b[1;97m______\n               \x1b[1;97m/      \\\n'
+            b'              \x1b[1;97m(  W00f! )\n               \x1b[1;97m\\  ____/\n'
+            b'               \x1b[1;97m,,    \x1b[1;92m__            \x1b[1;93m404 Hack Not Found\n'
+            b'           \x1b[1;96m|`-.__   \x1b[1;92m/ /                     \x1b[1;91m __     __\n'
+            b'           \x1b[1;96m/"  _/  \x1b[1;92m/_/                       \x1b[1;91m\\ \\   / /\n'
+            b'          \x1b[1;94m*===*    \x1b[1;92m/                          \x1b[1;91m\\ \\_/ /  \x1b[1;93m405 Not Allowed\n'
+            b'         \x1b[1;96m/     )__//                           \x1b[1;91m\\   /\n'
+            b'    \x1b[1;96m/|  /     /---`                        \x1b[1;93m403 Forbidden\n'
+            b'    \x1b[1;96m\\\\/`   \\ |                                 \x1b[1;91m/ _ \\\n'
+            b'    \x1b[1;96m`\\    /_\\\\_              \x1b[1;93m502 Bad Gateway  \x1b[1;91m/ / \\ \\  \x1b[1;93m500 Internal Error\n'
+            b'      \x1b[1;96m`_____``-`                             \x1b[1;91m/_/   \\_\\\n\n'
+            b'                        \x1b[1;96m~ WAFW00F : \x1b[1;94mv2.2.0 ~\x1b[1;97m\n'
+            b'        The Web Application Firewall Fingerprinting Toolkit\n    \x1b[0m\n'
+            b'[+] The version of WAFW00F you have is \x1b[1;94mv2.2.0\x1b[0m\n'
+            b'[+] WAFW00F is provided under the \x1b[1;96mBSD 3-Clause\x1b[0m license.\n',
+            '~ WAFW00F : v2.2.0 ~',
+        ),
+    }
+
+    @pytest.mark.parametrize('tool', list(_REAL_BANNER_SAMPLES.keys()))
+    def test_real_version_line_found_past_the_banner(self, tool):
+        raw_bytes, expected = self._REAL_BANNER_SAMPLES[tool]
+        mock_result = MagicMock(stdout=raw_bytes, stderr=b'')
+        with patch('tasks.base_task.shutil.which', return_value=f'/usr/bin/{tool}'), \
+             patch('tasks.base_task.subprocess.run', return_value=mock_result):
+            assert get_tool_version(tool, '-version') == expected
+
+    @pytest.mark.parametrize('tool,raw,expected', [
+        ('nmap', b'Nmap version 7.93 ( https://nmap.org )\nPlatform: x86_64\n',
+         'Nmap version 7.93 ( https://nmap.org )'),
+        ('whois', b'Version 5.5.17.\n\nReport bugs to <md+whois@linux.it>.\n', 'Version 5.5.17.'),
+        ('nikto', b'Nikto 2.6.0 (LW 2.5)\n', 'Nikto 2.6.0 (LW 2.5)'),
+        ('ffuf', b'ffuf version: 2.1.0\n', 'ffuf version: 2.1.0'),
+        ('amass', b'v4.2.0\n', 'v4.2.0'),
+    ])
+    def test_tools_whose_version_was_already_on_line_0_are_unaffected(self, tool, raw, expected):
+        """Regression guard: tools that already worked correctly before
+        this fix (their version line already IS line 0) must not change."""
+        mock_result = MagicMock(stdout=raw, stderr=b'')
+        with patch('tasks.base_task.shutil.which', return_value=f'/usr/bin/{tool}'), \
+             patch('tasks.base_task.subprocess.run', return_value=mock_result):
+            assert get_tool_version(tool, '--version') == expected
+
+    def test_no_line_looks_like_a_version_falls_back_to_line_0(self):
+        """whatweb's real failure mode in this environment: a plain error
+        message with no version-like line anywhere. Must fall back to the
+        first line (still informative), not 'unknown' - the tool DID run
+        and DID produce output, just not a version."""
+        mock_result = MagicMock(
+            stdout=b'WhatWeb is not installed and is missing dependencies.\n', stderr=b'')
+        with patch('tasks.base_task.shutil.which', return_value='/usr/bin/whatweb'), \
+             patch('tasks.base_task.subprocess.run', return_value=mock_result):
+            assert get_tool_version('whatweb', '--version') == \
+                'WhatWeb is not installed and is missing dependencies.'
 
 
 class TestToolVersionsMergeInAggregator:
