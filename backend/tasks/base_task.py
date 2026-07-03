@@ -1,4 +1,5 @@
 import logging
+import re
 import shutil
 import subprocess
 from typing import Optional
@@ -6,6 +7,13 @@ from typing import Optional
 from celery import Task
 
 logger = logging.getLogger(__name__)
+
+# Several ProjectDiscovery/CLI tools (subfinder, nuclei, sslscan, wafw00f)
+# color their --version/-version output even with stdout piped to a
+# non-tty subprocess - the raw escape bytes otherwise leak straight into
+# the report's Tool Versions table. Matches any CSI sequence (SGR color
+# is the common case, but this covers the general form), not just 'm'.
+_ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
 
 def get_tool_version(tool: str, *version_flags: str, timeout: int = 5) -> str:
@@ -20,7 +28,8 @@ def get_tool_version(tool: str, *version_flags: str, timeout: int = 5) -> str:
     try:
         r = subprocess.run([tool, *version_flags], capture_output=True,
                             timeout=timeout, check=False)
-        out = (r.stdout or r.stderr or b'').decode(errors='ignore').strip()
+        raw = (r.stdout or r.stderr or b'').decode(errors='ignore')
+        out = _ANSI_ESCAPE_RE.sub('', raw).strip()
         return out.splitlines()[0] if out else 'unknown'
     except Exception:
         return 'unknown'
