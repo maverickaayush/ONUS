@@ -15,12 +15,23 @@ logger = logging.getLogger(__name__)
 # is the common case, but this covers the general form), not just 'm'.
 _ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
+# httpx/naabu/katana/wafw00f print a multi-line ASCII-art banner BEFORE
+# their real version line (confirmed by running each inside the worker
+# container) - taking line 0 grabs a banner fragment instead. Matches
+# either the word "version" (subfinder/nuclei/httpx/naabu/katana/nmap/
+# whois/ffuf/wafw00f all say it somewhere in their real version line) or
+# a bare dotted-number token (sslscan/nikto/amass, which don't). ASCII-art
+# side-decorations (e.g. wafw00f's "404 Hack Not Found") never match
+# either - no literal dot between digits, no literal word "version".
+_VERSION_LINE_RE = re.compile(r'version|\bv?\d+\.\d+', re.IGNORECASE)
+
 
 def get_tool_version(tool: str, *version_flags: str, timeout: int = 5) -> str:
     """
-    Return the first line of `tool <version_flags>` output, 'not installed'
-    if the binary isn't on PATH, or 'unknown' if it ran but produced nothing
-    parseable. Every scanning module uses this to build its own
+    Return the first line of `tool <version_flags>` output that actually
+    looks like a version string (see _VERSION_LINE_RE), falling back to
+    the literal first line if no line matches, or 'not installed'/'unknown'
+    as before. Every scanning module uses this to build its own
     tool_versions dict - call once per module run, not once per finding.
     """
     if not shutil.which(tool):
@@ -30,7 +41,12 @@ def get_tool_version(tool: str, *version_flags: str, timeout: int = 5) -> str:
                             timeout=timeout, check=False)
         raw = (r.stdout or r.stderr or b'').decode(errors='ignore')
         out = _ANSI_ESCAPE_RE.sub('', raw).strip()
-        return out.splitlines()[0] if out else 'unknown'
+        if not out:
+            return 'unknown'
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        if not lines:
+            return 'unknown'
+        return next((l for l in lines if _VERSION_LINE_RE.search(l)), lines[0])
     except Exception:
         return 'unknown'
 
