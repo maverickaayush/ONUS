@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from celery import group, chord
 from tasks.celery_app import app
+from tasks.base_task import SCAN_MODULE_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +46,7 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
             return
         scan.status = ScanStatus.running
         scan.started_at = datetime.utcnow()
-        scan.module_statuses = {
-            'recon': 'queued',
-            'webscan': 'queued',
-            'ssl_tls': 'queued',
-            'headers': 'queued',
-            'owasp': 'queued',
-            'tech_fingerprint': 'queued',
-            'nuclei': 'queued',
-            'enumeration': 'queued',
-        }
+        scan.module_statuses = {module_id: 'queued' for module_id in SCAN_MODULE_IDS}
         db.commit()
         logger.info("scan_orchestrator: scan %s started for %s", scan_id, domain)
     finally:
