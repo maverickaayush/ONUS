@@ -134,6 +134,15 @@ def test_xss(target: str, domain: str) -> List[dict]:
                             evidence=f'Parameter "{param}" reflects '
                                      f'payload {payload[:60]!r} verbatim',
                             severity='High', target=domain,
+                            # Phase 2: both payloads tried here (payloads[:2])
+                            # call alert(marker) - verify_reflected_xss
+                            # (analysis/verifier.py) re-issues this exact
+                            # request in headless Chromium and checks whether
+                            # the alert dialog actually fires, not just
+                            # whether the string is present in the response.
+                            confidence='probable', verifiable=True,
+                            verification_target={'url': target, 'params': injected,
+                                                  'payload': payload, 'marker': marker},
                         ))
                         return findings
                 except requests.RequestException:
