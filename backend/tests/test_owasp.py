@@ -56,6 +56,9 @@ class TestOwaspSchema:
         assert findings[0]['type'] == 'sqli_error_based'
         assert REQUIRED_FIELDS <= set(findings[0].keys())
         assert findings[0]['found_by'] == [MODULE]
+        # A DBMS error string IS the proof - confirmed directly, no verifier dispatch.
+        assert findings[0]['confidence'] == 'confirmed'
+        assert findings[0]['verifiable'] is False
 
     def test_sqli_no_finding_on_clean_response(self):
         """Clean response must produce no SQLi findings."""
@@ -86,6 +89,10 @@ class TestOwaspSchema:
         assert findings[0]['severity'] == 'High'
         assert findings[0]['type'] == 'reflected_xss'
         assert findings[0]['found_by'] == [MODULE]
+        # Phase 2 (Playwright/XSS verification) not implemented yet - stays
+        # at its module-assigned baseline confidence, not verifiable.
+        assert findings[0]['confidence'] == 'probable'
+        assert findings[0]['verifiable'] is False
 
     def test_xss_no_finding_on_escaped_response(self):
         """HTML-escaped payload must NOT produce an XSS finding."""
@@ -119,6 +126,32 @@ class TestOwaspSchema:
         assert findings[0]['type'] == 'open_redirect'
         assert findings[0]['severity'] == 'Medium'
         assert findings[0]['found_by'] == [MODULE]
+        assert findings[0]['confidence'] == 'probable'
+        assert findings[0]['verifiable'] is True
+        vt = findings[0]['verification_target']
+        assert vt['payload'] == 'https://evil-vapt-test.example.com'
+        assert vt['param'] and vt['url']
+
+    def test_path_traversal_via_url_path_detected(self):
+        """/etc/passwd content in response to a direct URL traversal probe
+        must produce a Critical finding with a verification_target."""
+        from tasks.owasp import test_path_traversal
+
+        def mock_get(url, **kwargs):
+            if 'etc/passwd' in url:
+                return _mock_resp('root:x:0:0:root:/root:/bin/bash')
+            return _mock_resp('clean')
+
+        with patch('tasks.owasp.requests.get', side_effect=mock_get):
+            findings = test_path_traversal(f'https://{TEST_DOMAIN}', TEST_DOMAIN)
+
+        assert findings, "passwd content must produce a finding"
+        assert findings[0]['type'] == 'path_traversal'
+        assert findings[0]['severity'] == 'Critical'
+        assert findings[0]['confidence'] == 'probable'
+        assert findings[0]['verifiable'] is True
+        assert findings[0]['verification_target']['param'] is None
+        assert 'etc/passwd' in findings[0]['verification_target']['url']
 
     def test_error_disclosure_detected(self):
         """Stack trace in 500 response must produce a Medium finding."""

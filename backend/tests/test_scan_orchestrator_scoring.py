@@ -16,8 +16,10 @@ from unittest.mock import patch
 import pytest
 
 from analysis.aggregator import aggregate
+from analysis.verifier import verify_findings
 
 DETERMINISTIC_FIELDS = ('severity', 'cvss_score', 'cvss_vector', 'priority', 'owasp_category')
+VERIFICATION_DETERMINISTIC_FIELDS = DETERMINISTIC_FIELDS + ('confidence',)
 
 
 def _raw_findings():
@@ -79,6 +81,78 @@ class TestPipelineDeterminism:
 
         assert result['risk_score'] < 100
         assert len(result['findings']) < 20  # flood collapsed, not 202 findings
+
+
+def _raw_findings_with_verifiable():
+    """One open_redirect finding carrying a verification_target, plus the
+    baseline mix, so aggregate -> verify -> score exercises the full
+    Phase 1 pipeline stage order (the project docs: aggregate stays pure, verify
+    is its own stage before scoring)."""
+    findings, extra = _raw_findings()[0], _raw_findings()[1]
+    verifiable = {
+        'module': 'owasp', 'tool': 'owasp', 'type': 'open_redirect',
+        'title': 'Open Redirect vulnerability', 'evidence': 'Parameter "next" redirects',
+        'severity': 'Medium', 'cvss': 0.0, 'target': 'demo-target.example', 'found_by': ['owasp'],
+        'confidence': 'probable', 'verifiable': True,
+        'verification_target': {'url': 'https://demo-target.example', 'param': 'next',
+                                 'payload': 'https://evil-vapt-test.example.com'},
+    }
+    return [findings, extra + [verifiable]]
+
+
+class TestVerificationDeterminism:
+    """analysis/verifier.py sits between aggregate() and score_finding() in
+    _finalize() (scan_orchestrator.py). Running the same raw findings +
+    the same (mocked) verification HTTP responses through the full
+    aggregate -> verify -> score pipeline twice must produce byte-identical
+    output, same guarantee as pre-verification determinism, now including
+    the new `confidence` field."""
+
+    def _mock_redirect_resp(self):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.status_code = 302
+        resp.headers = {'Location': 'https://evil-vapt-test.example.com/pwned'}
+        return resp
+
+    def test_enabled_true_is_byte_identical_across_two_runs(self):
+        from tasks.scan_orchestrator import _score_and_describe
+
+        with patch('analysis.ollama_client.analyse') as mock_analyse, \
+             patch('analysis.verifier.requests.get', return_value=self._mock_redirect_resp()):
+            mock_analyse.return_value = {
+                'executive_summary': 'x', 'descriptions': {}, 'ai_unavailable': True,
+            }
+
+            aggregated_1 = aggregate(_raw_findings_with_verifiable())
+            aggregated_1['findings'] = verify_findings(aggregated_1['findings'], enabled=True)
+            result_1 = _score_and_describe(aggregated_1, 'demo-target.example')
+
+            aggregated_2 = aggregate(_raw_findings_with_verifiable())
+            aggregated_2['findings'] = verify_findings(aggregated_2['findings'], enabled=True)
+            result_2 = _score_and_describe(aggregated_2, 'demo-target.example')
+
+        assert result_1['risk_score'] == result_2['risk_score']
+        assert len(result_1['findings']) == len(result_2['findings'])
+        for f1, f2 in zip(result_1['findings'], result_2['findings']):
+            for field in VERIFICATION_DETERMINISTIC_FIELDS:
+                assert f1.get(field) == f2.get(field), \
+                    f'{field} differs: {f1.get(field)!r} vs {f2.get(field)!r}'
+
+        redirect = next(f for f in result_1['findings'] if f['type'] == 'open_redirect')
+        assert redirect['confidence'] == 'confirmed'  # the mocked response reproduces it
+        assert redirect['priority'] == 2  # Medium's base priority 3, shifted -1 for 'confirmed'
+
+    def test_enabled_false_is_a_full_noop_on_confidence(self):
+        """ENABLE_VERIFICATION=False must never touch the network and must
+        leave every finding at its module-assigned baseline confidence."""
+        aggregated = aggregate(_raw_findings_with_verifiable())
+        with patch('analysis.verifier.requests.get') as mock_get:
+            aggregated['findings'] = verify_findings(aggregated['findings'], enabled=False)
+        mock_get.assert_not_called()
+        redirect = next(f for f in aggregated['findings'] if f['type'] == 'open_redirect')
+        assert redirect['confidence'] == 'probable'  # untouched
+        assert 'verification_note' not in redirect
 
 
 if __name__ == '__main__':

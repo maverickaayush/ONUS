@@ -167,6 +167,26 @@ class TestFfufIntegration:
         assert 'exposed_admin_panel_open' in types
         assert not os.path.exists(out_path)
 
+        by_type = {f['type']: f for f in findings}
+        sensitive = by_type['exposed_sensitive_file']
+        assert sensitive['confidence'] == 'probable'
+        assert sensitive['verifiable'] is True
+        assert sensitive['verification_target'] == {
+            'url': 'https://example.com/.env', 'filename': '.env',
+        }
+        # Admin panels aren't a Phase 1 verifier - stay at normalize_finding()'s
+        # own defaults.
+        admin = by_type['exposed_admin_panel_open']
+        assert admin['confidence'] == 'probable'
+        assert admin['verifiable'] is False
+
+    def test_matched_sensitive_file_helper(self):
+        from tasks.enumeration import _matched_sensitive_file
+        assert _matched_sensitive_file('.env') == '.env'
+        assert _matched_sensitive_file('/.env') == '.env'
+        assert _matched_sensitive_file('.git/config') == '.git/config'
+        assert _matched_sensitive_file('robots.txt') is None
+
     def test_missing_wordlist_returns_empty(self):
         from tasks.enumeration import _run_ffuf
         with patch('tasks.enumeration.os.path.exists', return_value=False):
