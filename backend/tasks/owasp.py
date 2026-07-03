@@ -83,6 +83,9 @@ def test_sqli(target: str, domain: str) -> List[dict]:
                             evidence=f'Parameter "{param}" with payload {payload!r} '
                                      f'triggered SQL error in response',
                             severity='High', target=domain,
+                            # A DBMS error string in the response IS the proof -
+                            # no verifier dispatch needed, unlike boolean-based.
+                            confidence='confirmed',
                         ))
                         return findings  # one confirmed finding is enough
 
@@ -165,6 +168,8 @@ def test_path_traversal(target: str, domain: str) -> List[dict]:
                         title='Path traversal - /etc/passwd accessible',
                         evidence=f'GET {probe_url} returned /etc/passwd content',
                         severity='Critical', target=domain,
+                        confidence='probable', verifiable=True,
+                        verification_target={'url': probe_url, 'param': None, 'payload': trav},
                     ))
                     return findings
             except requests.RequestException:
@@ -185,6 +190,9 @@ def test_path_traversal(target: str, domain: str) -> List[dict]:
                         evidence=f'Parameter "{param}" with traversal payload '
                                  f'returned /etc/passwd content',
                         severity='Critical', target=domain,
+                        confidence='probable', verifiable=True,
+                        verification_target={'url': target, 'param': param,
+                                              'payload': injected[param]},
                     ))
                     return findings
             except requests.RequestException:
@@ -223,6 +231,9 @@ def test_open_redirect(target: str, domain: str) -> List[dict]:
                             evidence=f'Parameter "{param}" redirects to '
                                      f'injected URL: {location}',
                             severity='Medium', target=domain,
+                            confidence='probable', verifiable=True,
+                            verification_target={'url': target, 'param': param,
+                                                  'payload': external_url},
                         ))
                         return findings
             except requests.RequestException:

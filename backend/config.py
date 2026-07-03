@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # Remote ZAP daemon (Docker sidecar). Empty = run a local ZAP process
     # instead (native dev workflow) — see tasks/webscan.py.
     ZAP_URL: str = ""
+    # Confidence verification stage (analysis/verifier.py) - passive
+    # re-observation of verifiable findings between aggregation and scoring.
+    ENABLE_VERIFICATION: bool = True
 
 
 settings = Settings()
