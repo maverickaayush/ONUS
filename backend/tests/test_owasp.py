@@ -89,10 +89,17 @@ class TestOwaspSchema:
         assert findings[0]['severity'] == 'High'
         assert findings[0]['type'] == 'reflected_xss'
         assert findings[0]['found_by'] == [MODULE]
-        # Phase 2 (Playwright/XSS verification) not implemented yet - stays
-        # at its module-assigned baseline confidence, not verifiable.
+        # Phase 2: verifiable via headless-browser re-check
+        # (analysis/verifier.py's verify_reflected_xss).
         assert findings[0]['confidence'] == 'probable'
-        assert findings[0]['verifiable'] is False
+        assert findings[0]['verifiable'] is True
+        vt = findings[0]['verification_target']
+        assert vt['marker'] == marker
+        assert vt['payload'] in (
+            f'<script>alert("{marker}")</script>',
+            f'"><img src=x onerror=alert("{marker}")>',
+        )
+        assert vt['url'] and isinstance(vt['params'], dict)
 
     def test_xss_no_finding_on_escaped_response(self):
         """HTML-escaped payload must NOT produce an XSS finding."""

@@ -1,5 +1,5 @@
 """
-Phase 1 confidence verification tests (analysis/verifier.py).
+Phase 1 + 2 confidence verification tests (analysis/verifier.py).
 
 Run with:
     cd backend && python3 -m pytest tests/test_verifier.py -v
@@ -13,7 +13,8 @@ import requests
 
 from analysis.verifier import (
     verify_open_redirect, verify_path_traversal, verify_sensitive_file_exposure,
-    verify_directory_listing, verify_sqli_time_based, verify_findings,
+    verify_directory_listing, verify_sqli_time_based, verify_reflected_xss,
+    verify_findings,
 )
 
 
@@ -209,6 +210,132 @@ class TestVerifySqliTimeBased:
              patch('analysis.verifier.time.monotonic', side_effect=[0, 0, 0, 0.1]):
             result = verify_sqli_time_based(f)
         assert result['confidence'] == 'unverified'
+
+
+class TestVerifyReflectedXss:
+    """Phase 2 - the one verifier that uses headless Chromium instead of
+    raw requests. Tests here mock _xss_payload_fires (the module's own
+    boundary to Playwright), same pattern as mocking requests.get for
+    every other verifier - see TestXssPayloadFiresPlaywrightWiring below
+    for a test of that boundary function itself."""
+
+    def _xss_finding(self, **overrides):
+        base = {
+            'type': 'reflected_xss', 'title': 'x', 'severity': 'High',
+            'confidence': 'probable', 'verifiable': True,
+            'verification_target': {
+                'url': 'https://x.test', 'params': {'q': '<script>alert("M")</script>'},
+                'payload': '<script>alert("M")</script>', 'marker': 'M',
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_dialog_fires_confirms(self):
+        f = self._xss_finding()
+        with patch('analysis.verifier._xss_payload_fires', return_value=True):
+            result = verify_reflected_xss(f)
+        assert result['confidence'] == 'confirmed'
+
+    def test_dialog_does_not_fire_demotes(self):
+        f = self._xss_finding()
+        with patch('analysis.verifier._xss_payload_fires', return_value=False):
+            result = verify_reflected_xss(f)
+        assert result['confidence'] == 'unverified'
+
+    def test_missing_verification_target_demotes_not_drops(self):
+        f = self._xss_finding(verification_target={})
+        result = verify_reflected_xss(f)
+        assert result['confidence'] == 'unverified'
+        assert result['verification_note']
+
+    def test_browser_crash_demotes_gracefully(self):
+        """A Playwright/Chromium failure (crash, OOM, browsers not
+        installed) must demote with a note, never raise up and break the
+        whole verify_findings() loop."""
+        f = self._xss_finding()
+        with patch('analysis.verifier._xss_payload_fires',
+                   side_effect=RuntimeError('Executable doesn\'t exist')):
+            result = verify_reflected_xss(f)
+        assert result['confidence'] == 'unverified'
+        assert 'Headless-browser verification failed' in result['verification_note']
+
+    def test_dispatched_via_verify_findings(self):
+        f = self._xss_finding()
+        with patch('analysis.verifier._xss_payload_fires', return_value=True):
+            result = verify_findings([f], enabled=True)
+        assert result[0]['confidence'] == 'confirmed'
+        assert result is not None and len(result) == 1  # never dropped
+
+
+class TestXssPayloadFiresPlaywrightWiring:
+    """One lower-level test of _xss_payload_fires itself - confirms the
+    dialog listener and URL construction are wired correctly, using a
+    fully mocked sync_playwright() chain rather than a real browser (real
+    Chromium is exercised separately, outside pytest, see docs/ai.md)."""
+
+    def _mock_playwright(self, dialog_message):
+        """Build a mock sync_playwright() whose page.goto() synchronously
+        invokes whatever handler got registered via page.on('dialog', ...),
+        simulating an alert() firing during navigation."""
+        handlers = {}
+        mock_page = MagicMock()
+        mock_page.on.side_effect = lambda event, cb: handlers.__setitem__(event, cb)
+
+        def fake_goto(url, timeout=None):
+            if dialog_message is not None and 'dialog' in handlers:
+                handlers['dialog'](MagicMock(message=dialog_message))
+        mock_page.goto.side_effect = fake_goto
+
+        mock_browser = MagicMock()
+        mock_browser.new_page.return_value = mock_page
+
+        mock_pw_context = MagicMock()
+        mock_pw_context.chromium.launch.return_value = mock_browser
+
+        mock_sync_playwright = MagicMock()
+        mock_sync_playwright.return_value.__enter__.return_value = mock_pw_context
+        return mock_sync_playwright, mock_page, mock_browser
+
+    def test_matching_dialog_message_returns_true(self):
+        from analysis.verifier import _xss_payload_fires
+        mock_sp, mock_page, mock_browser = self._mock_playwright(dialog_message='VAPT_XSS_M')
+        with patch('analysis.verifier.sync_playwright', mock_sp):
+            result = _xss_payload_fires('https://x.test', {'q': 'payload'}, 'VAPT_XSS_M')
+        assert result is True
+        mock_browser.close.assert_called_once()
+
+    def test_non_matching_dialog_message_returns_false(self):
+        from analysis.verifier import _xss_payload_fires
+        mock_sp, mock_page, mock_browser = self._mock_playwright(dialog_message='something else')
+        with patch('analysis.verifier.sync_playwright', mock_sp):
+            result = _xss_payload_fires('https://x.test', {'q': 'payload'}, 'VAPT_XSS_M')
+        assert result is False
+
+    def test_no_dialog_returns_false(self):
+        from analysis.verifier import _xss_payload_fires
+        mock_sp, mock_page, mock_browser = self._mock_playwright(dialog_message=None)
+        with patch('analysis.verifier.sync_playwright', mock_sp):
+            result = _xss_payload_fires('https://x.test', {'q': 'payload'}, 'VAPT_XSS_M')
+        assert result is False
+
+    def test_browser_closed_even_if_goto_raises(self):
+        from analysis.verifier import _xss_payload_fires
+        mock_sp, mock_page, mock_browser = self._mock_playwright(dialog_message=None)
+        mock_page.goto.side_effect = TimeoutError('navigation timeout')
+        with patch('analysis.verifier.sync_playwright', mock_sp):
+            with pytest.raises(TimeoutError):
+                _xss_payload_fires('https://x.test', {'q': 'payload'}, 'VAPT_XSS_M')
+        mock_browser.close.assert_called_once()
+
+    def test_url_includes_urlencoded_params(self):
+        from analysis.verifier import _xss_payload_fires
+        mock_sp, mock_page, mock_browser = self._mock_playwright(dialog_message=None)
+        with patch('analysis.verifier.sync_playwright', mock_sp):
+            _xss_payload_fires('https://x.test', {'q': '<script>x</script>'}, 'M')
+        called_url = mock_page.goto.call_args[0][0]
+        assert called_url.startswith('https://x.test?')
+        assert 'script' in called_url  # urlencoded, but the tag name itself survives
 
 
 # ---------------------------------------------------------------------------
