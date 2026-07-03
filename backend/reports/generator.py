@@ -10,6 +10,24 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
 
+# Confirmed first (re-verified proof), then probable (default/unverified-by-
+# omission), then unverified (failed to reproduce) - matches the confidence
+# tier heading order in the Findings Catalogue.
+_CONFIDENCE_TIER_ORDER = {'confirmed': 0, 'probable': 1, 'unverified': 2}
+
+
+def _confidence_breakdown_line(counts: dict, total: int) -> str:
+    """Deterministic confidence-breakdown sentence for the executive summary
+    page - computed here, not by Ollama (the project docs Section 4.6: Ollama never
+    produces or overrides numeric/countable claims)."""
+    if total == 0:
+        return ''
+    return (
+        f"Of {total} finding(s) in this report, {counts['confirmed']} were confirmed via automated "
+        f"re-verification, {counts['probable']} are probable findings not yet re-verified, and "
+        f"{counts['unverified']} failed re-verification and are flagged for manual review."
+    )
+
 
 def safe_filename(domain: str, date) -> str:
     """
@@ -55,17 +73,31 @@ def generate_pdf(scan, analysis: dict, store_in_db: bool = True) -> bytes:
         scan_date = scan_date.replace(tzinfo=timezone.utc)
 
     findings = analysis.get('findings', [])
-    # Findings catalogue order: priority ascending, then CVSS descending
-    # (the project docs Section 4.6) - priority and cvss_score are both computed
-    # deterministically by analysis/cvss_scorer.py, not by Ollama.
+    # Findings catalogue order: confidence tier (confirmed -> probable ->
+    # unverified), then priority ascending, then CVSS descending - priority,
+    # cvss_score and confidence are all computed deterministically upstream
+    # (analysis/cvss_scorer.py, analysis/verifier.py), never by Ollama.
     findings_sorted = sorted(
         findings,
         key=lambda f: (
+            _CONFIDENCE_TIER_ORDER.get(f.get('confidence', 'probable'), 1),
             f.get('priority', 5),
             -(f.get('cvss_score') or 0),
         ),
     )
     grouped_findings = [f for f in findings_sorted if f.get('details', {}).get('matched_paths')]
+    verification_evidence = [f for f in findings_sorted if f.get('verification_note')]
+
+    confidence_counts = {'confirmed': 0, 'probable': 0, 'unverified': 0}
+    for f in findings:
+        tier = f.get('confidence', 'probable')
+        confidence_counts[tier if tier in confidence_counts else 'probable'] += 1
+    confidence_breakdown = _confidence_breakdown_line(confidence_counts, len(findings))
+
+    findings_by_tier = {
+        tier: [f for f in findings_sorted if f.get('confidence', 'probable') == tier]
+        for tier in ('confirmed', 'probable', 'unverified')
+    }
 
     context = {
         'iitk_logo_text': 'IIT Kanpur Computer Centre',
@@ -77,7 +109,10 @@ def generate_pdf(scan, analysis: dict, store_in_db: bool = True) -> bytes:
             'Automated VAPT analysis complete.'
         ),
         'findings':           findings_sorted,
+        'findings_by_tier':   findings_by_tier,
+        'confidence_breakdown': confidence_breakdown,
         'grouped_findings':   grouped_findings,
+        'verification_evidence': verification_evidence,
         'ai_unavailable':     bool(analysis.get('ai_unavailable')),
         'total_critical':     analysis.get('total_critical', 0),
         'total_high':         analysis.get('total_high', 0),

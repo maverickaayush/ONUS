@@ -167,6 +167,15 @@ class TestHtmlEscaping:
         assert 'Bold' in text
 
 
+def _by_tier(findings):
+    """Mirror generator.py's findings_by_tier grouping for tests that render
+    report.html directly instead of going through generate_pdf()."""
+    groups = {'confirmed': [], 'probable': [], 'unverified': []}
+    for f in findings:
+        groups[f.get('confidence', 'probable')].append(f)
+    return groups
+
+
 class TestRiskBadge:
 
     def _get_html(self, risk_score):
@@ -187,6 +196,9 @@ class TestRiskBadge:
             risk_score=risk_score,
             executive_summary='Test.',
             findings=[],
+            findings_by_tier=_by_tier([]),
+            confidence_breakdown='',
+            verification_evidence=[],
             total_critical=0, total_high=0, total_medium=0,
             total_low=0, total_informational=0,
             scan_metadata={},
@@ -235,6 +247,9 @@ class TestSeverityBadge:
             domain='test.com', scan_date='26 June 2026',
             risk_score=50, executive_summary='',
             findings=findings,
+            findings_by_tier=_by_tier(findings),
+            confidence_breakdown='',
+            verification_evidence=[],
             total_critical=0, total_high=0, total_medium=0,
             total_low=0, total_informational=0,
             scan_metadata={},
@@ -263,6 +278,62 @@ class TestSeverityBadge:
 
     def test_unknown_severity_fallback_gray(self):
         assert '#7F8C8D' in self._badge_html('Unknown')
+
+
+class TestConfidenceDisplay:
+    """Phase 1 verification: confidence tier headings, verified/unverified
+    badges, verification evidence appendix, deterministic confidence
+    breakdown line (generator.py, not Ollama)."""
+
+    def _render(self, findings):
+        from reports.generator import generate_pdf
+        import pdfplumber
+        import io
+        pdf = generate_pdf(_make_scan(), _make_analysis(findings=findings), store_in_db=False)
+        with pdfplumber.open(io.BytesIO(pdf)) as doc:
+            return ''.join(p.extract_text() or '' for p in doc.pages)
+
+    def test_confirmed_finding_gets_verified_badge(self):
+        f = _finding(title='Confirmed Redirect')
+        f['confidence'] = 'confirmed'
+        text = self._render([f]).upper()  # .confidence-heading/.confidence-tag are uppercase via CSS
+        assert 'VERIFIED' in text
+        assert 'CONFIRMED FINDINGS' in text
+
+    def test_unverified_finding_gets_manual_review_badge(self):
+        f = _finding(title='Unverified Traversal')
+        f['confidence'] = 'unverified'
+        f['verification_note'] = 'Re-issued request did not reproduce sentinel content.'
+        text = self._render([f])
+        assert 'REQUIRES MANUAL REVIEW' in text.upper()
+        assert 'UNVERIFIED FINDINGS' in text.upper()
+        assert 'Re-issued request did not reproduce sentinel content.' in text
+
+    def test_probable_finding_has_no_confidence_badge(self):
+        f = _finding(title='Plain Probable Finding')
+        f['confidence'] = 'probable'
+        text = self._render([f]).upper()
+        assert 'PROBABLE FINDINGS' in text
+        assert 'REQUIRES MANUAL REVIEW' not in text
+
+    def test_confidence_breakdown_line_present(self):
+        f1 = _finding(title='A'); f1['confidence'] = 'confirmed'
+        f2 = _finding(title='B'); f2['confidence'] = 'unverified'
+        text = self._render([f1, f2])
+        assert '1 were confirmed' in text
+        assert '1 failed re-verification' in text
+
+    def test_sort_order_is_tier_then_priority_then_cvss(self):
+        from reports.generator import generate_pdf
+        low_priority_confirmed = _finding(title='Low Priority Confirmed', cvss=3.0)
+        low_priority_confirmed.update({'confidence': 'confirmed', 'priority': 4})
+        high_priority_probable = _finding(title='High Priority Probable', cvss=9.0)
+        high_priority_probable.update({'confidence': 'probable', 'priority': 1})
+
+        text = self._render([high_priority_probable, low_priority_confirmed])
+        # Confirmed tier must appear before probable tier regardless of
+        # priority/cvss within either finding.
+        assert text.index('Low Priority Confirmed') < text.index('High Priority Probable')
 
 
 class TestSafeFilename:

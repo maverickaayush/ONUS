@@ -194,6 +194,33 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   padding: 2px 8px;
   border-radius: 8px;
 }
+.confidence-tag {
+  float: right;
+  margin-left: 6px;
+  font-size: 7pt;
+  font-weight: bold;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 8px;
+  color: #fff;
+}
+.confidence-tag.verified { background: #27AE60; }
+.confidence-tag.unverified { background: #C0392B; }
+.confidence-heading {
+  font-size: 10pt;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 18px 0 8px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed #ccc;
+}
+.verification-note {
+  font-size: 8pt;
+  color: #555;
+  font-style: italic;
+  margin-top: 6px;
+}
 .methodology-note {
   margin-top: 24px;
   font-size: 8pt;
@@ -317,6 +344,9 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   <p><span class="ai-unavailable-tag" style="float:none;">AI analysis unavailable</span>
      &nbsp;<span style="font-size:8pt;color:#888;">Descriptions below use generic per-category guidance instead of AI-generated text.</span></p>
   {% endif %}
+  {% if confidence_breakdown %}
+  <p style="margin-top:10px;font-size:9pt;color:#444;">{{ confidence_breakdown }}</p>
+  {% endif %}
 </div>
 <p class="methodology-note">
   Methodology: Numeric scores (CVSS, severity, priority) are computed
@@ -324,15 +354,17 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   descriptions are AI-generated.
 </p>
 
-{# ── Findings Catalogue ─────────────────────────────────────── #}
-<h2>Findings Catalogue</h2>
-
-{% if findings %}
-{% for finding in findings %}
+{# ── Finding card macro ─────────────────────────────────────── #}
+{% macro finding_card(finding) %}
 <div class="finding-card">
   <div class="finding-card-header">
     {% if ai_unavailable %}
       <span class="ai-unavailable-tag">AI analysis unavailable</span>
+    {% endif %}
+    {% if finding.confidence == 'confirmed' %}
+      <span class="confidence-tag verified">Verified</span>
+    {% elif finding.confidence == 'unverified' %}
+      <span class="confidence-tag unverified">Requires Manual Review</span>
     {% endif %}
     {{ severity_badge(finding.severity or 'Informational') }}
     {% if finding.cvss_score is not none and finding.cvss_score > 0 %}
@@ -378,9 +410,32 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
     {% if finding.remediation %}
     <div class="remediation-block">{{ finding.remediation }}</div>
     {% endif %}
+
+    {% if finding.verification_note %}
+    <p class="verification-note">Verification: {{ finding.verification_note }}</p>
+    {% endif %}
   </div>
 </div>
-{% endfor %}
+{% endmacro %}
+
+{# ── Findings Catalogue ─────────────────────────────────────── #}
+<h2>Findings Catalogue</h2>
+
+{% if findings %}
+{% if findings_by_tier.confirmed %}
+<p class="confidence-heading">Confirmed Findings</p>
+{% for finding in findings_by_tier.confirmed %}{{ finding_card(finding) }}{% endfor %}
+{% endif %}
+
+{% if findings_by_tier.probable %}
+<p class="confidence-heading">Probable Findings</p>
+{% for finding in findings_by_tier.probable %}{{ finding_card(finding) }}{% endfor %}
+{% endif %}
+
+{% if findings_by_tier.unverified %}
+<p class="confidence-heading">Unverified Findings - Manual Review Recommended</p>
+{% for finding in findings_by_tier.unverified %}{{ finding_card(finding) }}{% endfor %}
+{% endif %}
 
 {% else %}
 <p style="color:#27AE60;font-weight:bold;">
@@ -428,6 +483,34 @@ p  { margin: 0 0 8px 0; line-height: 1.5; }
   </table>
   {% endif %}
 </div>
+
+{% if verification_evidence %}
+<div class="summary-box" style="margin-top:16px;">
+  <p><strong>Verification Evidence</strong></p>
+  <table class="sev-table">
+    <tr>
+      <th>Finding</th>
+      <th>Confidence</th>
+      <th>Verification Note</th>
+    </tr>
+    {% for f in verification_evidence %}
+    <tr>
+      <td>{{ f.title }}</td>
+      <td>
+        {% if f.confidence == 'confirmed' %}
+          <span class="badge" style="background:#27AE60">Confirmed</span>
+        {% elif f.confidence == 'unverified' %}
+          <span class="badge" style="background:#C0392B">Unverified</span>
+        {% else %}
+          <span class="badge" style="background:#7F8C8D">{{ f.confidence | title }}</span>
+        {% endif %}
+      </td>
+      <td style="font-size:8pt;">{{ f.verification_note }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
 
 {% if module_execution %}
 <div class="summary-box" style="margin-top:16px;">
