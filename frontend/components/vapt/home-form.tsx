@@ -1,10 +1,11 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { VaptBackground } from "@/components/vapt/background"
-import { submitScan, ApiError } from "@/lib/api"
+import { submitScan, getScanModules, ApiError } from "@/lib/api"
+import type { ScanModuleInfo } from "@/lib/api"
 
 function isValidDomain(value: string) {
   return /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/.test(
@@ -12,77 +13,84 @@ function isValidDomain(value: string) {
   )
 }
 
-const MODULES = [
-  {
-    label: "Recon",
-    icon: (
-      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
-        <path d="M9 9a2 2 0 114 0 2 2 0 01-4 0z" />
-        <path
-          fillRule="evenodd"
-          d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a4 4 0 00-3.446 6.032l-2.261 2.26a1 1 0 101.414 1.415l2.261-2.261A4 4 0 1011 5z"
-          clipRule="evenodd"
-        />
-      </svg>
-    ),
-  },
-  {
-    label: "Web Scan",
-    icon: (
-      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
-        <path
-          fillRule="evenodd"
-          d="M4.083 9h1.946c.089-1.546.383-2.97.837-4.118A6.004 6.004 0 004.083 9zM10 2a8 8 0 100 16A8 8 0 0010 2zm0 2c-.076 0-.232.032-.465.262-.238.234-.497.623-.737 1.182-.389.907-.673 2.142-.766 3.556h3.936c-.093-1.414-.377-2.649-.766-3.556-.24-.56-.5-.948-.737-1.182C10.232 4.032 10.076 4 10 4zm3.971 5c-.089-1.546-.383-2.97-.837-4.118A6.004 6.004 0 0115.917 9h-1.946zm-2.003 2H8.032c.093 1.414.377 2.649.766 3.556.24.56.5.948.737 1.182.233.23.389.262.465.262.076 0 .232-.032.465-.262.238-.234.498-.623.737-1.182.389-.907.673-2.142.766-3.556zm1.166 4.118c.454-1.147.748-2.572.837-4.118h1.946a6.004 6.004 0 01-2.783 4.118zm-6.268 0C6.412 13.97 6.118 12.546 6.03 11H4.083a6.004 6.004 0 002.783 4.118z"
-          clipRule="evenodd"
-        />
-      </svg>
-    ),
-  },
-  {
-    label: "SSL/TLS",
-    icon: (
-      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
-        <path
-          fillRule="evenodd"
-          d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"
-          clipRule="evenodd"
-        />
-      </svg>
-    ),
-  },
-  {
-    label: "Headers",
-    icon: (
-      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
-        <path
-          fillRule="evenodd"
-          d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h8a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h6a1 1 0 110 2H4a1 1 0 01-1-1z"
-          clipRule="evenodd"
-        />
-      </svg>
-    ),
-  },
-  {
-    label: "OWASP Top 10",
-    icon: (
-      <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
-        <path
-          fillRule="evenodd"
-          d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-          clipRule="evenodd"
-        />
-      </svg>
-    ),
-  },
-]
+// Keyed by the backend's icon_hint (a semantic category, not a specific
+// module id) - source of truth for which modules exist is GET
+// /api/scan/modules (tasks/base_task.py's SCAN_MODULES on the backend), not
+// a hardcoded list here. A hint this map doesn't recognize yet (e.g. a
+// brand-new module added on the backend before a bespoke icon exists for
+// it) falls back to GENERIC_ICON so a 9th module still renders a badge,
+// just with a plain icon.
+const MODULE_ICONS: Record<string, React.ReactNode> = {
+  network: (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+      <path d="M9 9a2 2 0 114 0 2 2 0 01-4 0z" />
+      <path
+        fillRule="evenodd"
+        d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-13a4 4 0 00-3.446 6.032l-2.261 2.26a1 1 0 101.414 1.415l2.261-2.261A4 4 0 1011 5z"
+        clipRule="evenodd"
+      />
+    </svg>
+  ),
+  web: (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M4.083 9h1.946c.089-1.546.383-2.97.837-4.118A6.004 6.004 0 004.083 9zM10 2a8 8 0 100 16A8 8 0 0010 2zm0 2c-.076 0-.232.032-.465.262-.238.234-.497.623-.737 1.182-.389.907-.673 2.142-.766 3.556h3.936c-.093-1.414-.377-2.649-.766-3.556-.24-.56-.5-.948-.737-1.182C10.232 4.032 10.076 4 10 4zm3.971 5c-.089-1.546-.383-2.97-.837-4.118A6.004 6.004 0 0115.917 9h-1.946zm-2.003 2H8.032c.093 1.414.377 2.649.766 3.556.24.56.5.948.737 1.182.233.23.389.262.465.262.076 0 .232-.032.465-.262.238-.234.498-.623.737-1.182.389-.907.673-2.142.766-3.556zm1.166 4.118c.454-1.147.748-2.572.837-4.118h1.946a6.004 6.004 0 01-2.783 4.118zm-6.268 0C6.412 13.97 6.118 12.546 6.03 11H4.083a6.004 6.004 0 002.783 4.118z"
+        clipRule="evenodd"
+      />
+    </svg>
+  ),
+  lock: (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"
+        clipRule="evenodd"
+      />
+    </svg>
+  ),
+  list: (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h8a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h6a1 1 0 110 2H4a1 1 0 01-1-1z"
+        clipRule="evenodd"
+      />
+    </svg>
+  ),
+  alert: (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+        clipRule="evenodd"
+      />
+    </svg>
+  ),
+  fingerprint: (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+      <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+    </svg>
+  ),
+  target: (
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5" aria-hidden="true">
+      <circle cx="10" cy="10" r="7" />
+      <circle cx="10" cy="10" r="3.5" />
+      <circle cx="10" cy="10" r="0.5" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+  folder: (
+    <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+      <path d="M2 6a2 2 0 012-2h4.586a1 1 0 01.707.293L10.414 5H16a2 2 0 012 2v7a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+    </svg>
+  ),
+}
 
-const ACCORDION_CONTENT = [
-  { step: "1. Recon", desc: "DNS enumeration, subdomain discovery, WHOIS lookups, and open port detection." },
-  { step: "2. Web Scan", desc: "HTTP method testing, directory brute-force, and technology fingerprinting." },
-  { step: "3. SSL/TLS", desc: "Certificate validity, cipher strength, protocol versions, and HSTS enforcement." },
-  { step: "4. Headers", desc: "Checks all security response headers: CSP, X-Frame-Options, HSTS, CORS, and more." },
-  { step: "5. OWASP Top 10", desc: "Tests for injection, broken auth, XSS, IDOR, security misconfigurations, and open redirects." },
-]
+const GENERIC_ICON = (
+  <svg viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+  </svg>
+)
 
 export function HomeForm() {
   const router = useRouter()
@@ -92,6 +100,16 @@ export function HomeForm() {
   const [loading, setLoading] = useState(false)
   const [accordionOpen, setAccordionOpen] = useState(false)
   const [submitError, setSubmitError] = useState("")
+  const [modules, setModules] = useState<ScanModuleInfo[]>([])
+
+  useEffect(() => {
+    getScanModules()
+      .then(setModules)
+      .catch(() => {
+        // Decorative sections (badges/accordion) - fail silently rather
+        // than block the actual scan-submission form on this fetch.
+      })
+  }, [])
 
   const valid = isValidDomain(domain)
   const canSubmit = valid && authorized
@@ -330,20 +348,24 @@ export function HomeForm() {
           </form>
         </div>
 
-        {/* Module pills */}
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-          <span className="text-xs text-slate-500 mr-1 font-medium">Covers:</span>
-          {MODULES.map((m, i) => (
-            <span
-              key={m.label}
-              className="vapt-fade-up inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-sm bg-white/5 border border-white/10 text-xs font-medium text-slate-300 hover:border-blue-500/40 hover:bg-blue-500/10 hover:text-blue-200 transition-all duration-200"
-              style={{ animationDelay: `${300 + i * 50}ms` }}
-            >
-              <span className="text-slate-500">{m.icon}</span>
-              {m.label}
-            </span>
-          ))}
-        </div>
+        {/* Module pills - sourced from GET /api/scan/modules, not a
+            hardcoded list, so a module added on the backend shows up here
+            without a frontend code change. */}
+        {modules.length > 0 && (
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+            <span className="text-xs text-slate-500 mr-1 font-medium">Covers:</span>
+            {modules.map((m, i) => (
+              <span
+                key={m.id}
+                className="vapt-fade-up inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-sm bg-white/5 border border-white/10 text-xs font-medium text-slate-300 hover:border-blue-500/40 hover:bg-blue-500/10 hover:text-blue-200 transition-all duration-200"
+                style={{ animationDelay: `${300 + i * 50}ms` }}
+              >
+                <span className="text-slate-500">{MODULE_ICONS[m.icon_hint] ?? GENERIC_ICON}</span>
+                {m.label}
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Expandable accordion */}
         <div
@@ -376,10 +398,10 @@ export function HomeForm() {
           {accordionOpen && (
             <div className="px-4 pb-4 pt-1 border-t border-white/8">
               <ul className="space-y-2.5">
-                {ACCORDION_CONTENT.map((item) => (
-                  <li key={item.step} className="text-sm">
-                    <span className="font-semibold text-slate-200">{item.step}:</span>{" "}
-                    <span className="text-slate-400">{item.desc}</span>
+                {modules.map((m, i) => (
+                  <li key={m.id} className="text-sm">
+                    <span className="font-semibold text-slate-200">{i + 1}. {m.label}:</span>{" "}
+                    <span className="text-slate-400">{m.description}</span>
                   </li>
                 ))}
               </ul>
