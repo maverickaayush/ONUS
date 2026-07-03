@@ -1,8 +1,17 @@
 export type ScanStatus =
-  | 'queued' | 'running' | 'analysing' | 'complete' | 'failed'
+  | 'queued' | 'running' | 'analysing' | 'awaiting_user_decision' | 'complete' | 'failed' | 'cancelled'
 
 export type ModuleStatus =
   | 'queued' | 'running' | 'complete' | 'failed'
+
+export type ScanDecisionAction = 'retry' | 'continue' | 'cancel'
+
+export interface ScanModuleInfo {
+  id: string
+  label: string
+  icon_hint: string
+  description: string
+}
 
 export interface ScanResponse {
   job_id: string
@@ -17,6 +26,9 @@ export interface ScanStatusResponse {
   progress: number
   started_at: string | null
   modules: Record<string, ModuleStatus>
+  // Only populated while status === 'awaiting_user_decision'.
+  module_errors?: Record<string, string> | null
+  can_retry?: boolean | null
 }
 
 export interface Finding {
@@ -83,6 +95,18 @@ export async function getScanStatus(jobId: string): Promise<ScanStatusResponse> 
   return handle<ScanStatusResponse>(res)
 }
 
+export async function postScanDecision(
+  jobId: string,
+  action: ScanDecisionAction,
+): Promise<ScanStatusResponse> {
+  const res = await fetch(`/api/scan/${jobId}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+  return handle<ScanStatusResponse>(res)
+}
+
 export async function getFindings(jobId: string): Promise<FindingsResponse> {
   const res = await fetch(`/api/scan/${jobId}/findings`, { cache: 'no-store' })
   return handle<FindingsResponse>(res)
@@ -90,4 +114,10 @@ export async function getFindings(jobId: string): Promise<FindingsResponse> {
 
 export function reportPdfUrl(jobId: string): string {
   return `/api/scan/${jobId}/report`
+}
+
+export async function getScanModules(): Promise<ScanModuleInfo[]> {
+  const res = await fetch('/api/scan/modules', { cache: 'no-store' })
+  const data = await handle<{ modules: ScanModuleInfo[] }>(res)
+  return data.modules
 }
