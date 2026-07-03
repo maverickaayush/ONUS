@@ -7,6 +7,7 @@ Run with:
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import subprocess
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -46,6 +47,47 @@ class TestGetToolVersion:
         # python3 itself is guaranteed present in this test environment.
         version = get_tool_version('python3', '--version')
         assert version not in ('not installed', '')
+
+
+class TestGetToolVersionAnsiStripping:
+    """subfinder/nuclei/sslscan/wafw00f color their -version/--version
+    output even with stdout piped to a subprocess - real bytes captured
+    from each tool running inside the actual worker container (docker
+    compose exec worker <tool> -version), not hand-typed escape codes."""
+
+    _REAL_SAMPLES = {
+        'subfinder': (b'[\x1b[34mINF\x1b[0m] Current Version: v2.6.6',
+                      '[INF] Current Version: v2.6.6'),
+        'nuclei': (b'[\x1b[34mINF\x1b[0m] Nuclei Engine Version: v3.3.7',
+                   '[INF] Nuclei Engine Version: v3.3.7'),
+        'sslscan': (b'\x1b[1;34m\t\t2.0.7', '2.0.7'),
+        'wafw00f': (b'\x1b[1;97m______', '______'),
+    }
+
+    @pytest.mark.parametrize('tool', list(_REAL_SAMPLES.keys()))
+    def test_ansi_codes_stripped_from_real_captured_output(self, tool):
+        raw_bytes, expected = self._REAL_SAMPLES[tool]
+        mock_result = MagicMock(stdout=raw_bytes, stderr=b'')
+        with patch('tasks.base_task.shutil.which', return_value=f'/usr/bin/{tool}'), \
+             patch('tasks.base_task.subprocess.run', return_value=mock_result):
+            assert get_tool_version(tool, '-version') == expected
+
+    def test_testssl_unknown_passes_through_unchanged(self):
+        """testssl.sh's real failure mode: the subprocess call raises
+        (e.g. timeout) rather than returning stripped-to-empty output -
+        must still report 'unknown', not blow up or return ''."""
+        with patch('tasks.base_task.shutil.which', return_value='/usr/bin/testssl.sh'), \
+             patch('tasks.base_task.subprocess.run', side_effect=subprocess.TimeoutExpired('testssl.sh', 5)):
+            assert get_tool_version('testssl.sh', '--version') == 'unknown'
+
+    def test_ansi_only_output_with_no_visible_text_falls_back_to_unknown(self):
+        """An edge case the real tools above don't happen to hit: if a
+        tool's output were pure escape codes with zero visible characters,
+        stripping must still collapse to 'unknown', not an empty string."""
+        mock_result = MagicMock(stdout=b'\x1b[0m\x1b[1m', stderr=b'')
+        with patch('tasks.base_task.shutil.which', return_value='/usr/bin/faketool'), \
+             patch('tasks.base_task.subprocess.run', return_value=mock_result):
+            assert get_tool_version('faketool', '--version') == 'unknown'
 
 
 class TestToolVersionsMergeInAggregator:
