@@ -71,7 +71,7 @@ alembic revision --autogenerate -m "description"
 | Folder | Responsibility |
 |---|---|
 | `backend/tasks/` | The 5 Celery scanning modules (`recon.py`, `webscan.py`, `ssl_tls.py`, `headers.py`, `owasp.py`) + `scan_orchestrator.py` (dispatch) + `base_task.py` (shared `normalize_finding`/`update_module_status`) |
-| `backend/analysis/` | `aggregator.py` (merge/dedup/collapse/sort findings) + `verifier.py` (passive re-observation, confidence tiers — Phase 1 only, no Playwright/XSS yet) + `cvss_scorer.py` (deterministic severity/CVSS/priority/risk_score, confidence-shifted) + `ollama_client.py` (AI description/remediation prose + fallback) |
+| `backend/analysis/` | `aggregator.py` (merge/dedup/collapse/sort findings) + `verifier.py` (passive re-observation, confidence tiers, incl. Playwright-based `verify_reflected_xss`) + `cvss_scorer.py` (deterministic severity/CVSS/priority/risk_score, confidence-shifted) + `ollama_client.py` (AI description/remediation prose + fallback) |
 | `backend/reports/` | `generator.py` (WeasyPrint PDF) + `templates/report.html` (Jinja2, autoescaped) |
 | `backend/routers/` | FastAPI HTTP endpoints (`scan.py`, `report.py`) — validation + DB only, no scanning logic |
 | `backend/models.py` / `schemas.py` | SQLAlchemy ORM (`Scan`, `Report`) / Pydantic request-response schemas |

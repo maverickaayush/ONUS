@@ -47,7 +47,7 @@ sending GET-style read-only payloads.
 
 ## Confidence verification (analysis/verifier.py)
 Feed it a hand-built finding with `verifiable=True` and a `verification_target`
-matching one of the Phase 1 types (`open_redirect`, `path_traversal`,
+matching one of the HTTP-based types (`open_redirect`, `path_traversal`,
 `exposed_sensitive_file`, or a `nikto_finding` whose evidence contains a
 directory-listing phrase):
 ```python
@@ -66,8 +66,17 @@ finding to disappear from the list — that's the one behavior that must
 never regress, see the project docs §4.4b). Set `config.ENABLE_VERIFICATION=False`
 (or pass `enabled=False`) and confirm it's a full no-op — `requests.get`
 never called, `confidence` stays at its module-assigned baseline.
-`verify_reflected_xss` does not exist yet (Phase 2/Playwright) — don't
-expect `reflected_xss` findings to change confidence in Phase 1.
+
+For `reflected_xss` (Playwright-based, `verify_reflected_xss`), confirm
+Chromium is actually installed first — `playwright install --with-deps
+chromium` inside the container (`docker compose exec worker playwright
+install --with-deps chromium` if it's ever missing) — then feed a
+`reflected_xss` finding with a real `verification_target`
+(`{url, params, payload, marker}`, matching `owasp.py`'s `test_xss` shape)
+through `verify_findings`. A browser/Chromium failure (not installed,
+crashed, OOM) must demote to `unverified` with a note starting
+"Headless-browser verification failed", never raise out of
+`verify_findings()`.
 
 ## Aggregator + Ollama
 Feed the aggregator a small hand-written list of findings first — confirms
