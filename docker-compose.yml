@@ -137,6 +137,20 @@ services:
     ports:
       - "8083:80"
 
+  mutillidae:
+    image: citizenstig/nowasp
+    restart: unless-stopped
+    # Self-contained image (tutum/lamp-based - Apache+MySQL in one container,
+    # already listening on :80) - no separate DB sidecar needed, same pattern
+    # as bwapp above (practicality_test_plan.md's original note assumed a
+    # sidecar was required; this image makes that unnecessary).
+    networks:
+      default:
+        aliases:
+          - mutillidae.local
+    ports:
+      - "8084:80"
+
   metasploitable2:
     image: tleemcjr/metasploitable2
     restart: unless-stopped
