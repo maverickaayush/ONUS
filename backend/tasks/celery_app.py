@@ -38,6 +38,9 @@ app.conf.update(
         'tasks.ssl_tls',
         'tasks.headers',
         'tasks.owasp',
+        'tasks.tech_fingerprint',
+        'tasks.nuclei_scan',
+        'tasks.enumeration',
         'tasks.scan_orchestrator',
     ],
 )
