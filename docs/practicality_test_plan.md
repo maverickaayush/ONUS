@@ -27,8 +27,8 @@ this doc is just the queue and the per-target workflow.
 
 | # | Target | Status | Notes |
 |---|---|---|---|
-| 1 | WebGoat (`webgoat/webgoat`) | Next up | Serves under a context path (`/WebGoat`), not root — may need scan-target/path handling to check before assuming bare-domain scanning works cleanly. |
-| 2 | bWAPP | Queued | Needs a MySQL sidecar + one-time DB init click-through; no official actively-maintained image, may need a community image. |
+| 1 | WebGoat (`webgoat/webgoat`) | Done | Needed `WEBGOAT_PORT=80` + `WEBGOAT_CONTEXT=/` + `cap_add: [NET_BIND_SERVICE]` to land at bare root/port 80 — see `docs/test_findings.md`. |
+| 2 | bWAPP | Next up | Needs a MySQL sidecar + one-time DB init click-through; no official actively-maintained image, may need a community image. |
 | 3 | OWASP Mutillidae II | Queued | Needs a MySQL/MariaDB sidecar. |
 | 4 | OWASP NodeGoat | Queued | Needs a MongoDB sidecar. |
 | 5 | OWASP Security Shepherd | Queued | Needs a MySQL sidecar; multi-container upstream compose exists to reference. |

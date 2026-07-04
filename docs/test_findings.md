@@ -71,3 +71,53 @@ the volume of repeated per-URL Medium alerts above, not a scoring bug.
 
 **Action:** container + image removed after this scan to free disk space
 (see git history / current `docker-compose.yml` for what's live now).
+
+---
+
+## WebGoat (`webgoat/webgoat`)
+
+- **Job ID:** `49ac28a5-6ab8-4764-9ea6-9ca329b80011`
+- **Date:** 2026-07-04
+- **Target:** `webgoat.local` (docker-network alias, port 8082 published)
+- **Result:** `complete`, all 8 modules `success`, no errors, no retries needed.
+- **Risk score:** 54/100. Critical=0, High=1, Medium=23, Low=33, Informational=21 (78 total).
+
+**Deployment note — WebGoat needed remapping to fit the tool's bare-domain
+scan model:** the upstream image defaults to port 8080 under context path
+`/WebGoat`, and runs as a non-root `webgoat` user that can't bind `:80`.
+`docker-compose.yml`'s `webgoat` service sets `WEBGOAT_PORT=80` +
+`WEBGOAT_CONTEXT=/` + `cap_add: [NET_BIND_SERVICE]` so the app lands at
+`http://webgoat.local/` directly, matching every scanning module's
+`https://{domain}` assumption (Section 3). `WEBWOLF_PORT` was left at its
+own default (9090) - only WebGoat's own port/context needed remapping, since
+the two run as separate embedded Tomcat instances in the same container and
+share no other config. Confirmed working: the SQLi finding below is on
+`/register.mvc`, real WebGoat content, not a 404 stub.
+
+**By module:** webscan 61, headers 7, recon 6, enumeration 2, ssl_tls 1,
+tech_fingerprint 1, **owasp 0, nuclei 0**.
+
+**What it found:** one genuine High — ZAP's `SQL Injection` alert on
+`GET /register.mvc` (CVSS 8.2). Everything else is misconfiguration-class:
+`User Agent Fuzzer` (11, ZAP's fuzzing noise, Informational-shaped),
+missing `X-Content-Type-Options` (9), missing anti-clickjacking header (4),
+no CSP (4), missing anti-CSRF tokens (4), cookies without `SameSite` (3),
+a Spring Boot Actuator information-leak hit (exposed `/actuator/env` /
+`/actuator/configprops` - matches WebGoat's own `application-webgoat.properties`
+which explicitly enables `management.endpoints.web.exposure.include=env,
+health,configprops`).
+
+**No tool bug found — but a real fallback fired:** `ai_unavailable: true`
+this run. Worker logs show Ollama returned a truncated/invalid JSON response
+on all 3 attempts (`Unterminated string starting at: line 237...`) before
+falling back to rule-based descriptions - Ollama itself was up and reachable
+(`ollama list` showed `qwen2.5:7b` loaded, `curl` to
+`host.docker.internal:11434` from the worker returned 200) the whole time.
+This is the `num_predict: 4096` output-length ceiling (Section 4.6) getting
+hit mid-generation on a verbose response, not a connectivity or code defect
+- the documented fallback path (Section 4.6/`ai_unavailable` badge) handled
+it exactly as designed. Not treated as a bug to fix; noted here as an
+observed data point on how often this ceiling actually gets hit in practice.
+
+**Action:** container + image removed after this scan to free disk space
+(see git history / current `docker-compose.yml` for what's live now).

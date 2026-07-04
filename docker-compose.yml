@@ -116,6 +116,27 @@ services:
     ports:
       - "8081:80"
 
+  webgoat:
+    image: webgoat/webgoat
+    restart: unless-stopped
+    # WebGoat's Spring Boot app defaults to port 8080 under context path
+    # /WebGoat (and can't bind :80 as its non-root `webgoat` user without
+    # this capability) - both overridden here so it lands on the bare
+    # root/port shape every scanning module assumes, same reasoning as
+    # juice-shop's PORT=80 above. WEBWOLF_PORT is left at its own default
+    # (9090) - only WebGoat's own port/context needed remapping.
+    cap_add:
+      - NET_BIND_SERVICE
+    environment:
+      WEBGOAT_PORT: "80"
+      WEBGOAT_CONTEXT: "/"
+    networks:
+      default:
+        aliases:
+          - webgoat.local
+    ports:
+      - "8082:80"
+
   frontend:
     build:
       context: ./frontend
