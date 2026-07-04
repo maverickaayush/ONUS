@@ -39,4 +39,35 @@ support yet), not a bug in the scan itself.
 
 ## Juice Shop (`bkimminich/juice-shop`)
 
-_Pending._
+- **Job ID:** `6c92d05d-50aa-4de9-a453-f259658e1603`
+- **Date:** 2026-07-04
+- **Target:** `juiceshop.local` (docker-network alias, port 3001 published)
+- **Result:** `complete`, all 8 modules `success`, no errors, no retries needed.
+- **Risk score:** 100/100 (capped). Critical=0, High=0, Medium=262, Low=231, Informational=115 (608 total after aggregator dedup; raw per-module count was 660).
+
+**By module (raw finding_count, pre-dedup):** webscan 639, enumeration 9,
+recon 5, headers 5, tech_fingerprint 1, ssl_tls 1, **owasp 0, nuclei 0**.
+webscan duration 308s — the scan's long pole, as expected (Section 4.3.2).
+
+**What it found:** almost entirely ZAP alerts repeated per-URL across Juice
+Shop's many Angular JS chunk files — `Timestamp Disclosure - Unix` (205),
+`Cross-Domain Misconfiguration` / CORS wildcard `Access-Control-Allow-Origin: *`
+(136+), `CSP Header Not Set` (112+), plus headers-module findings (missing
+HSTS/SPF/DMARC/DKIM, no CSP) and enumeration hits (exposed paths). No
+per-URL response-fingerprint collapse applies here since that mechanism keys
+off `http_status`/`http_size`, which only `enumeration.py` attaches (Section
+4.4.3) — so a SPA with many static assets producing the same header-level
+alert legitimately shows up as one finding per file, not a bug.
+
+**Notable gap — 0 OWASP Top 10 and 0 Critical/High, risk score still maxes
+at 100:** same root cause as DVWA — Juice Shop's actual injection/broken-auth
+challenges live behind API calls and authenticated flows that an
+unauthenticated `owasp.py`/ZAP crawl doesn't reach, so this scan again only
+characterizes the *unauthenticated* surface (no login-flow support yet). The
+100/100 risk score with no Critical/High present illustrates
+`compute_risk_score`'s non-linear low end (Section 4.5) working as designed:
+262 Mediums × 2 alone is enough to saturate the 0–100 cap — expected given
+the volume of repeated per-URL Medium alerts above, not a scoring bug.
+
+**Action:** container + image removed after this scan to free disk space
+(see git history / current `docker-compose.yml` for what's live now).
