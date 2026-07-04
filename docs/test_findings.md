@@ -121,3 +121,94 @@ observed data point on how often this ceiling actually gets hit in practice.
 
 **Action:** container + image removed after this scan to free disk space
 (see git history / current `docker-compose.yml` for what's live now).
+
+---
+
+## Metasploitable2 (`tleemcjr/metasploitable2`)
+
+- **Job ID:** `3062b79b-0925-403f-b74f-4ca5eee3ed76`
+- **Date:** 2026-07-04
+- **Target:** `metasploitable.local` (docker-network alias only, no published host
+  port - a deliberately-backdoored multi-service host, not a single web app,
+  see `docker-compose.yml`'s `metasploitable2` service comment).
+- **Result:** `complete`, all 8 modules `success`, no errors, no retries needed,
+  `ai_unavailable: false`.
+- **Risk score:** 100/100 (capped). Critical=0, High=18, Medium=6112, Low=7279,
+  Informational=3526 (16,935 total after aggregator dedup; raw per-module count
+  was 17,708 - webscan alone raised 17,670 raw findings against the bundled
+  DVWA/Mutillidae-alike apps on port 80, same per-URL ZAP-alert volume pattern
+  as Juice Shop).
+
+**Deployment note - the image's default `CMD` doesn't survive as a daemon:**
+`tleemcjr/metasploitable2`'s `CMD` is `services.sh && bash` - a bare `bash`
+with no controlling tty/stdin hits EOF and exits immediately, which under
+`restart: unless-stopped` produced a restart loop (`RestartCount` hit 4 within
+the first minute) and never left the services up long enough to scan. Fixed
+by adding `tty: true` + `stdin_open: true` to the compose service (the
+`-it`-equivalent) - confirmed `RestartCount` stayed at 0 for the rest of the
+run once added.
+
+**By module:** webscan 17670 (raw), recon 20, headers 8, enumeration 8,
+ssl_tls 1, tech_fingerprint 1, **owasp 0, nuclei 0**.
+
+**What it found:** `recon` correctly identified 16 open services via nmap
+`-sV -sC` (vsftpd 2.3.4, OpenSSH 4.7p1, Linux telnetd, Postfix smtpd, Apache
+2.2.8, rpcbind, Samba 3.X-4.X on 139/445, `login`/`tcpwrapped` on 513/514,
+ProFTPD 2121, MySQL 5.0.51a, PostgreSQL 8.3, VNC, X11, AJP13) - by far the
+richest port/service surface of any target so far (every prior target showed
+1-2 open ports). `webscan` found 18 genuine **High** `Path Traversal` hits
+against the bundled web apps on port 80 - the first real, unauthenticated,
+High-severity injection-class finding in this whole test phase that isn't a
+misconfig or a single one-off (WebGoat's SQLi was one hit; this is 18).
+
+**Notable gap - recon's full-port phase silently missed 6 real open ports,
+including the IRC backdoor the whole target was chosen for:** a direct
+`netstat -tlnp` inside the container (and a `python3 socket.connect` probe
+from the worker container) confirmed **IRC is genuinely listening on 6667 and
+6697** (`unrealircd`), plus rmiregistry (1099), the classic `ingreslock`
+backdoor (1524), and Tomcat (8180) - none of which appear anywhere in this
+scan's findings. Root cause, read directly from `recon.py`: Phase 2a's full
+`-p-` sweep only runs when Phase 1 (`--top-ports 100`) finishes in under 30s,
+on the assumption that a fast Phase 1 means the host is "responsive" and a
+full 65k-port sweep will also finish quickly. That assumption holds for every
+other target tested (1-2 open ports, so `-sV -sC` version/script detection is
+cheap) but breaks for a host like this one with 15-20 *concurrently open*
+ports needing per-port service-detection probing - Phase 2a's `--host-timeout
+60s`/`subproc_timeout 70s` (sized for a filtered/mostly-closed host, per the
+module's own docstring) isn't enough time to service-probe every open port on
+a busy multi-service host, so it silently times out and contributes zero new
+ports, leaving the final result as whatever Phase 1's top-100 pass already
+had. Not a crash or schema violation (`status: success`, no error, no
+`incomplete_modules_warning`) - a genuine coverage blind spot on
+many-open-port targets, surfaced for the first time by this specific target.
+Flagging for a possible follow-up (e.g. detecting "many open ports found in
+Phase 1" and widening Phase 2a's timeout budget accordingly) rather than
+fixing now, since it's a scan-tuning tradeoff against Celery's per-task time
+budget, not a bug.
+
+**`nuclei` still at 0** despite the genuinely vulnerable/backdoored services
+present (vsftpd 2.3.4, UnrealIRCd) - the curated template subset (Section
+4.3.7) doesn't include templates for CVEs this old. Consistent with the
+`owasp`/`nuclei` dead-module pattern from every prior target, now confirmed
+for a different reason (template curation scope, not an auth wall - `owasp.py`
+still hit 0 here too since its 5 test functions target OWASP-Top-10-style web
+parameters, not network services).
+
+**ZAP `mem_limit: 4g` verdict - not too tight, no action needed:** monitored
+`docker stats`/`docker inspect` every ~30s for the full run (baseline →
+completion). Peak ZAP memory usage was **2.001 GiB (~50% of the 4GiB limit)**
+at 00:44:52, during `webscan`'s active-scan phase against the 17,670-finding
+surface - the largest finding volume of any target tested. `RestartCount`
+stayed at 0 throughout (baseline and final both 0), `OOMKilled: false`,
+`ExitCode: 0`, no `killed`/`heap`/`gc overhead`/`outofmemory` strings in
+container logs for the scan window. Comfortable headroom at the current
+limit; no reason to raise it based on this run.
+
+**Disk note (secondary to the memory question, but relevant to the ongoing
+space constraint):** free space dropped from 12GB to 7.2GB over the course of
+this single scan (~4.8GB consumed), driven by ZAP's session data for the
+17,670-alert volume - the largest disk delta of any target tested. Worth
+factoring into planning for the next 1-2 targets before a resize.
+
+**Action:** container + image removed after this scan to free disk space
+(see git history / current `docker-compose.yml` for what's live now).
