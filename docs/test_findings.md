@@ -244,3 +244,62 @@ factoring into planning for the next 1-2 targets before a resize.
 
 **Action:** container + image removed after this scan to free disk space
 (see git history / current `docker-compose.yml` for what's live now).
+
+---
+
+## Mutillidae II (`citizenstig/nowasp`)
+
+- **Job ID:** `71e35243-3c07-40f7-85b7-c5572fe6530b`
+- **Date:** 2026-07-04
+- **Target:** `mutillidae.local` (docker-network alias, port 8084 published).
+  Deployment note: `citizenstig/nowasp` (tutum/lamp-based, Apache+MySQL
+  bundled in one container) is self-contained like `bwapp` - no separate DB
+  sidecar needed, unlike the original plan doc's assumption. One-time DB init
+  required (`GET /set-up-database.php`, same as a fresh DVWA/bwapp) before the
+  app served anything but a "database offline" page - done manually before
+  scanning, not part of the scan itself.
+- **Result:** `complete`, all 8 modules `success`, no errors, no retries needed,
+  `ai_unavailable: false`.
+- **Risk score:** 100/100 (capped). Critical=2, High=6, Medium=735, Low=1605,
+  Informational=527 (2875 total after dedup; webscan raised 5305 raw).
+
+**By module:** webscan 5305 (raw), enumeration 21, recon 6, headers 15,
+ssl_tls 1, tech_fingerprint 1, **owasp 0, nuclei 0**.
+
+**What it found - the first genuine Critical findings in this whole test
+phase:** `enumeration` caught `.git/HEAD`, `.git/config` (Critical - matches
+the tool's own severity mapping for exposed VCS metadata, Section 4.3.8) and
+`.git/logs/`, `.git/index` (High) - the `citizenstig/nowasp` image ships with
+its own `.git` directory exposed in the web root, a real, common
+misconfiguration class this tool is specifically designed to catch.
+`webscan` (ZAP) found 4 genuine High **Off-site Redirect** hits on the
+bundled phpMyAdmin's `url.php?url=...` parameter - a real open-redirect
+vulnerability, not a one-off like WebGoat's SQLi or a misconfig like every
+prior target's headers findings.
+
+**Notable gap - `owasp.py` stayed at 0 even here, despite Mutillidae's
+anon-reachable vulnerable pages being exactly why this target was chosen:**
+its 5 test functions appear to only probe the pages actually discovered
+during the scan's own shallow crawl, and neither `owasp.py` nor ZAP's spider
+wandered into Mutillidae's classic `index.php?page=<vulnerable-page>.php`
+navigation structure deeply enough to reach its well-known SQLi/XSS teaching
+pages within the scan's time budget - those pages exist but aren't linked
+from the homepage in a way a shallow crawl finds quickly. Not a crash or
+schema issue; a real reach limitation worth knowing about (the hypothesis
+that "anon-reachable" alone would be enough to exercise `owasp.py` was only
+half right - reachable *and discoverable by a shallow crawl* both matter).
+
+**`nuclei` still at 0**, consistent with its documented HTTP-template-only
+scope (see the Metasploitable2 entry above) applied to a plain LAMP app with
+no unusual CVE-worthy service.
+
+**ZAP note:** `RestartCount` is now at 2 (was 1 after the Metasploitable2 re-
+verification run) - another restart happened somewhere between then and this
+scan's completion. Still `OOMKilled: false`, memory comfortably under the 4GB
+limit during this run (peak observed 1.93GiB). Root cause still undetermined
+across both restarts; flagging as a pattern worth watching rather than a
+solved question - two clean-exit restarts in one session is enough to not be
+pure coincidence, but not enough evidence yet to point at a specific cause.
+
+**Action:** container + image removed after this scan to free disk space
+(see git history / current `docker-compose.yml` for what's live now).
