@@ -303,3 +303,83 @@ pure coincidence, but not enough evidence yet to point at a specific cause.
 
 **Action:** container + image removed after this scan to free disk space
 (see git history / current `docker-compose.yml` for what's live now).
+
+---
+
+## NodeGoat (built from source, `github.com/OWASP/NodeGoat`)
+
+- **Job ID:** `f0027814-19bd-4706-8ff6-59b93c7370c1`
+- **Date:** 2026-07-04
+- **Target:** `nodegoat.local` (docker-network alias, port 8085 published).
+  Deployment note: no usable prebuilt image exists - `vulnerables/web-owasp-
+  nodegoat` on Docker Hub has zero pushed tags (confirmed via its own API).
+  Built from OWASP's own `Dockerfile`/`docker-compose.yml` pattern instead,
+  vendored into `./nodegoat-src` (gitignored, `git clone` of the official
+  repo) with a `mongo:4.4` sidecar - the first target needing an actual
+  `build:` context rather than a plain `image:` pull. `PORT=80` +
+  `NET_BIND_SERVICE` for the same bare-root reason as webgoat/juice-shop
+  (its Dockerfile runs as a non-root `node` user).
+- **Result:** `complete`, all 8 modules `success`, no errors, no retries needed,
+  `ai_unavailable: false`.
+- **Risk score:** 23/100. Critical=0, High=0, Medium=13, Low=11,
+  Informational=9 (33 total - by far the smallest finding volume of any
+  target tested, since NodeGoat is a small, minimal Express app rather than
+  an SPA or a bundled-multi-app image).
+
+**By module:** enumeration 15 (raw), headers 8, recon 5, webscan 8, ssl_tls 1,
+tech_fingerprint 1, **owasp 0, nuclei 0**.
+
+**What it found:** same auth-wall pattern as DVWA - the app redirects
+everything to `/login`, so every finding is misconfig-class (missing CSP/
+HSTS/Permissions-Policy, `X-Powered-By: Express` disclosure, missing SPF/
+DMARC/DKIM). `enumeration` correctly found `/login`, `/signup`, `/tutorial`,
+`/dashboard` (redirects to login) via its wordlist, and correctly collapsed 6
+identically-shaped 302 responses into one grouped finding (Section 4.4's
+response-fingerprint dedup working as designed on a different stack for the
+first time). No IDOR/SSRF/ReDoS reached, for the same root reason as every
+other target - confirms this is a systemic gap (no authenticated-session
+support yet), not something specific to PHP-shaped auth walls.
+
+**`tech_fingerprint`/`recon` confirm the intended stack-diversity value of
+this target:** `X-Powered-By: Express` and plain HTTP-only (no TLS, matching
+`server.js`'s HTTPS block being commented out in the actual source) are
+genuinely different signals than every PHP/Java target tested so far -
+`whatweb`/`wafw00f` and the header fingerprint correctly characterize a
+Node/Express stack rather than defaulting to PHP-shaped assumptions anywhere.
+
+**ZAP note - the restart pattern continues:** `RestartCount` is now at 4 (was
+2 after Mutillidae). Checked ZAP's own logs directly this time; they only show
+a fresh, clean startup sequence with no error/exception preceding it - not
+informative about the cause. Still `OOMKilled: false` every time, and memory
+at check time was low (604MiB - this was the lightest scan of the three).
+**Conclusion on the original question:** across all three targets (heaviest:
+17,670 raw findings/2.6GiB peak; lightest: 8 raw findings/604MiB), the 4GB
+`mem_limit` was never remotely threatened - peak observed usage across this
+entire practicality-test phase was ~2.6GiB (~65% of the limit), and
+`OOMKilled` was false on every single check. **The restarts are real but
+demonstrably not a memory problem** - happening at both high and low memory
+points, with clean exit codes, not OOM kills. Worth a dedicated investigation
+if it becomes disruptive (e.g. correlate with `docker compose up` runs
+against *other* services, which is when all four restarts happened to
+coincide), but it's a separate question from "is 4GB enough," which this
+phase answers clearly: yes.
+
+**Action:** container + image removed after this scan to free disk space
+(see git history / current `docker-compose.yml` for what's live now).
+
+---
+
+## Practicality-test queue: complete
+
+All three kept targets (Mutillidae II, NodeGoat, Metasploitable2) have been
+deployed, scanned, documented, and torn down; bWAPP/Security Shepherd/
+Hackazon/BWA VM remain skipped-as-redundant per
+`docs/practicality_test_plan.md`. Combined with the earlier DVWA/Juice Shop/
+WebGoat entries, this closes out the practicality-test phase for every
+approved self-hostable target. Cross-target patterns worth carrying forward:
+`owasp.py`/`nuclei`'s near-total silence across every web-app target traces
+to two distinct, now-understood causes (authenticated-content walls, and
+nuclei's HTTP-only template scope) rather than one; the recon full-port
+timeout gap was the one genuine bug found and it's fixed and verified; the
+ZAP `mem_limit` question is answered (4GB is fine); the ZAP restart pattern
+is a new, still-open observation for future attention.
