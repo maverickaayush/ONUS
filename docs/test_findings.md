@@ -181,18 +181,50 @@ ports, leaving the final result as whatever Phase 1's top-100 pass already
 had. Not a crash or schema violation (`status: success`, no error, no
 `incomplete_modules_warning`) - a genuine coverage blind spot on
 many-open-port targets, surfaced for the first time by this specific target.
-Flagging for a possible follow-up (e.g. detecting "many open ports found in
-Phase 1" and widening Phase 2a's timeout budget accordingly) rather than
-fixing now, since it's a scan-tuning tradeoff against Celery's per-task time
-budget, not a bug.
+**Fixed and verified same-session:** `recon.py`'s Phase 2a budget raised from
+`host_timeout='60s'/subproc_timeout=70` to `'240s'/250` (recon's actual task
+limit is 900s/1080s soft/hard - see `@app.task` - so this has ample headroom;
+the old 70s figure was never revisited after being sized for a filtered/
+mostly-closed host). Re-ran the identical scan against the identical target
+after rebuilding the worker/backend images: **job `debda06d-44cb-4214-a029-354a78a6d427`**,
+recon duration went from 92-109s to **213s**, and open-port count went from
+**16 to 25** - every previously-missed port now appears (`1099/tcp java-rmi`,
+`1524/tcp ingreslock`, **`6667/tcp irc UnrealIRCd`, `6697/tcp irc UnrealIRCd`**,
+`8180/tcp Apache Tomcat`), plus ports the first scan didn't even know existed
+(`512/tcp exec`, `3632/tcp distccd` - a well-known unauthenticated-RCE
+service, `8787/tcp Ruby DRb`, a second `32985/tcp java-rmi`). Confirms the fix
+closes the gap rather than just widening it partially.
 
-**`nuclei` still at 0** despite the genuinely vulnerable/backdoored services
-present (vsftpd 2.3.4, UnrealIRCd) - the curated template subset (Section
-4.3.7) doesn't include templates for CVEs this old. Consistent with the
-`owasp`/`nuclei` dead-module pattern from every prior target, now confirmed
-for a different reason (template curation scope, not an auth wall - `owasp.py`
-still hit 0 here too since its 5 test functions target OWASP-Top-10-style web
-parameters, not network services).
+**Note (unrelated to the fix, caught during re-verification):** ZAP's
+`RestartCount` went from 0 to 1 between this run and the previous one -
+timestamped to 19:28:35 UTC, about 12 minutes *before* this second scan
+started, so it didn't affect these results. `OOMKilled: false`, `ExitCode: 0`
+- a clean exit, not a cgroup memory-limit kill, so it doesn't change the
+mem_limit verdict below. Root cause undetermined: ZAP's own container logs
+for that window are empty, most likely because the log driver's `max-size:
+50m` rotated away whatever message explained it, given the first scan's
+unusually high 17,670-alert volume. Worth keeping an eye on across future
+targets, but not evidence of an OOM problem on its own.
+
+**`nuclei` still at 0 - correction to the root cause below.** Initially
+attributed to "curated template subset doesn't cover CVEs this old" - that
+guess was wrong. Reading `nuclei_scan.py` directly: it always calls `nuclei -u
+<http(s)-url>` against only the HTTP-protocol template folders (`cves/`,
+`vulnerabilities/`, `misconfiguration/`, `exposed-panels/`, `technologies/`,
+`exposures/`) and never nuclei's `network/` template category, where raw-TCP
+protocol templates (the ones that would actually apply to vsftpd/UnrealIRCd)
+live. Against an HTTP-only target this is invisible; against a genuinely
+multi-service host like this one it means nuclei was structurally never going
+to find anything here regardless of CVE age. **Deliberately not fixed as part
+of this pass:** nuclei's official `network/` backdoor templates for vsftpd
+and UnrealIRCd don't just banner-check, they complete the actual backdoor
+handshake (e.g. vsftpd's `:)`-suffixed username opens a live bind shell on
+port 6200) - wiring those in would mean *triggering* the backdoor, not
+detecting it, which breaks Section 8's non-destructive-only guardrail.
+Flagged for the operator to decide, not something to silently expand.
+`owasp.py` also stayed at 0 here, expected - its 5 test functions target
+OWASP-Top-10-style web parameters, not network services, so an HTTP-only
+scope is the correct behavior for that module (unlike nuclei's gap above).
 
 **ZAP `mem_limit: 4g` verdict - not too tight, no action needed:** monitored
 `docker stats`/`docker inspect` every ~30s for the full run (baseline →

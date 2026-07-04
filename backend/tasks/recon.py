@@ -159,8 +159,9 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
         that aren't in the top-100. Small, bounded, and catches the high-port
         services a filtered host would otherwise hide.
 
-    nmap stays bounded to ~180s worst case (filtered: Phase 1 ~130s + Phase 2b
-    ~50s), within Celery's 300s soft limit.
+    nmap stays bounded to ~250s worst case (filtered: Phase 1 ~180s + Phase 2b
+    ~60s; responsive-but-busy: Phase 1 ~30s + Phase 2a ~250s), well within
+    this task's 900s/1080s soft/hard Celery limit (see @app.task below).
     """
     ports = {}
 
@@ -180,7 +181,7 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
         # Phase 2a: responsive host - full port range for complete coverage.
         for portid, finding in _nmap_phase(
             scan_id, domain, port_args=['-p-'],
-            host_timeout='60s', subproc_timeout=70, tag='full',
+            host_timeout='240s', subproc_timeout=250, tag='full',
         ).items():
             ports.setdefault(portid, finding)
     else:
