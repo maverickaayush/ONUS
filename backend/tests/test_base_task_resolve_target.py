@@ -48,6 +48,14 @@ class TestResolveTargetUrl:
         with patch("requests.get", side_effect=fake_get):
             assert resolve_target_url(DOMAIN) == f"https://{DOMAIN}"
 
+    def test_https_redirects_down_to_http_returns_http(self):
+        # The mirror case: https succeeds on the very first attempt (no
+        # exception raised at all) but its own redirect chain lands on
+        # http - the scheme that "worked" (https, no exception) must not
+        # be blindly trusted; resp.url's final scheme (http) wins.
+        with patch("requests.get", return_value=_resp(f"http://{DOMAIN}/")):
+            assert resolve_target_url(DOMAIN) == f"http://{DOMAIN}"
+
     def test_both_fail_falls_back_to_https(self):
         with patch("requests.get", side_effect=requests.exceptions.ConnectionError("refused")):
             assert resolve_target_url(DOMAIN) == f"https://{DOMAIN}"

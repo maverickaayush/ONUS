@@ -44,3 +44,6 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+# graphify tool output
+graphify-out/

@@ -76,7 +76,7 @@ def _run_nuclei(scan_id: str, target: str, domain: str) -> List[dict]:
                 '-t', 'exposed-panels/', '-t', 'technologies/', '-t', 'exposures/',
                 '-severity', 'critical,high,medium,low',
                 '-json-export', out_path,
-                '-silent', '-no-interactivity',
+                '-silent', '-duc',
                 '-timeout', '10', '-retries', '1',
                 '-rate-limit', '20', '-max-host-error', '5',
                 '-stats-interval', '30',
