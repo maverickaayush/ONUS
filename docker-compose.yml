@@ -33,6 +33,14 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+    volumes:
+      - ./zap-sessions:/home/zap/.ZAP/session
+    mem_limit: 4g
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   backend:
     build:
@@ -115,6 +123,41 @@ services:
           - dvwa.local
     ports:
       - "8081:80"
+
+  bwapp:
+    image: raesene/bwapp
+    restart: unless-stopped
+    # Self-contained image (Apache+MySQL via supervisord in one container,
+    # already listening on :80) - no separate DB sidecar or PORT remap
+    # needed, unlike webgoat/juice-shop above.
+    networks:
+      default:
+        aliases:
+          - bwapp.local
+    ports:
+      - "8083:80"
+
+  metasploitable2:
+    image: tleemcjr/metasploitable2
+    restart: unless-stopped
+    # Deliberately vulnerable multi-service Linux host (vsftpd backdoor, Samba,
+    # Telnet, RPC, MySQL, PostgreSQL, VNC, X11, HTTP), not a single web app -
+    # unlike the other targets above, intentionally NOT publishing any host
+    # port here: these are real backdoored/unauthenticated network services,
+    # not just an HTTP app, so host-network exposure isn't needed (the
+    # backend/worker containers reach every port via the alias below over
+    # Docker's internal network already) and is avoided as a precaution.
+    # tty/stdin_open (compose's `-it` equivalent): the image's CMD is
+    # `services.sh && bash` - a bare `bash` with no controlling tty/stdin
+    # exits immediately (EOF), which without this looped restart: unless-
+    # stopped every few seconds and never left the services up long enough
+    # to scan.
+    tty: true
+    stdin_open: true
+    networks:
+      default:
+        aliases:
+          - metasploitable.local
 
   webgoat:
     image: webgoat/webgoat
