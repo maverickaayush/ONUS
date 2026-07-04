@@ -331,23 +331,25 @@ export function ScanStatus({ jobId, domain: initialDomain }: { jobId: string; do
         {!allDone && !failed && !cancelled && (
           <div className="vapt-fade-up backdrop-blur-sm bg-white/5 border border-white/8 rounded-2xl p-6" style={{ animationDelay: "525ms" }}>
             <h2 className="text-xs font-medium uppercase tracking-wide text-slate-400 mb-5">What happens next?</h2>
-            <div className="flex items-center justify-between gap-1">
-              {FLOW_NODES.map((node, i) => (
-                <div key={node} className="flex items-center flex-1 last:flex-none">
-                  <div className="flex flex-col items-center gap-2 flex-shrink-0">
-                    <div className="h-9 w-9 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-xs font-bold text-blue-300">
-                      {i + 1}
+            <div className="overflow-x-auto -mx-6 px-6">
+              <div className="flex items-center justify-between gap-1 min-w-[420px]">
+                {FLOW_NODES.map((node, i) => (
+                  <div key={node} className="flex items-center flex-1 last:flex-none">
+                    <div className="flex flex-col items-center gap-2 flex-shrink-0">
+                      <div className="h-9 w-9 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-xs font-bold text-blue-300">
+                        {i + 1}
+                      </div>
+                      <span className="text-[11px] text-slate-400 font-medium whitespace-nowrap">{node}</span>
                     </div>
-                    <span className="text-[11px] text-slate-400 font-medium whitespace-nowrap">{node}</span>
+                    {i < FLOW_NODES.length - 1 && (
+                      <svg className="flex-1 h-px mx-1 min-w-4" preserveAspectRatio="none" viewBox="0 0 100 1" aria-hidden="true">
+                        <line x1="0" y1="0.5" x2="100" y2="0.5" stroke="rgba(59,130,246,0.4)" strokeWidth="1" strokeDasharray="4 3"
+                          style={{ strokeDashoffset: 200, animation: `vapt-dash-draw 1.2s ease-out ${0.7 + i * 0.25}s forwards` }} />
+                      </svg>
+                    )}
                   </div>
-                  {i < FLOW_NODES.length - 1 && (
-                    <svg className="flex-1 h-px mx-1 min-w-4" preserveAspectRatio="none" viewBox="0 0 100 1" aria-hidden="true">
-                      <line x1="0" y1="0.5" x2="100" y2="0.5" stroke="rgba(59,130,246,0.4)" strokeWidth="1" strokeDasharray="4 3"
-                        style={{ strokeDashoffset: 200, animation: `vapt-dash-draw 1.2s ease-out ${0.7 + i * 0.25}s forwards` }} />
-                    </svg>
-                  )}
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         )}

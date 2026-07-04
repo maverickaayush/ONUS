@@ -8,7 +8,9 @@ from typing import List
 import requests
 from celery.exceptions import SoftTimeLimitExceeded
 
-from tasks.base_task import BaseTask, normalize_finding, update_module_status, build_module_result
+from tasks.base_task import (
+    BaseTask, normalize_finding, update_module_status, build_module_result, resolve_target_url,
+)
 from tasks.celery_app import app
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -302,7 +304,7 @@ def run_owasp(scan_id: str, domain: str) -> dict:
     update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
     findings = []
-    target = f'https://{domain}'
+    target = resolve_target_url(domain)
 
     try:
         for test_fn in (test_sqli, test_xss, test_path_traversal,

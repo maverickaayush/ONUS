@@ -78,6 +78,36 @@ crashed, OOM) must demote to `unverified` with a note starting
 "Headless-browser verification failed", never raise out of
 `verify_findings()`.
 
+## Operator decision flow (pause / retry / continue / cancel)
+Force a pause without a real failing module — hand-build the chord's input
+(the project docs §4.3b):
+```python
+from tasks.scan_orchestrator import aggregate_and_analyse
+results = [{"module": "recon", "status": "failed", "error": "nmap timed out",
+            "findings": [], "tool_versions": {}, "finding_count": 0, "duration_seconds": 1.0}]
+# ...plus success envelopes for the other 7 modules
+aggregate_and_analyse(results, scan_id, domain)
+```
+Confirm `scan.status` becomes `awaiting_user_decision` and `GET
+/api/scan/{id}/status` returns `module_errors`/`can_retry`. Then walk all
+three decisions via `POST /api/scan/{id}/decision`: `retry` (re-dispatches
+only the failed module, `can_retry` flips `False` after its one allowed
+retry fails again), `continue` (finalizes, failed module stays `failed` in
+`module_execution`, PDF still generates), `cancel` (`status` →
+`cancelled`, no PDF). `backend/tests/test_decision_flow.py` covers this
+without needing a live Celery/Redis stack — run that first if something
+regresses here.
+
+## Stuck-scan reaper
+Set a scan's `started_at` further back than `STUCK_SCAN_DEADLINE`
+(`routers/scan.py`) while `status` is `queued`/`running`/`analysing`, then
+hit `GET /api/scan/{id}/status` — it should flip to `failed` on that same
+request (this is a hard Celery `time_limit` SIGKILL safety net, distinct
+from the decision flow above, which only fires for failures a module
+reported about itself). `backend/tests/test_stuck_scan_reaper.py` covers
+the boundary cases (just under/over deadline, already-complete scans never
+reaped).
+
 ## Aggregator + Ollama
 Feed the aggregator a small hand-written list of findings first — confirms
 dedup/sort/OWASP-mapping without burning Ollama calls. Then:

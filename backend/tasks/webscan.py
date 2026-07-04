@@ -17,7 +17,7 @@ from zapv2 import ZAPv2
 from config import settings
 from tasks.base_task import (
     BaseTask, normalize_finding, update_module_status,
-    get_tool_version, build_module_result,
+    get_tool_version, build_module_result, resolve_target_url,
 )
 from tasks.celery_app import app
 
@@ -510,7 +510,7 @@ def run_webscan(scan_id: str, domain: str) -> dict:
     update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
     findings = []
-    target_url = f'https://{domain}'
+    target_url = resolve_target_url(domain)
 
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
