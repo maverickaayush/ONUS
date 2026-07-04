@@ -10,7 +10,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import (
     BaseTask, normalize_finding, update_module_status,
-    get_tool_version, build_module_result,
+    get_tool_version, build_module_result, resolve_target_url,
 )
 from tasks.celery_app import app
 
@@ -229,7 +229,7 @@ def run_tech_fingerprint(scan_id: str, domain: str) -> dict:
     """
     update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
-    target = f'https://{domain}'
+    target = resolve_target_url(domain)
     findings: List[dict] = []
     whatweb_ok = wafw00f_ok = False
     whatweb_error = wafw00f_error = None

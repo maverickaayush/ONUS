@@ -9,7 +9,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import (
     BaseTask, normalize_finding, update_module_status,
-    get_tool_version, build_module_result,
+    get_tool_version, build_module_result, resolve_target_url,
 )
 from tasks.celery_app import app
 
@@ -144,7 +144,7 @@ def run_nuclei(scan_id: str, domain: str) -> dict:
     update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
     findings = []
-    target = f'https://{domain}'
+    target = resolve_target_url(domain)
     try:
         findings = _run_nuclei(scan_id, target, domain)
         tool_versions = {'nuclei': get_tool_version('nuclei', '-version')}

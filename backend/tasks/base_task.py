@@ -60,6 +60,47 @@ _ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 _VERSION_LINE_RE = re.compile(r'version|\bv?\d+\.\d+', re.IGNORECASE)
 
 
+def resolve_target_url(domain: str, timeout: int = 10) -> str:
+    """
+    Try https first, fall back to http on any connection-level failure -
+    the shared entry point every module's target URL should route through
+    instead of hardcoding f'https://{domain}'. Mirrors headers.py's original
+    inline https-then-http probe (Section 4.3.4), which is why headers.py
+    alone kept finding real results against HTTP-only targets while every
+    other web-facing module (webscan/owasp/tech_fingerprint/nuclei/
+    enumeration) silently no-op'd - each hardcoded https unconditionally,
+    so a target with nothing listening on 443 always failed their first
+    request and returned empty findings, indistinguishable from a clean scan.
+    Both schemes failing returns 'https://{domain}' unchanged - the caller's
+    own request will fail too and each module already reports that
+    gracefully (an Informational 'unreachable' finding, not a crash).
+
+    Uses the *final* response's scheme (post-redirects), not the scheme
+    requested - a plain 'http://{domain}' probe that 301s to https is common
+    (e.g. an HSTS redirect), and returning 'http://...' in that case would
+    make every downstream module eat a redirect hop on its first request,
+    and silently break checks that intentionally disable redirects to
+    detect them (owasp.py's open_redirect test). The host itself is never
+    replaced with wherever the redirect chain lands - only the scheme is
+    taken from it - since scanning whatever host a redirect points to,
+    rather than the authorized domain, would silently widen scan scope.
+    """
+    import requests
+    from urllib.parse import urlsplit
+
+    for scheme in ('https', 'http'):
+        try:
+            resp = requests.get(f'{scheme}://{domain}', timeout=timeout, verify=False,
+                                 allow_redirects=True)
+            final_scheme = urlsplit(resp.url).scheme or scheme
+            return f'{final_scheme}://{domain}'
+        except requests.exceptions.SSLError:
+            continue
+        except Exception:
+            continue
+    return f'https://{domain}'
+
+
 def get_tool_version(tool: str, *version_flags: str, timeout: int = 5) -> str:
     """
     Return the first line of `tool <version_flags>` output that actually

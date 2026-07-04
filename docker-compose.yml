@@ -82,6 +82,40 @@ services:
       - ./backend/subfinder-config/provider-config.yaml:/root/.config/subfinder/provider-config.yaml:ro
     command: celery -A tasks.celery_app worker --loglevel=info -c 5
 
+  # --- Local-only, self-hosted validation targets (the project docs §8) ---
+  # Intentionally-vulnerable practice apps, not internet services - no ToS/
+  # authorization concerns since we own and run the container ourselves.
+  # Reachable from backend/worker via the aliases below (Docker's embedded
+  # DNS), and from the host browser via the published ports for manual
+  # comparison against the scan report.
+  juice-shop:
+    image: bkimminich/juice-shop
+    restart: unless-stopped
+    # Juice Shop's default port (3000) isn't 80/443, and the VAPT tool's
+    # `domain` field intentionally has no port slot (Section 3 schema treats
+    # it as a bare hostname) - every scanning module assumes 80/443. PORT=80
+    # makes the app itself listen where the tool expects it, matching how a
+    # real-world target normally looks, rather than teaching the tool a
+    # port-per-domain concept it doesn't have.
+    environment:
+      PORT: "80"
+    networks:
+      default:
+        aliases:
+          - juiceshop.local
+    ports:
+      - "3001:80"
+
+  dvwa:
+    image: vulnerables/web-dvwa
+    restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          - dvwa.local
+    ports:
+      - "8081:80"
+
   frontend:
     build:
       context: ./frontend
