@@ -14,8 +14,10 @@ class ScanStatus(str, enum.Enum):
     queued = "queued"
     running = "running"
     analysing = "analysing"
+    awaiting_user_decision = "awaiting_user_decision"
     complete = "complete"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class Scan(Base):
