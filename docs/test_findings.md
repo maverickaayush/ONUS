@@ -484,3 +484,38 @@ specifically - it does not explain the earlier, still-unresolved restarts
 observed during unauthenticated scans (Metasploitable2, Mutillidae,
 NodeGoat, see above), where no authentication was configured at all. That
 earlier pattern remains open.
+
+**Spot-check beyond DVWA: the pattern holds.** Re-ran authenticated scanning
+against both remaining kept targets to confirm the fix generalizes, not just
+works for one login form's specific shape.
+
+- **Mutillidae** (job `b5b9c587-1288-4b15-80a4-196759ec3ce6`, `admin`/
+  `adminpass` - no CSRF token on this form, structurally different from
+  DVWA's): all 8 modules `success`, `RestartCount` unchanged, `webscan` 5773
+  raw findings including 3 Critical/8 High, `owasp` 10 findings (1 Critical
+  path traversal, SQLi, XSS, open redirects). Mostly overlaps what the
+  crawl-depth fix already found unauthenticated, which is expected -
+  Mutillidae keeps most content anon-reachable by design - but confirms auth
+  doesn't break anything and coexists cleanly with the crawl feature.
+- **NodeGoat** (job `559b31db-bc7f-49a4-905c-b9c060f4e12d`, seeded default
+  `admin`/`Admin_123` account found in `nodegoat-src/artifacts/db-reset.js`;
+  login field is `userName` not `username`; its CSRF token field exists but
+  ships with an empty value and isn't actually validated - a real, deliberate
+  NodeGoat vulnerability, not a bug in the login flow): all 8 modules
+  `success`, `RestartCount` unchanged, `webscan` went from 8 raw findings
+  (earlier unauthenticated scan, misconfig-only) to **238**, including
+  genuine High-severity **Persistent XSS, Reflected XSS, SQL Injection, Path
+  Traversal, External Redirect, and Off-site Redirect** - all previously
+  unreachable behind `/login`. `owasp` found 0 here (its crawl+5-test
+  approach didn't happen to hit the same vulnerable pages ZAP's spider+ascan
+  did on this particular app - not a regression, just a different reach).
+  Note: none of the findings are IDOR-specific - ZAP's active-scan rules
+  don't include a dedicated IDOR detector (it requires semantic
+  understanding of authorization logic that generic payload-based scanning
+  can't infer), so NodeGoat's signature vulnerability class remains outside
+  this tool's detection surface even with authenticated access - a real,
+  known limitation of automated scanning in general, not something this fix
+  was expected to close.
+
+Both targets deployed, scanned, and torn down to free disk immediately
+after.
