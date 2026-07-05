@@ -251,26 +251,45 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
         # below need no code changes - ZAP transparently carries whatever
         # session it establishes into every request once this is set up.
         #
-        # KNOWN LIMITATION, confirmed by direct testing against DVWA (proxying
-        # a request through ZAP with forced-user mode enabled still returned
-        # the login form, not authenticated content): this simple
-        # `formBasedAuthentication` config sends only username/password on
-        # every (re-)login ZAP performs internally. It has no way to include
-        # a submit-button field some apps require (DVWA's `Login=Login`) or
-        # a fresh per-request CSRF token (DVWA's `user_token`, NodeGoat's
-        # `_csrf`) - both are static in `login_data` below, not dynamically
-        # re-fetched. owasp.py's own `_make_session()` solves this properly
-        # (fetches the login page fresh and submits every field on the form),
-        # but replicating that here would mean ZAP script-based authentication
-        # (a login script ZAP runs, not a static config blob) - a real,
-        # meaningfully larger scope increase, not done in this pass. Left in
-        # place because it's still correct for login forms with neither
-        # quirk, and is harmless (non-fatal, silently a no-op) against ones
-        # it can't handle.
+        # Uses ZAP script-based authentication (zap-scripts/vapt_form_auth.js,
+        # mounted read-only into the zap service - see docker-compose.yml),
+        # not the simpler `formBasedAuthentication` config. That simpler
+        # config only sends a static username/password template on every
+        # (re-)login ZAP performs internally, with no way to include a
+        # submit-button field some apps require (DVWA's `Login=Login`) or a
+        # fresh per-request CSRF token (DVWA's `user_token`, NodeGoat's
+        # `_csrf`) - confirmed NOT to work by direct testing before this was
+        # replaced with the script below. The script mirrors owasp.py's own
+        # `_make_session()`/`_FormFieldExtractor` exactly: GET the login page
+        # fresh, submit every field already on the form with username/
+        # password overridden, rather than special-casing known CSRF field
+        # names. Confirmed working by direct testing against DVWA (proxying
+        # a request through ZAP with forced-user mode enabled now returns
+        # authenticated content, not the login form).
         #
         # Non-fatal on any failure here, matching this function's existing
         # "ZAP is one of three optional tools" resilience pattern - an
         # unauthenticated scan is still better than no scan.
+        #
+        # Deliberately NEVER calls zap.authentication.set_logged_in_indicator(),
+        # even though AuthConfig accepts logged_in_indicator (owasp.py's own
+        # _make_session() does use it, as a one-time best-effort check - that
+        # usage is fine). On the ZAP side it's a different, much more
+        # dangerous mechanism: once set, ZAP checks the regex against every
+        # single response the spider/active-scanner receives - including
+        # CSS/JS/image/redirect/error responses that legitimately never
+        # contain the indicator text - and its "Insights" add-on counts each
+        # non-match as an authentication failure. Confirmed by direct
+        # testing: with the indicator set, ZAP hit its 100-failure threshold
+        # and self-terminated the entire daemon in ~1 second of real
+        # scanning (not a crash or OOM - "Shutting down ZAP due to High
+        # Level Insight: ... insight.auth.failure : 100"), even though the
+        # authenticate() script itself was working correctly the whole time
+        # (proven by a clean, direct call to _run_zap with the indicator
+        # omitted: 95 real findings, zero disconnects). Thread-count/
+        # concurrency tuning was tried first and looked like a fix in
+        # isolated tests, but the real culprit was this indicator check, not
+        # load - concurrency wasn't touched in the end.
         from tasks.auth_store import get_scan_auth
         auth = get_scan_auth(scan_id)
         if auth:
@@ -278,15 +297,29 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
                 ctx_name = f'ctx-{scan_id}'
                 context_id = zap.context.new_context(ctx_name)
                 zap.context.include_in_context(ctx_name, re.escape(target_url) + '.*')
-                login_data = (f'{auth["username_field"]}={{%username%}}'
-                              f'&{auth["password_field"]}={{%password%}}')
-                configparams = (f'loginUrl={quote(auth["login_url"], safe="")}'
-                                 f'&loginRequestData={quote(login_data, safe="")}')
+                # The script is a fixed, shared name (not scan_id-scoped) since
+                # it's identical content for every scan - ZAP's script store
+                # persists across sessions, so a second scan's zap.script.load()
+                # would otherwise hit ApiException: ALREADY_EXISTS (confirmed
+                # during this feature's own verification). Load only if not
+                # already present, rather than remove-then-reload every scan -
+                # this file never changes at runtime in production, and
+                # removing a shared script could disrupt a *different*,
+                # concurrently-running authenticated scan using the same one
+                # (Section 8 allows up to 3 concurrent scans).
+                if not any(s.get('name') == 'vapt-form-auth' for s in zap.script.list_scripts):
+                    zap.script.load(
+                        'vapt-form-auth', 'authentication', 'ECMAScript : Graal.js',
+                        '/zap-scripts/vapt_form_auth.js', 'VAPT form auth',
+                    )
+                configparams = (
+                    'scriptName=vapt-form-auth'
+                    f'&loginUrl={quote(auth["login_url"], safe="")}'
+                    f'&usernameField={quote(auth["username_field"], safe="")}'
+                    f'&passwordField={quote(auth["password_field"], safe="")}'
+                )
                 zap.authentication.set_authentication_method(
-                    context_id, 'formBasedAuthentication', configparams)
-                if auth.get('logged_in_indicator'):
-                    zap.authentication.set_logged_in_indicator(
-                        context_id, auth['logged_in_indicator'])
+                    context_id, 'scriptBasedAuthentication', configparams)
                 user_id = zap.users.new_user(context_id, 'vapt-user')
                 zap.users.set_authentication_credentials(
                     context_id, user_id,

@@ -35,6 +35,9 @@ services:
       start_period: 30s
     volumes:
       - ./zap-sessions:/home/zap/.ZAP/session
+      # Script-based auth (webscan.py's ZAP setup) - loaded via
+      # zap.script.load() at scan time, read-only since ZAP only reads it.
+      - ./zap-scripts:/zap-scripts:ro
     mem_limit: 4g
     logging:
       driver: "json-file"
