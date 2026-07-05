@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     # Confidence verification stage (analysis/verifier.py) - passive
     # re-observation of verifiable findings between aggregation and scoring.
     ENABLE_VERIFICATION: bool = True
+    # ZAP's session-data bind mount (same host dir the zap service writes to,
+    # per docker-compose.yml's `zap`/`worker` volumes) - the worker needs this
+    # to prune a scan's session files after its own PDF is generated (Section
+    # 4.4's disk-growth concern; see scan_orchestrator.py's _finalize()).
+    # Empty = pruning is a no-op (e.g. native dev, no shared volume set up).
+    ZAP_SESSIONS_DIR: str = ""
 
 
 settings = Settings()

@@ -1,4 +1,7 @@
+import glob
 import logging
+import os
+import shutil
 from datetime import datetime
 from typing import Dict, List, Optional
 from celery import group, chord
@@ -18,6 +21,32 @@ MAX_RETRIES_PER_MODULE = 1
 def _failed_modules(results: List[dict]) -> List[str]:
     return [r.get('module') for r in results
             if isinstance(r, dict) and r.get('status') not in ('success', 'partial')]
+
+
+def _prune_zap_session(scan_id: str) -> None:
+    """
+    Delete this scan's ZAP session files (webscan.py's `zap.core.new_session(
+    name=scan_id)` writes `{scan_id}.session*` + a `.session.tmp/` dir into
+    the shared zap-sessions volume). Safe to run once the PDF is generated -
+    the session data has already been fully consumed into `ai_analysis`, so
+    keeping it around only costs disk (observed up to ~2.4GB for one heavy
+    scan - see docs/test_findings.md's Metasploitable2 entries). No-op if
+    ZAP_SESSIONS_DIR isn't configured (e.g. native dev without the shared
+    volume) or the directory doesn't exist.
+    """
+    from config import settings
+    sessions_dir = settings.ZAP_SESSIONS_DIR
+    if not sessions_dir or not os.path.isdir(sessions_dir):
+        return
+    for entry in glob.glob(os.path.join(sessions_dir, f'{scan_id}.session*')):
+        try:
+            if os.path.isdir(entry):
+                shutil.rmtree(entry)
+            else:
+                os.remove(entry)
+        except OSError as e:
+            logger.warning("Failed to prune ZAP session file %s for scan %s: %s",
+                           entry, scan_id, e)
 
 
 def _can_retry(failed_modules: List[str], retry_counts: Dict[str, int]) -> bool:
@@ -331,6 +360,12 @@ def _finalize(results: list, scan_id: str, domain: str) -> None:
             db.add(report)
         except Exception as e:
             logger.error("PDF generation failed for scan %s: %s", scan_id, e)
+
+        # --- Step 8: prune ZAP session data now that it's been consumed ---
+        try:
+            _prune_zap_session(scan_id)
+        except Exception as e:
+            logger.warning("ZAP session pruning failed for scan %s: %s", scan_id, e)
 
         scan.status = ScanStatus.complete
         scan.completed_at = datetime.utcnow()
