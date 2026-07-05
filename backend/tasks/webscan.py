@@ -171,12 +171,26 @@ def _wait_for_zap(base_url: str, timeout: int = _ZAP_READY_TIMEOUT) -> bool:
 # ZAP scanning
 # ---------------------------------------------------------------------------
 
-def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Optional[str]]:
+def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Optional[str], bool]:
     """
     Run OWASP ZAP: spider + active scan + collect alerts.
-    Returns (normalized findings, zap_version) - zap_version comes from the
-    ZAP API itself (zap.core.version), not subprocess, since ZAP is a daemon/
-    sidecar rather than a plain CLI tool. None if ZAP never became reachable.
+    Returns (normalized findings, zap_version, disconnected_mid_scan).
+    zap_version comes from the ZAP API itself (zap.core.version), not
+    subprocess, since ZAP is a daemon/sidecar rather than a plain CLI tool;
+    None if ZAP never became reachable.
+
+    disconnected_mid_scan is distinct from "ZAP never became reachable at
+    all" (that case is the pre-existing, deliberate "ZAP is one of three
+    optional tools" behavior below - not a failure). It's True only when ZAP
+    passed its initial readiness check, scanning started, and it then went
+    unreachable during spider/active-scan polling or alert retrieval - e.g. a
+    ZAP daemon restart mid-scan (observed in practice, see docs/
+    test_findings.md's "ZAP restart pattern" notes). That case previously
+    looked identical to "ZAP legitimately found nothing" (empty findings,
+    status='success') - a real instance of the exact silent-data-loss anti-
+    pattern Section 4.3/the project docs warns against, since 3+ minutes of spider/
+    ascan time had already been sunk into a target that never got its
+    results collected.
 
     Two modes, chosen by settings.ZAP_URL:
     - Remote (Docker): ZAP runs as a separate sidecar container reachable at
@@ -189,13 +203,14 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
     findings = []
     proc = None
     zap_version = None
+    disconnected_mid_scan = False
     remote_zap_url = settings.ZAP_URL.rstrip('/')
 
     try:
         if remote_zap_url:
             if not _wait_for_zap(remote_zap_url, timeout=_ZAP_READY_TIMEOUT):
                 logger.warning("Remote ZAP not ready for scan %s - skipping ZAP", scan_id)
-                return findings, zap_version
+                return findings, zap_version, disconnected_mid_scan
 
             zap = ZAPv2(
                 apikey='',
@@ -210,12 +225,12 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
             port = _zap_port(scan_id)
             proc = _start_zap(scan_id, port)
             if proc is None:
-                return findings, zap_version
+                return findings, zap_version, disconnected_mid_scan
 
             local_base_url = f'http://localhost:{port}'
             if not _wait_for_zap(local_base_url, timeout=_ZAP_READY_TIMEOUT):
                 logger.warning("ZAP not ready for scan %s - skipping ZAP", scan_id)
-                return findings, zap_version
+                return findings, zap_version, disconnected_mid_scan
 
             zap = ZAPv2(
                 apikey='',
@@ -239,7 +254,10 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
             try:
                 if int(zap.spider.status(spider_id)) >= 100:
                     break
-            except Exception:
+            except Exception as e:
+                logger.error("ZAP spider status check failed for scan %s (ZAP "
+                             "may have gone unreachable): %s", scan_id, e)
+                disconnected_mid_scan = True
                 break
             time.sleep(3)
         else:
@@ -253,7 +271,10 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
                 try:
                     if int(zap.ascan.status(ascan_id)) >= 100:
                         break
-                except Exception:
+                except Exception as e:
+                    logger.error("ZAP active scan status check failed for scan %s "
+                                 "(ZAP may have gone unreachable): %s", scan_id, e)
+                    disconnected_mid_scan = True
                     break
                 time.sleep(5)
             else:
@@ -268,6 +289,7 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
         except Exception as e:
             logger.error("ZAP alert retrieval failed for scan %s: %s", scan_id, e)
             alerts = []
+            disconnected_mid_scan = True
 
         logger.info("ZAP collected %d alerts for scan %s", len(alerts), scan_id)
 
@@ -292,7 +314,7 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
         _kill_zap(proc)  # no-op when proc is None (remote ZAP mode)
         logger.info("ZAP scan finished for scan %s", scan_id)
 
-    return findings, zap_version
+    return findings, zap_version, disconnected_mid_scan
 
 
 # ---------------------------------------------------------------------------
@@ -499,13 +521,21 @@ def run_webscan(scan_id: str, domain: str) -> dict:
     Web scan module: OWASP ZAP (spider + active scan) + Katana (parallel,
     JS-aware supplemental crawl) + Nikto.
 
-    ZAP, Katana and Nikto are all optional - if any is missing the module
-    continues with whatever is available. Partial results are still reported
-    as 'complete' (not 'failed'). Runs with a raised per-task time limit
-    because ZAP active scanning is the pipeline's long pole (see the
+    ZAP, Katana and Nikto are all optional - if any is missing (never
+    reachable at all) the module continues with whatever is available, and
+    partial results are still reported as 'success' (that case is a startup-
+    time absence, not a mid-scan failure). Runs with a raised per-task time
+    limit because ZAP active scanning is the pipeline's long pole (see the
     timing-budget note above). Katana runs in a thread ALONGSIDE ZAP so it
     adds no wall-clock time; Nikto still runs sequentially after both finish.
     Returns a build_module_result() envelope (Section 4.3 schema note).
+
+    A second, distinct case - ZAP going unreachable *after* scanning already
+    started (a mid-scan daemon restart) - is reported as 'partial' with a
+    descriptive error instead, the same pattern tech_fingerprint.py uses when
+    exactly one of whatweb/wafw00f fails. See `_run_zap`'s docstring for why
+    this distinction matters: silently reporting 'success' here previously
+    made a lost ZAP scan indistinguishable from "ZAP genuinely found nothing".
     """
     update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
@@ -516,7 +546,7 @@ def run_webscan(scan_id: str, domain: str) -> dict:
         with ThreadPoolExecutor(max_workers=2) as executor:
             zap_future = executor.submit(_run_zap, scan_id, domain, target_url)
             katana_future = executor.submit(_run_katana, scan_id, domain, target_url)
-            zap_findings, zap_version = zap_future.result()
+            zap_findings, zap_version, zap_disconnected = zap_future.result()
             katana_findings = katana_future.result()
 
         findings.extend(zap_findings)
@@ -533,6 +563,14 @@ def run_webscan(scan_id: str, domain: str) -> dict:
             'nikto':  get_tool_version('nikto', '-Version'),
         }
         update_module_status(scan_id, MODULE, 'complete')
+        if zap_disconnected:
+            return build_module_result(
+                MODULE, findings, tool_versions, status='partial',
+                error='ZAP became unreachable mid-scan (daemon restart or '
+                      'connection loss) - some or all ZAP alerts for this '
+                      'scan were not collected; Katana/Nikto findings above '
+                      'are unaffected.',
+                duration_seconds=time.monotonic() - start)
         return build_module_result(MODULE, findings, tool_versions, status='success',
                                     duration_seconds=time.monotonic() - start)
     except SoftTimeLimitExceeded:

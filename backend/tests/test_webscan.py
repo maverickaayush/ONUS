@@ -50,9 +50,10 @@ class TestWebscanRemoteZap:
              patch('tasks.webscan._start_zap') as mock_start, \
              patch('tasks.webscan._kill_zap') as mock_kill:
             mock_settings.ZAP_URL = 'http://zap:8090'
-            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+            findings, zap_version, disconnected = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
 
         assert findings == []
+        assert disconnected is False
         mock_start.assert_not_called()
         # _kill_zap is still called (no-op on proc=None) - confirm it was called with None
         mock_kill.assert_called_once_with(None)
@@ -87,9 +88,10 @@ class TestWebscanRemoteZap:
              patch('tasks.webscan._wait_for_zap', return_value=False), \
              patch('tasks.webscan._start_zap') as mock_start:
             mock_settings.ZAP_URL = 'http://zap:8090'
-            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+            findings, zap_version, disconnected = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
 
         assert findings == []
+        assert disconnected is False
         mock_start.assert_not_called()
 
     def test_local_mode_unaffected_when_zap_url_empty(self):
@@ -99,9 +101,10 @@ class TestWebscanRemoteZap:
         with patch('tasks.webscan.settings') as mock_settings, \
              patch('tasks.webscan._start_zap', return_value=None) as mock_start:
             mock_settings.ZAP_URL = ''
-            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+            findings, zap_version, disconnected = _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
 
         assert findings == []
+        assert disconnected is False
         mock_start.assert_called_once()
 
 
@@ -207,9 +210,10 @@ class TestWebscanSchema:
         from tasks.webscan import _run_zap
 
         with patch('tasks.webscan._start_zap', return_value=None):
-            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
+            findings, zap_version, disconnected = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
                                 f'https://{TEST_DOMAIN}')
         assert findings == [], "ZAP missing must return empty list"
+        assert disconnected is False, "ZAP never installed is not a mid-scan disconnect"
 
     def test_zap_not_ready_returns_empty_list(self):
         """If ZAP starts but never becomes ready, must return [] and kill process."""
@@ -221,10 +225,11 @@ class TestWebscanSchema:
         with patch('tasks.webscan._start_zap', return_value=mock_proc), \
              patch('tasks.webscan._wait_for_zap', return_value=False), \
              patch('tasks.webscan._kill_zap') as mock_kill:
-            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
+            findings, zap_version, disconnected = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
                                 f'https://{TEST_DOMAIN}')
 
         assert findings == [], "ZAP not-ready must return empty list"
+        assert disconnected is False, "ZAP never becoming ready is not a mid-scan disconnect"
         mock_kill.assert_called_once_with(mock_proc)
 
     def test_zap_alerts_normalized_correctly(self):
@@ -256,9 +261,10 @@ class TestWebscanSchema:
              patch('tasks.webscan._wait_for_zap', return_value=True), \
              patch('tasks.webscan.ZAPv2', return_value=mock_zap), \
              patch('tasks.webscan._kill_zap'):
-            findings, zap_version = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
+            findings, zap_version, disconnected = _run_zap(TEST_SCAN_ID, TEST_DOMAIN,
                                 f'https://{TEST_DOMAIN}')
 
+        assert disconnected is False
         assert len(findings) == 3
         for f in findings:
             missing = REQUIRED_FIELDS - set(f.keys())
@@ -380,7 +386,7 @@ class TestKatana:
 
         with patch('tasks.webscan.update_module_status',
                    side_effect=lambda sid, mod, status: status_calls.append(status)), \
-             patch('tasks.webscan._run_zap', return_value=([], None)) as mock_zap, \
+             patch('tasks.webscan._run_zap', return_value=([], None, False)) as mock_zap, \
              patch('tasks.webscan._run_katana', return_value=[]) as mock_katana, \
              patch('tasks.webscan._run_nikto', return_value=[]) as mock_nikto:
             from tasks.webscan import run_webscan
@@ -403,7 +409,7 @@ class TestWebscanModuleStatus:
             status_calls.append(status)
 
         with patch('tasks.webscan.update_module_status', side_effect=record_status), \
-             patch('tasks.webscan._run_zap', return_value=([], None)), \
+             patch('tasks.webscan._run_zap', return_value=([], None, False)), \
              patch('tasks.webscan._run_nikto', return_value=[]):
             from tasks.webscan import run_webscan
             run_webscan.run(TEST_SCAN_ID, TEST_DOMAIN)
@@ -420,7 +426,7 @@ class TestWebscanModuleStatus:
             status_calls.append(status)
 
         with patch('tasks.webscan.update_module_status', side_effect=record_status), \
-             patch('tasks.webscan._run_zap', return_value=([], None)), \
+             patch('tasks.webscan._run_zap', return_value=([], None, False)), \
              patch('tasks.webscan._run_nikto', return_value=[
                  {'module': 'webscan', 'tool': 'nikto', 'type': 'nikto_finding',
                   'title': 'Test', 'evidence': 'test', 'severity': 'Low',
@@ -431,6 +437,28 @@ class TestWebscanModuleStatus:
 
         assert status_calls[-1] == 'complete', \
             "Partial success (ZAP miss + Nikto hit) must still be 'complete'"
+
+    def test_zap_mid_scan_disconnect_reports_partial_not_success(self):
+        """Regression test for the real bug this fixes: ZAP going unreachable
+        after scanning started (e.g. a daemon restart) must produce
+        status='partial' with a descriptive error in the returned envelope -
+        not a silent 'success' with 0 findings indistinguishable from ZAP
+        genuinely finding nothing. Module-level status (update_module_status)
+        is still 'complete' - it's the envelope's own `status` field that
+        must carry the distinction, same as tech_fingerprint.py's partial
+        case."""
+        with patch('tasks.webscan.update_module_status'), \
+             patch('tasks.webscan._run_zap', return_value=([], '2.15.0', True)), \
+             patch('tasks.webscan._run_katana', return_value=[]), \
+             patch('tasks.webscan._run_nikto', return_value=[]), \
+             patch('tasks.webscan.get_tool_version', return_value='unknown'):
+            from tasks.webscan import run_webscan
+            result = run_webscan.run(TEST_SCAN_ID, TEST_DOMAIN)
+
+        assert result['status'] == 'partial', \
+            f"ZAP mid-scan disconnect must report 'partial', got {result['status']!r}"
+        assert result['error'] and 'unreachable' in result['error'].lower(), \
+            "Envelope must carry a descriptive error explaining the lost ZAP data"
 
 
 class TestNoZapLeak:

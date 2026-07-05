@@ -84,10 +84,15 @@ services:
       REDIS_URL: redis://redis:6379/0
       OLLAMA_URL: http://host.docker.internal:11434
       ZAP_URL: http://zap:8090
+      # Same host dir the zap service writes session data to (below) - lets
+      # _finalize() prune a completed scan's session files. Read-write since
+      # pruning deletes files; matches config.py's ZAP_SESSIONS_DIR default.
+      ZAP_SESSIONS_DIR: /zap-sessions
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./backend/subfinder-config/provider-config.yaml:/root/.config/subfinder/provider-config.yaml:ro
+      - ./zap-sessions:/zap-sessions
     command: celery -A tasks.celery_app worker --loglevel=info -c 5
 
   # --- Local-only, self-hosted validation targets (the project docs §8) ---
