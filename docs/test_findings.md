@@ -506,16 +506,62 @@ works for one login form's specific shape.
   (earlier unauthenticated scan, misconfig-only) to **238**, including
   genuine High-severity **Persistent XSS, Reflected XSS, SQL Injection, Path
   Traversal, External Redirect, and Off-site Redirect** - all previously
-  unreachable behind `/login`. `owasp` found 0 here (its crawl+5-test
-  approach didn't happen to hit the same vulnerable pages ZAP's spider+ascan
-  did on this particular app - not a regression, just a different reach).
-  Note: none of the findings are IDOR-specific - ZAP's active-scan rules
-  don't include a dedicated IDOR detector (it requires semantic
-  understanding of authorization logic that generic payload-based scanning
-  can't infer), so NodeGoat's signature vulnerability class remains outside
-  this tool's detection surface even with authenticated access - a real,
-  known limitation of automated scanning in general, not something this fix
-  was expected to close.
+  unreachable behind `/login`. `owasp` found 0 here on this first pass (see
+  below - fixed in the same session).
 
 Both targets deployed, scanned, and torn down to free disk immediately
 after.
+
+---
+
+## IDOR detection added, and a real crawl bug found while building it
+
+Prompted by the NodeGoat spot-check above finding 0 `owasp` results:
+NodeGoat's signature vulnerability class is IDOR (`/allocations/:userId` -
+confirmed directly in `nodegoat-src/app/routes/allocations.js`, which takes
+`userId` from the URL param, not the session; the fix is literally commented
+out in the source), and no existing test function looked for it. Added a
+6th `test_idor` to `owasp.py`: for any crawled URL with a numeric or MongoDB-
+ObjectId-shaped path segment, nudge it to a few nearby values and compare
+against the baseline - a 200 response with different, non-"access denied"-
+shaped content at the mutated id (same session, so no re-login involved)
+means the server handed back a different object without checking the
+session is entitled to it. `cvss_scorer.py`/`aggregator.py` already had rules
+for `type: 'idor'` waiting for exactly this ("registered so the rule exists
+the day a module starts emitting that type" - see Section 4.5) - no scoring
+changes needed.
+
+**Verified directly against NodeGoat's real vulnerability first, outside the
+tool**, before trusting the detector: logged in as `admin` (seeded `_id: 1`),
+fetched `/allocations/1` (own data), then `/allocations/2` (`user1`'s data,
+`_id: 2`) with the *same* session - both returned 200 with different,
+valid-looking content. Confirmed the exploit is real before building a
+detector for it.
+
+**First integration attempt found 0 findings despite this - a real,
+separate bug in the crawl, not the detector.** `test_idor` worked correctly
+in every isolated/manual test. Tracing why the full `run_owasp()` pipeline
+still returned nothing: `_discover_urls`'s same-origin crawl was following
+*every* link it found, including NodeGoat's nav-bar `/logout` link - and
+`GET /logout` genuinely destroys the session server-side (a common, if not
+best-practice, pattern). The crawl was logging its own authenticated session
+out in under a second, silently turning every one of the 6 tests (not just
+the new IDOR one) into an unauthenticated probe for the rest of the run, no
+warning anywhere. Fixed by excluding any link matching a logout/sign-out
+pattern before it's ever fetched or recorded - confirmed after the fix that
+the session survives the full crawl.
+
+**Final verification, full API->Celery pipeline** (job
+`f72a260a-3234-49ce-85e8-7cdd2bc22c92`): all 8 modules `success`, `owasp`
+finding_count 2 - the real **IDOR on `/allocations/1`** (High) plus a
+genuine open redirect. This closes the caveat from the spot-check above:
+NodeGoat's signature vulnerability class is no longer outside this tool's
+detection surface.
+
+**Known ceiling of this detector** (documented in `owasp.py`'s own
+`# ponytail:` comment): adjacent-id guessing only catches sequential/auto-
+increment-shaped ids or ids created moments apart in the same ObjectId
+counter window - it won't find anything using genuinely random/UUID-style
+identifiers. A real upgrade path (feeding it a second real user's id
+instead of guessing) exists but wasn't needed here since NodeGoat's own ids
+are plain sequential integers.

@@ -177,12 +177,30 @@ def _make_session(auth: Optional[dict]) -> requests.Session:
     return session
 
 
+_SESSION_DESTROYING_LINK_RE = re.compile(
+    r'log[-_]?out|sign[-_]?out|sign[-_]?off', re.IGNORECASE)
+
+
 def _discover_urls(session: requests.Session, target: str, domain: str) -> List[str]:
     """
     Same-origin BFS crawl, capped at _MAX_CRAWL_PAGES / _CRAWL_BUDGET_SECONDS
     (monotonic deadline loop, same pattern as webscan.py's _ZAP_SCAN_BUDGET).
     Always returns `target` as element 0, even if the crawl finds nothing
     else - existing single-target behavior is a strict subset of this.
+
+    Deliberately never follows/records a link matching
+    _SESSION_DESTROYING_LINK_RE. Real bug found during this feature's own
+    verification: NodeGoat's nav bar links to GET /logout, and that route
+    genuinely destroys the session server-side (a common, if not best-
+    practice, real-world pattern) - a same-origin crawl that dutifully
+    visits every link it finds was logging its own authenticated session out
+    within under a second, silently turning every subsequent test in
+    run_owasp() (not just the new IDOR one) into an unauthenticated probe
+    with zero warning. Filtering by URL text before ever fetching the link is
+    cheap and avoids this entirely, at the cost of also skipping a genuine
+    "logout" link if a target names it something this pattern doesn't catch -
+    an acceptable tradeoff for never blowing away the very session this
+    module depends on for the rest of its run.
     """
     deadline = time.monotonic() + _CRAWL_BUDGET_SECONDS
     origin = urllib.parse.urlsplit(target)
@@ -203,7 +221,11 @@ def _discover_urls(session: requests.Session, target: str, domain: str) -> List[
             continue
 
         for link in parser.links:
+            if _SESSION_DESTROYING_LINK_RE.search(link):
+                continue
             absolute = urllib.parse.urljoin(url, link)
+            if _SESSION_DESTROYING_LINK_RE.search(absolute):
+                continue
             parsed = urllib.parse.urlsplit(absolute)
             if parsed.scheme not in ('http', 'https') or parsed.netloc != origin.netloc:
                 continue
@@ -456,11 +478,106 @@ def test_error_disclosure(session: requests.Session, target: str, domain: str) -
     return findings
 
 
+# Numeric path segment, e.g. /allocations/2 - most common object-ID shape
+# (auto-increment DB ids, simple sequence counters).
+_NUMERIC_ID_RE = re.compile(r'/(\d+)(?=/|$|\?)')
+# MongoDB ObjectId-shaped path segment, e.g. /users/507f1f77bcf86cd799439011 -
+# 4-byte timestamp + 5-byte random + 3-byte counter, hex-encoded.
+_OBJECTID_ID_RE = re.compile(r'/([0-9a-fA-F]{24})(?=/|$|\?)')
+# Response bodies matching these are far more likely a legitimate "you can't
+# see this" page than someone else's real data - excluded from the diff-based
+# IDOR heuristic below to keep the false-positive rate down.
+_ACCESS_DENIED_RE = re.compile(
+    r'not found|access denied|forbidden|unauthorized|permission denied|'
+    r'invalid (user|id)|no such', re.IGNORECASE)
+
+
+def test_idor(session: requests.Session, target: str, domain: str) -> List[dict]:
+    """
+    Best-effort Insecure Direct Object Reference check: if the URL contains
+    what looks like an object id (a numeric path segment, or a MongoDB
+    ObjectId), nudge it to a handful of nearby values and compare against the
+    baseline response. A 200 response with substantially different, non-
+    "access denied"-shaped content at a *different* id - using the exact same
+    (possibly authenticated) session that fetched the baseline - means the
+    server handed back someone/something else's data without checking that
+    the session is entitled to it.
+
+    Only meaningful with authenticated scanning (schemas.py's AuthConfig) -
+    without a login, "my resource" vs. "someone else's resource" mostly
+    doesn't apply. Still runs unconditionally like the other 4 tests; it's
+    just unlikely to find anything on an anonymous session.
+
+    # ponytail: adjacent-id guessing only catches sequential/auto-increment-
+    # shaped ids (confirmed effective against NodeGoat's own textbook IDOR at
+    # /allocations/:userId, where seeded demo users get ids 1/2/3) or ids
+    # created moments apart in the same ObjectId counter window - it will
+    # miss anything using genuinely random/UUID-style ids. Upgrade path: feed
+    # this a second real user's id (e.g. from a signup response) instead of
+    # guessing, if a target's ids don't happen to be sequential.
+    """
+    findings = []
+    try:
+        baseline = session.get(target, **_SESSION_KWARGS)
+        if baseline.status_code != 200 or len(baseline.text.strip()) < 50:
+            return findings
+
+        parsed = urllib.parse.urlparse(target)
+        path = parsed.path
+        candidates = []
+
+        m = _NUMERIC_ID_RE.search(path)
+        if m:
+            original = int(m.group(1))
+            for delta in (1, -1, 2, -2):
+                new_id = original + delta
+                if new_id < 0:
+                    continue
+                new_path = path[:m.start(1)] + str(new_id) + path[m.end(1):]
+                candidates.append(parsed._replace(path=new_path).geturl())
+
+        m = _OBJECTID_ID_RE.search(path)
+        if m:
+            original_hex = m.group(1)
+            counter = int(original_hex[-6:], 16)
+            for delta in (1, -1, 2, -2):
+                new_counter = (counter + delta) % 0xFFFFFF
+                new_hex = original_hex[:-6] + format(new_counter, '06x')
+                new_path = path[:m.start(1)] + new_hex + path[m.end(1):]
+                candidates.append(parsed._replace(path=new_path).geturl())
+
+        for candidate_url in candidates[:6]:
+            try:
+                resp = session.get(candidate_url, **_SESSION_KWARGS)
+                if (resp.status_code == 200
+                        and len(resp.text.strip()) >= 50
+                        and resp.text != baseline.text
+                        and not _ACCESS_DENIED_RE.search(resp.text)):
+                    findings.append(normalize_finding(
+                        module=MODULE, tool='owasp', type_='idor',
+                        title='Potential Insecure Direct Object Reference (IDOR)',
+                        evidence=f'Same session that fetched {target} also got '
+                                 f'a different, valid-looking 200 response from '
+                                 f'{candidate_url} (object id changed, no '
+                                 f'authorization rejection observed)',
+                        severity='High', target=domain,
+                        confidence='probable', verifiable=True,
+                        verification_target={'url': candidate_url, 'baseline_url': target},
+                    ))
+                    return findings
+            except requests.RequestException:
+                pass
+    except Exception as e:
+        logger.debug("idor test error for %s: %s", domain, e)
+    return findings
+
+
 @app.task(base=BaseTask, name='tasks.owasp.run_owasp',
           soft_time_limit=360, time_limit=420)
 def run_owasp(scan_id: str, domain: str) -> dict:
     """
-    OWASP Top 10 module: 5 non-destructive active tests, run against a
+    OWASP Top 10 module: 6 non-destructive active tests (SQLi, XSS, path
+    traversal, open redirect, error disclosure, IDOR), run against a
     same-origin crawl of up to _MAX_CRAWL_PAGES pages rather than just the
     bare domain root (see _discover_urls' docstring for why).
     All payloads are read-only GET requests - no data modification ever.
@@ -468,8 +585,8 @@ def run_owasp(scan_id: str, domain: str) -> dict:
     Returns a build_module_result() envelope (Section 4.3 schema note).
 
     Time budget: raised from the inherited 300s/360s default. Worst case is
-    ~34 requests/URL (5 test functions' payload counts) x up to 20 crawled
-    URLs =~ 680 requests; realistically 1-3 minutes against small local
+    ~40 requests/URL (6 test functions' payload counts) x up to 20 crawled
+    URLs =~ 800 requests; realistically 1-3 minutes against small local
     targets, plus the crawl's own 60s ceiling.
     # ponytail: sized from worst-case request-count math, not measured -
     # recalibrate against real numbers once this has run against a live target.
@@ -485,7 +602,7 @@ def run_owasp(scan_id: str, domain: str) -> dict:
         discovered = _discover_urls(session, target, domain)
         for url in discovered:
             for test_fn in (test_sqli, test_xss, test_path_traversal,
-                            test_open_redirect, test_error_disclosure):
+                            test_open_redirect, test_error_disclosure, test_idor):
                 try:
                     findings.extend(test_fn(session, url, domain))
                 except Exception as e:
