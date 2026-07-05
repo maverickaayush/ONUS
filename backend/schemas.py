@@ -19,13 +19,25 @@ class AuthConfig(BaseModel):
     JSON-API logins (e.g. Juice Shop's Angular SPA POSTing JSON to
     /rest/user/login) aren't handled by this shape and are a fair follow-up,
     not this pass.
+
+    logged_in_indicator is used by owasp.py's _make_session() only, as a
+    one-time, best-effort check right after login (log a warning if it
+    doesn't match, nothing more). webscan.py's ZAP setup deliberately never
+    touches this field - confirmed by direct testing that handing the same
+    regex to zap.authentication.set_logged_in_indicator() makes ZAP check it
+    against every single response the spider/active-scanner receives
+    (including CSS/JS/image/redirect/error responses that legitimately don't
+    contain it), and ZAP's "Insights" add-on counts each non-match as an
+    auth failure - hit its self-shutdown threshold in ~1 second of real
+    scanning in testing. See webscan.py's auth-setup comment for the full
+    story. Do not wire this field into ZAP's authentication config.
     """
     login_url: str
     username: str
     password: str
     username_field: str = "username"
     password_field: str = "password"
-    logged_in_indicator: Optional[str] = None  # regex; None = skip the check
+    logged_in_indicator: Optional[str] = None  # regex; None = skip the check - owasp.py only, see above
 
 
 class ScanRequest(BaseModel):

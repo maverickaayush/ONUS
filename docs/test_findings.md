@@ -433,26 +433,54 @@ forced-user for the same purpose.
   covers NodeGoat's `_csrf` field the same way (checked NodeGoat's actual
   login form HTML directly; not yet scanned end-to-end - DVWA's result was
   sufficient to verify the mechanism).
-- **`webscan.py`/ZAP's side: confirmed NOT working, and left that way -
-  documented as a known limitation, not silently claimed as done.** Tested
-  directly (bypassing the full scan pipeline, since ZAP was mid-flaky again
-  during this verification - see below): proxying a request through ZAP
-  with forced-user mode enabled still returned DVWA's login form, not
-  authenticated content. ZAP's simple `formBasedAuthentication` config only
-  ever sends a static username/password template on every login it performs
-  internally - it has no mechanism in this configuration to include a
-  submit-button field or fetch a fresh CSRF token per attempt, unlike
-  `owasp.py`'s fix above. Solving this properly needs ZAP script-based
-  authentication (a real login script ZAP executes, not a static config
-  blob) - a genuinely larger scope increase, intentionally not done in this
-  pass. The code is left in place (harmless, non-fatal no-op against forms
-  it can't handle, still correct for simpler login forms without either
-  quirk) with an explicit comment explaining the gap.
+- **`webscan.py`/ZAP's side: fixed, and confirmed fully working end-to-end.**
+  The simpler `formBasedAuthentication` config was confirmed not to work
+  (proxying a request through ZAP with forced-user mode enabled still
+  returned DVWA's login form) - it only sends a static username/password
+  template with no mechanism for a submit-button field or fresh CSRF token.
+  Replaced with ZAP **script-based authentication**: a new
+  `zap-scripts/vapt_form_auth.js`, mounted read-only into the `zap` service,
+  mirroring `owasp.py`'s own `_make_session()`/`_FormFieldExtractor` logic in
+  JavaScript (GET the login page fresh, submit every field on the form with
+  username/password overridden). Loaded via `zap.script.load()` and wired in
+  as `scriptBasedAuthentication`.
 
-**ZAP restart pattern, once more:** `RestartCount` reached 7 during this
-verification work (was 4 at end of the earlier practicality-test phase),
-including one occurrence that directly disrupted a scan's `webscan` module
-mid-run (`status: 'partial'`, the exact detection this session's earlier fix
-was built for - see the recon-fix entry above). Still `OOMKilled: false`
-every time. This is now a recurring, disruptive pattern worth a dedicated
-investigation, not just a watch-item.
+  This surfaced a second, much harder bug: even with the script working
+  correctly (confirmed via direct, isolated calls), real scans still hit ZAP's
+  own "Insights" self-protective watchdog mid-scan
+  (`Shutting down ZAP due to High Level Insight: ... insight.auth.failure :
+  100`) - not a crash or OOM (`OOMKilled: false`, `ExitCode: 0` every time),
+  a deliberate daemon shutdown. Chased two false leads before finding the
+  real cause: (1) reducing spider/active-scan thread concurrency looked like
+  a fix in isolated tests but didn't hold up under the real pipeline; (2) the
+  actual root cause, found by timing a failure to just ~1 second after
+  session creation (far too fast to be 100 genuine failed logins): ZAP was
+  checking the configured `logged_in_indicator` regex (`"Logout"`) against
+  **every single response** the spider/active-scanner received - including
+  CSS/JS/image/redirect/error responses that legitimately never contain that
+  text - and counting each non-match as an authentication failure. Fixed by
+  never calling `zap.authentication.set_logged_in_indicator()` from
+  `webscan.py` at all (confirmed via a direct call to `_run_zap()` with the
+  indicator omitted: 95 real findings, zero disconnects). `owasp.py`'s own
+  use of the same field is unaffected and stays as-is - it's a one-time,
+  best-effort check right after login, not a per-response check ZAP performs
+  internally.
+
+  **Final end-to-end verification** (job
+  `359f519c-be32-489b-9d96-413ccf971cb8`, full API→Celery pipeline, not a
+  direct/isolated call): `webscan` reported `status: 'success'` (not
+  `'partial'`) with **108 real findings** from authenticated pages, all 8
+  modules succeeded, and ZAP's `RestartCount` did not increase during the
+  run.
+
+**ZAP restart pattern - root-caused and closed for the auth-related
+instances.** `RestartCount` reached 7 during this investigation (was 4 at
+the end of the earlier practicality-test phase) before the
+`logged_in_indicator` fix above; it has not increased since. Important
+distinction for future reference: this specific `insight.auth.failure`
+mechanism only exists in ZAP's daemon when authentication is configured, so
+it explains the restarts *during this authenticated-scanning work*
+specifically - it does not explain the earlier, still-unresolved restarts
+observed during unauthenticated scans (Metasploitable2, Mutillidae,
+NodeGoat, see above), where no authentication was configured at all. That
+earlier pattern remains open.
