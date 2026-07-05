@@ -383,3 +383,76 @@ nuclei's HTTP-only template scope) rather than one; the recon full-port
 timeout gap was the one genuine bug found and it's fixed and verified; the
 ZAP `mem_limit` question is answered (4GB is fine); the ZAP restart pattern
 is a new, still-open observation for future attention.
+
+---
+
+## Detection-gap fixes: authenticated scanning + owasp.py crawl depth
+
+Direct follow-up to the pattern above: `owasp.py`/`nuclei` returned 0 real
+findings on every target this whole phase. Two root causes were already
+identified (auth walls on DVWA/NodeGoat, crawl depth on Mutillidae) and both
+were fixed and verified live.
+
+**Crawl depth (`owasp.py`'s new `_discover_urls()`):** a self-contained,
+stdlib-only same-origin BFS crawl (capped at 20 pages/60s) now feeds real
+discovered URLs into the 5 existing test functions, instead of only ever
+testing the bare domain root. Re-ran against Mutillidae (job
+`02c4a9f1-5a9c-427f-944c-881395ee661a`) - `owasp` went from 0 findings to
+**12**, including a genuine **Critical** path traversal hit (`/etc/passwd`
+via the `page` parameter) reproduced across two different crawled pages,
+plus SQLi and reflected XSS - all via Mutillidae's `page=`/`do=` navigation
+parameters, exactly the gap identified earlier in this document. Confirmed
+the findings span multiple distinct URLs, not repeated homepage hits.
+
+**Authenticated scanning:** `ScanRequest.auth` (optional, form-based login
+only) flows through Redis (`tasks/auth_store.py`, keyed by `scan_id`, never
+a Celery task arg - Celery logs task args in plaintext at INFO level, this
+was confirmed and deliberately avoided) rather than ever touching the `Scan`
+Postgres row or a task argument. `owasp.py`'s `_make_session()` logs in once
+before crawling/testing; `webscan.py`'s `_run_zap()` sets up a ZAP context/
+forced-user for the same purpose.
+
+- **`owasp.py`'s side: confirmed working.** Re-ran against DVWA (job
+  `56861a5a-0f43-41d4-96da-615102df2022`) with real credentials -
+  `finding_count` went from the 0 documented throughout this entire phase to
+  **1** (a SQLi hit via the `page` parameter), on a target that was
+  previously 100% behind `/login`. Verified the full credential lifecycle:
+  present in Redis during the run (`redis-cli GET scan_auth:{id}`), zero
+  occurrences of the literal password anywhere in worker logs, and gone from
+  Redis after `_finalize()` completes.
+- **A real bug found and fixed mid-verification:** the first login attempt
+  against DVWA silently failed (redirected back to the login page, no
+  error) even with correct credentials. Root cause: DVWA's login form has a
+  CSRF token (`user_token`) *and* requires its submit button's own
+  `Login=Login` field to be present server-side - a naive username/password-
+  only POST satisfies neither. Fixed by having `_make_session()` fetch the
+  login page first and submit every field already on the form
+  (`_FormFieldExtractor`, stdlib `html.parser`), with username/password
+  overridden to the configured values - this submits "what a browser would"
+  rather than special-casing known CSRF field names, and incidentally also
+  covers NodeGoat's `_csrf` field the same way (checked NodeGoat's actual
+  login form HTML directly; not yet scanned end-to-end - DVWA's result was
+  sufficient to verify the mechanism).
+- **`webscan.py`/ZAP's side: confirmed NOT working, and left that way -
+  documented as a known limitation, not silently claimed as done.** Tested
+  directly (bypassing the full scan pipeline, since ZAP was mid-flaky again
+  during this verification - see below): proxying a request through ZAP
+  with forced-user mode enabled still returned DVWA's login form, not
+  authenticated content. ZAP's simple `formBasedAuthentication` config only
+  ever sends a static username/password template on every login it performs
+  internally - it has no mechanism in this configuration to include a
+  submit-button field or fetch a fresh CSRF token per attempt, unlike
+  `owasp.py`'s fix above. Solving this properly needs ZAP script-based
+  authentication (a real login script ZAP executes, not a static config
+  blob) - a genuinely larger scope increase, intentionally not done in this
+  pass. The code is left in place (harmless, non-fatal no-op against forms
+  it can't handle, still correct for simpler login forms without either
+  quirk) with an explicit comment explaining the gap.
+
+**ZAP restart pattern, once more:** `RestartCount` reached 7 during this
+verification work (was 4 at end of the earlier practicality-test phase),
+including one occurrence that directly disrupted a scan's `webscan` module
+mid-run (`status: 'partial'`, the exact detection this session's earlier fix
+was built for - see the recon-fix entry above). Still `OOMKilled: false`
+every time. This is now a recurring, disruptive pattern worth a dedicated
+investigation, not just a watch-item.

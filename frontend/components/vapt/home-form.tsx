@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { VaptBackground } from "@/components/vapt/background"
 import { submitScan, getScanModules, ApiError } from "@/lib/api"
-import type { ScanModuleInfo } from "@/lib/api"
+import type { ScanModuleInfo, AuthConfig } from "@/lib/api"
 
 function isValidDomain(value: string) {
   return /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/.test(
@@ -102,6 +102,13 @@ export function HomeForm() {
   const [submitError, setSubmitError] = useState("")
   const [modules, setModules] = useState<ScanModuleInfo[]>([])
 
+  // Authenticated scan (optional) - off by default; only sent to the
+  // backend when all three fields are filled in (see handleSubmit below).
+  const [authAccordionOpen, setAuthAccordionOpen] = useState(false)
+  const [authLoginUrl, setAuthLoginUrl] = useState("")
+  const [authUsername, setAuthUsername] = useState("")
+  const [authPassword, setAuthPassword] = useState("")
+
   useEffect(() => {
     getScanModules()
       .then(setModules)
@@ -119,8 +126,15 @@ export function HomeForm() {
     if (!canSubmit) return
     setLoading(true)
     setSubmitError("")
+    // Only sent when all three required fields are filled in - an empty
+    // Login URL/Username/Password means "not using authenticated scanning",
+    // no separate enable/disable toggle needed.
+    const auth: AuthConfig | undefined =
+      authLoginUrl.trim() && authUsername && authPassword
+        ? { loginUrl: authLoginUrl.trim(), username: authUsername, password: authPassword }
+        : undefined
     try {
-      const response = await submitScan(domain.trim(), authorized)
+      const response = await submitScan(domain.trim(), authorized, auth)
       router.push(`/scan/${response.job_id}/status`)
     } catch (err) {
       if (err instanceof ApiError) {
@@ -405,6 +419,87 @@ export function HomeForm() {
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+        </div>
+
+        {/* Authenticated scan (optional) - off by default */}
+        <div
+          className="vapt-fade-up mt-4 border border-white/10 rounded-2xl backdrop-blur-sm bg-white/5 overflow-hidden"
+          style={{ animationDelay: "600ms" }}
+        >
+          <button
+            type="button"
+            onClick={() => setAuthAccordionOpen((o) => !o)}
+            className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-slate-300 hover:bg-white/5 transition-colors"
+            aria-expanded={authAccordionOpen}
+          >
+            <span>Authenticated scan (optional)</span>
+            <svg
+              className={cn(
+                "h-4 w-4 text-slate-500 transition-transform",
+                authAccordionOpen && "rotate-180",
+              )}
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
+          {authAccordionOpen && (
+            <div className="px-4 pb-4 pt-1 border-t border-white/8 space-y-3">
+              <p className="text-xs text-slate-500">
+                If the target sits behind a login form, provide credentials so
+                the scan can log in first - otherwise only the unauthenticated
+                surface is reachable. Leave blank to skip.
+              </p>
+              <div>
+                <label htmlFor="auth-login-url" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                  Login URL
+                </label>
+                <input
+                  id="auth-login-url"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={authLoginUrl}
+                  onChange={(e) => setAuthLoginUrl(e.target.value)}
+                  placeholder="https://example.com/login.php"
+                  className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                />
+              </div>
+              <div>
+                <label htmlFor="auth-username" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                  Username
+                </label>
+                <input
+                  id="auth-username"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                />
+              </div>
+              <div>
+                <label htmlFor="auth-password" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                  Password
+                </label>
+                <input
+                  id="auth-password"
+                  type="password"
+                  autoComplete="off"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                />
+              </div>
             </div>
           )}
         </div>

@@ -59,6 +59,13 @@ def create_scan(request: ScanRequest, db: Session = Depends(get_db)):
 
     logger.info("Scan %s created for domain %s", scan.id, scan.domain)
 
+    # Auth credentials never touch the Scan row above or a Celery task arg
+    # (Celery logs task args in plaintext at INFO) - stored in Redis, keyed
+    # by scan_id, read directly by webscan.py/owasp.py. See auth_store.py.
+    if request.auth:
+        from tasks.auth_store import store_scan_auth
+        store_scan_auth(str(scan.id), request.auth.model_dump())
+
     # Import here to avoid circular imports at module load time
     try:
         from tasks.scan_orchestrator import scan_orchestrator

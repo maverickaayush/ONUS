@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import patch, MagicMock
 import pytest
+import requests
 
 REQUIRED_FIELDS = {'module', 'tool', 'type', 'title', 'evidence',
                    'severity', 'cvss', 'target', 'found_by'}
@@ -26,6 +27,18 @@ def _mock_resp(text='', status=200, headers=None, location=None):
     if location:
         resp.headers['Location'] = location
     return resp
+
+
+def _mock_session(get_side_effect=None, get_return_value=None):
+    """A MagicMock standing in for requests.Session - every test function
+    below now takes `session` as its first arg and calls session.get(...)
+    instead of the old module-level requests.get(...)."""
+    session = MagicMock()
+    if get_side_effect is not None:
+        session.get.side_effect = get_side_effect
+    else:
+        session.get.return_value = get_return_value or _mock_resp()
+    return session
 
 
 class TestOwaspSchema:
@@ -48,8 +61,8 @@ class TestOwaspSchema:
                 return _mock_resp("You have an error in your SQL syntax near")
             return _mock_resp("normal response " * 10)
 
-        with patch('tasks.owasp.requests.get', side_effect=mock_get):
-            findings = test_sqli(f'https://{TEST_DOMAIN}?id=1', TEST_DOMAIN)
+        session = _mock_session(get_side_effect=mock_get)
+        findings = test_sqli(session, f'https://{TEST_DOMAIN}?id=1', TEST_DOMAIN)
 
         assert findings, "SQL error pattern must produce a finding"
         assert findings[0]['severity'] == 'High'
@@ -64,9 +77,8 @@ class TestOwaspSchema:
         """Clean response must produce no SQLi findings."""
         from tasks.owasp import test_sqli
 
-        with patch('tasks.owasp.requests.get',
-                   return_value=_mock_resp("Welcome to our site")):
-            findings = test_sqli(f'https://{TEST_DOMAIN}?id=1', TEST_DOMAIN)
+        session = _mock_session(get_return_value=_mock_resp("Welcome to our site"))
+        findings = test_sqli(session, f'https://{TEST_DOMAIN}?id=1', TEST_DOMAIN)
 
         assert findings == []
 
@@ -82,8 +94,8 @@ class TestOwaspSchema:
                     return _mock_resp(str(v))  # reflect the payload
             return _mock_resp("clean")
 
-        with patch('tasks.owasp.requests.get', side_effect=mock_get):
-            findings = test_xss(f'https://{TEST_DOMAIN}?q=hello', TEST_DOMAIN)
+        session = _mock_session(get_side_effect=mock_get)
+        findings = test_xss(session, f'https://{TEST_DOMAIN}?q=hello', TEST_DOMAIN)
 
         assert findings, "Reflected payload must produce a finding"
         assert findings[0]['severity'] == 'High'
@@ -105,13 +117,8 @@ class TestOwaspSchema:
         """HTML-escaped payload must NOT produce an XSS finding."""
         from tasks.owasp import test_xss
 
-        def mock_get(url, **kwargs):
-            params = kwargs.get('params', {})
-            # Return escaped version - not a reflection vulnerability
-            return _mock_resp('&lt;script&gt;alert&lt;/script&gt;')
-
-        with patch('tasks.owasp.requests.get', side_effect=mock_get):
-            findings = test_xss(f'https://{TEST_DOMAIN}?q=x', TEST_DOMAIN)
+        session = _mock_session(get_return_value=_mock_resp('&lt;script&gt;alert&lt;/script&gt;'))
+        findings = test_xss(session, f'https://{TEST_DOMAIN}?q=x', TEST_DOMAIN)
 
         assert findings == []
 
@@ -126,8 +133,8 @@ class TestOwaspSchema:
                                   location='https://evil-vapt-test.example.com/pwned')
             return _mock_resp()
 
-        with patch('tasks.owasp.requests.get', side_effect=mock_get):
-            findings = test_open_redirect(f'https://{TEST_DOMAIN}', TEST_DOMAIN)
+        session = _mock_session(get_side_effect=mock_get)
+        findings = test_open_redirect(session, f'https://{TEST_DOMAIN}', TEST_DOMAIN)
 
         assert findings, "Redirect to injected URL must produce a finding"
         assert findings[0]['type'] == 'open_redirect'
@@ -149,8 +156,8 @@ class TestOwaspSchema:
                 return _mock_resp('root:x:0:0:root:/root:/bin/bash')
             return _mock_resp('clean')
 
-        with patch('tasks.owasp.requests.get', side_effect=mock_get):
-            findings = test_path_traversal(f'https://{TEST_DOMAIN}', TEST_DOMAIN)
+        session = _mock_session(get_side_effect=mock_get)
+        findings = test_path_traversal(session, f'https://{TEST_DOMAIN}', TEST_DOMAIN)
 
         assert findings, "passwd content must produce a finding"
         assert findings[0]['type'] == 'path_traversal'
@@ -165,9 +172,8 @@ class TestOwaspSchema:
         from tasks.owasp import test_error_disclosure
 
         trace = "Traceback (most recent call last):\n  File app.py line 42\nKeyError: 'id'"
-        with patch('tasks.owasp.requests.get',
-                   return_value=_mock_resp(trace, status=500)):
-            findings = test_error_disclosure(f'https://{TEST_DOMAIN}', TEST_DOMAIN)
+        session = _mock_session(get_return_value=_mock_resp(trace, status=500))
+        findings = test_error_disclosure(session, f'https://{TEST_DOMAIN}', TEST_DOMAIN)
 
         assert findings, "Stack trace in 500 must produce a finding"
         assert findings[0]['type'] == 'error_disclosure'
@@ -177,23 +183,92 @@ class TestOwaspSchema:
         """Generic 500 with no trace must NOT produce a finding."""
         from tasks.owasp import test_error_disclosure
 
-        with patch('tasks.owasp.requests.get',
-                   return_value=_mock_resp("Internal Server Error", status=500)):
-            findings = test_error_disclosure(f'https://{TEST_DOMAIN}', TEST_DOMAIN)
+        session = _mock_session(get_return_value=_mock_resp("Internal Server Error", status=500))
+        findings = test_error_disclosure(session, f'https://{TEST_DOMAIN}', TEST_DOMAIN)
 
         assert findings == []
 
     def test_network_error_returns_empty(self):
         """Any network error in a test must return [] gracefully."""
         from tasks.owasp import test_sqli
-        import requests as req_lib
 
-        with patch('tasks.owasp.requests.get',
-                   side_effect=req_lib.exceptions.ConnectionError("refused")):
-            findings = test_sqli(f'https://unreachable.invalid?id=1',
-                                 'unreachable.invalid')
+        session = _mock_session(get_side_effect=requests.exceptions.ConnectionError("refused"))
+        findings = test_sqli(session, f'https://unreachable.invalid?id=1',
+                             'unreachable.invalid')
 
         assert findings == []
+
+
+class TestOwaspCrawl:
+    """_discover_urls: same-origin BFS crawl feeding the 5 test functions
+    (Section: closing the crawl-depth gap documented against Mutillidae in
+    docs/test_findings.md - owasp.py used to only ever test the bare domain
+    root)."""
+
+    def test_dedup_cap_and_same_origin_filtering(self):
+        """A canned page linking to: itself again (dup), a fragment-only
+        variant of itself (dup after normalization), an off-origin link
+        (must be excluded), and one genuine same-origin page - must return
+        exactly the origin root + the one genuine same-origin page, in that
+        order, with the off-origin link excluded entirely."""
+        from tasks.owasp import _discover_urls
+
+        target = f'https://{TEST_DOMAIN}/'
+        home_html = f'''
+        <html><body>
+            <a href="/">Home again</a>
+            <a href="/#section">Home with fragment</a>
+            <a href="https://evil.example.com/">Off-origin link</a>
+            <a href="/about.php">About page</a>
+        </body></html>
+        '''
+        about_html = '<html><body>No further links here.</body></html>'
+
+        def mock_get(url, **kwargs):
+            if url.rstrip('/') == target.rstrip('/'):
+                return _mock_resp(home_html, headers={'Content-Type': 'text/html'})
+            if 'about.php' in url:
+                return _mock_resp(about_html, headers={'Content-Type': 'text/html'})
+            return _mock_resp(status=404)
+
+        session = _mock_session(get_side_effect=mock_get)
+        discovered = _discover_urls(session, target, TEST_DOMAIN)
+
+        assert discovered[0] == target, "target must always be element 0"
+        assert len(discovered) == 2, \
+            f"expected exactly [target, about.php], got {discovered}"
+        assert any('about.php' in u for u in discovered)
+        assert not any('evil.example.com' in u for u in discovered), \
+            "off-origin links must never be followed"
+
+    def test_respects_max_page_cap(self):
+        """A page that link-bombs itself with many unique same-origin URLs
+        must stop discovering once _MAX_CRAWL_PAGES is reached."""
+        from tasks.owasp import _discover_urls, _MAX_CRAWL_PAGES
+
+        target = f'https://{TEST_DOMAIN}/'
+        many_links = ''.join(f'<a href="/page{i}.php">p{i}</a>' for i in range(50))
+        html = f'<html><body>{many_links}</body></html>'
+
+        def mock_get(url, **kwargs):
+            return _mock_resp(html, headers={'Content-Type': 'text/html'})
+
+        session = _mock_session(get_side_effect=mock_get)
+        discovered = _discover_urls(session, target, TEST_DOMAIN)
+
+        assert len(discovered) <= _MAX_CRAWL_PAGES
+
+    def test_non_html_response_is_not_parsed(self):
+        """A non-HTML content-type must be skipped rather than fed to the
+        HTML parser."""
+        from tasks.owasp import _discover_urls
+
+        target = f'https://{TEST_DOMAIN}/data.json'
+        session = _mock_session(get_return_value=_mock_resp(
+            '{"not": "html"}', headers={'Content-Type': 'application/json'}))
+        discovered = _discover_urls(session, target, TEST_DOMAIN)
+
+        assert discovered == [target]
 
 
 class TestOwaspModuleStatus:
@@ -205,7 +280,7 @@ class TestOwaspModuleStatus:
             status_calls.append(status)
 
         with patch('tasks.owasp.update_module_status', side_effect=record), \
-             patch('tasks.owasp.requests.get', return_value=_mock_resp("clean")):
+             patch('tasks.owasp.requests.Session.get', return_value=_mock_resp("clean")):
             from tasks.owasp import run_owasp
             run_owasp.run(TEST_SCAN_ID, TEST_DOMAIN)
 
@@ -214,13 +289,12 @@ class TestOwaspModuleStatus:
 
     def test_one_test_failure_does_not_stop_others(self):
         """If one test function raises, remaining tests still run."""
-        import requests as req_lib
         call_count = [0]
 
         def mock_get(url, **kwargs):
             call_count[0] += 1
             if call_count[0] <= 2:
-                raise req_lib.exceptions.Timeout("timeout")
+                raise requests.exceptions.Timeout("timeout")
             return _mock_resp("clean")
 
         status_calls = []
@@ -229,7 +303,7 @@ class TestOwaspModuleStatus:
             status_calls.append(status)
 
         with patch('tasks.owasp.update_module_status', side_effect=record), \
-             patch('tasks.owasp.requests.get', side_effect=mock_get):
+             patch('tasks.owasp.requests.Session.get', side_effect=mock_get):
             from tasks.owasp import run_owasp
             result = run_owasp.run(TEST_SCAN_ID, TEST_DOMAIN)
 
@@ -244,12 +318,8 @@ class TestOwaspModuleStatus:
         from tasks.owasp import test_sqli, test_xss, test_error_disclosure
 
         marker = 'VAPT_XSS_8675309'
-        trace = "Traceback (most recent call last):\nKeyError"
-
-        call_n = [0]
 
         def mock_get(url, **kwargs):
-            call_n[0] += 1
             params = kwargs.get('params', {})
             vals = str(params.values())
             if 'OR' in vals and "1'='1" in vals:
@@ -261,8 +331,8 @@ class TestOwaspModuleStatus:
             return _mock_resp("clean " * 5)
 
         target = f'https://{TEST_DOMAIN}?id=1'
-        with patch('tasks.owasp.requests.get', side_effect=mock_get):
-            findings = test_sqli(target, TEST_DOMAIN)
+        session = _mock_session(get_side_effect=mock_get)
+        findings = test_sqli(session, target, TEST_DOMAIN)
 
         for f in findings:
             missing = REQUIRED_FIELDS - set(f.keys())

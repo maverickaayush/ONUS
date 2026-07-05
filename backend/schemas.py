@@ -4,12 +4,37 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 
+class AuthConfig(BaseModel):
+    """
+    Optional form-based login for authenticated scanning - webscan.py (ZAP
+    context/forcedUser) and owasp.py (its own requests.Session) log in once
+    before crawling/testing, so real vulnerabilities behind a login wall
+    (the dominant gap across this tool's practicality testing - see
+    docs/test_findings.md) are actually reachable.
+
+    Never persisted (see tasks/auth_store.py's docstring) - routers/scan.py
+    writes this straight to Redis, never onto the Scan row in models.py.
+
+    v1 scope: form-based (application/x-www-form-urlencoded) login only.
+    JSON-API logins (e.g. Juice Shop's Angular SPA POSTing JSON to
+    /rest/user/login) aren't handled by this shape and are a fair follow-up,
+    not this pass.
+    """
+    login_url: str
+    username: str
+    password: str
+    username_field: str = "username"
+    password_field: str = "password"
+    logged_in_indicator: Optional[str] = None  # regex; None = skip the check
+
+
 class ScanRequest(BaseModel):
     domain: str
     # NOTE: authorization is enforced in routers/scan.py so an unauthorized
     # request returns HTTP 403 (per Section 4.1) rather than a 422 schema error.
     authorized: bool
     notes: Optional[str] = None
+    auth: Optional[AuthConfig] = None
 
     @field_validator("domain")
     @classmethod
