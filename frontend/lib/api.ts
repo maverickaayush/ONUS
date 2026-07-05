@@ -78,14 +78,39 @@ async function handle<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export interface AuthConfig {
+  loginUrl: string
+  username: string
+  password: string
+  usernameField?: string
+  passwordField?: string
+  loggedInIndicator?: string
+}
+
 export async function submitScan(
   domain: string,
   authorized: boolean,
+  auth?: AuthConfig,
 ): Promise<ScanResponse> {
   const res = await fetch('/api/scan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ domain, authorized }),
+    body: JSON.stringify({
+      domain,
+      authorized,
+      // Omitted entirely (not `auth: null`) when not set, so the no-auth
+      // request body is byte-identical to before this feature existed.
+      ...(auth && {
+        auth: {
+          login_url: auth.loginUrl,
+          username: auth.username,
+          password: auth.password,
+          ...(auth.usernameField && { username_field: auth.usernameField }),
+          ...(auth.passwordField && { password_field: auth.passwordField }),
+          ...(auth.loggedInIndicator && { logged_in_indicator: auth.loggedInIndicator }),
+        },
+      }),
+    }),
   })
   return handle<ScanResponse>(res)
 }

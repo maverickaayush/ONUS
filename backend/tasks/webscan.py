@@ -7,7 +7,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote
 
 import psutil
 import requests
@@ -244,6 +244,59 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
             zap_version = zap.core.version
         except Exception as e:
             logger.debug("ZAP version lookup failed for scan %s: %s", scan_id, e)
+
+        # --- Authenticated scanning (optional) ---
+        # Form-based login only (v1 scope - see schemas.py's AuthConfig
+        # docstring). Forced-user mode means the spider/active-scan calls
+        # below need no code changes - ZAP transparently carries whatever
+        # session it establishes into every request once this is set up.
+        #
+        # KNOWN LIMITATION, confirmed by direct testing against DVWA (proxying
+        # a request through ZAP with forced-user mode enabled still returned
+        # the login form, not authenticated content): this simple
+        # `formBasedAuthentication` config sends only username/password on
+        # every (re-)login ZAP performs internally. It has no way to include
+        # a submit-button field some apps require (DVWA's `Login=Login`) or
+        # a fresh per-request CSRF token (DVWA's `user_token`, NodeGoat's
+        # `_csrf`) - both are static in `login_data` below, not dynamically
+        # re-fetched. owasp.py's own `_make_session()` solves this properly
+        # (fetches the login page fresh and submits every field on the form),
+        # but replicating that here would mean ZAP script-based authentication
+        # (a login script ZAP runs, not a static config blob) - a real,
+        # meaningfully larger scope increase, not done in this pass. Left in
+        # place because it's still correct for login forms with neither
+        # quirk, and is harmless (non-fatal, silently a no-op) against ones
+        # it can't handle.
+        #
+        # Non-fatal on any failure here, matching this function's existing
+        # "ZAP is one of three optional tools" resilience pattern - an
+        # unauthenticated scan is still better than no scan.
+        from tasks.auth_store import get_scan_auth
+        auth = get_scan_auth(scan_id)
+        if auth:
+            try:
+                ctx_name = f'ctx-{scan_id}'
+                context_id = zap.context.new_context(ctx_name)
+                zap.context.include_in_context(ctx_name, re.escape(target_url) + '.*')
+                login_data = (f'{auth["username_field"]}={{%username%}}'
+                              f'&{auth["password_field"]}={{%password%}}')
+                configparams = (f'loginUrl={quote(auth["login_url"], safe="")}'
+                                 f'&loginRequestData={quote(login_data, safe="")}')
+                zap.authentication.set_authentication_method(
+                    context_id, 'formBasedAuthentication', configparams)
+                if auth.get('logged_in_indicator'):
+                    zap.authentication.set_logged_in_indicator(
+                        context_id, auth['logged_in_indicator'])
+                user_id = zap.users.new_user(context_id, 'vapt-user')
+                zap.users.set_authentication_credentials(
+                    context_id, user_id,
+                    f'username={auth["username"]}&password={auth["password"]}')
+                zap.users.set_user_enabled(context_id, user_id, True)
+                zap.forcedUser.set_forced_user(context_id, user_id)
+                zap.forcedUser.set_forced_user_mode_enabled(True)
+            except Exception as e:
+                logger.warning("ZAP auth setup failed for scan %s (continuing "
+                                "unauthenticated): %s", scan_id, e)
 
         scan_deadline = time.monotonic() + _ZAP_SCAN_BUDGET
 

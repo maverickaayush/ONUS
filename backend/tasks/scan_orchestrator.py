@@ -367,6 +367,17 @@ def _finalize(results: list, scan_id: str, domain: str) -> None:
         except Exception as e:
             logger.warning("ZAP session pruning failed for scan %s: %s", scan_id, e)
 
+        # --- Step 9: discard the scan's auth credential (if any) - same
+        # lifecycle point as the ZAP session prune above: fully consumed by
+        # webscan.py/owasp.py, no reason to keep it past this point. The
+        # Redis TTL in auth_store.py is only a backstop for paths that skip
+        # this function entirely (e.g. the `cancel` decision, Section 4.3b).
+        try:
+            from tasks.auth_store import delete_scan_auth
+            delete_scan_auth(scan_id)
+        except Exception as e:
+            logger.warning("Auth credential cleanup failed for scan %s: %s", scan_id, e)
+
         scan.status = ScanStatus.complete
         scan.completed_at = datetime.utcnow()
         db.commit()
