@@ -198,6 +198,55 @@ class TestOwaspSchema:
 
         assert findings == []
 
+    def test_idor_detects_different_valid_content_at_adjacent_numeric_id(self):
+        """Regression test for the real NodeGoat /allocations/:userId IDOR
+        this was built for: same session, numeric id nudged by 1, server
+        returns different-but-valid (not access-denied-shaped) content ->
+        must flag it."""
+        from tasks.owasp import test_idor
+
+        def mock_get(url, **kwargs):
+            if url.endswith('/allocations/1'):
+                return _mock_resp('<html>Allocations for user 1: stocks 60%, bonds 40%</html>')
+            if url.endswith('/allocations/2'):
+                return _mock_resp('<html>Allocations for user 2: stocks 20%, bonds 80%</html>')
+            return _mock_resp(status=404)
+
+        session = _mock_session(get_side_effect=mock_get)
+        findings = test_idor(session, f'https://{TEST_DOMAIN}/allocations/1', TEST_DOMAIN)
+
+        assert findings, "Different valid content at an adjacent id must be flagged"
+        assert findings[0]['type'] == 'idor'
+        assert findings[0]['severity'] == 'High'
+        assert REQUIRED_FIELDS <= set(findings[0].keys())
+        assert findings[0]['verifiable'] is True
+        assert findings[0]['verification_target']['baseline_url'].endswith('/allocations/1')
+
+    def test_idor_no_finding_when_adjacent_id_denied(self):
+        """An access-denied-shaped response at the adjacent id (proper
+        authorization check) must NOT be flagged."""
+        from tasks.owasp import test_idor
+
+        def mock_get(url, **kwargs):
+            if url.endswith('/allocations/1'):
+                return _mock_resp('<html>Allocations for user 1: stocks 60%, bonds 40%</html>')
+            return _mock_resp('<html>Access Denied - Forbidden</html>', status=403)
+
+        session = _mock_session(get_side_effect=mock_get)
+        findings = test_idor(session, f'https://{TEST_DOMAIN}/allocations/1', TEST_DOMAIN)
+
+        assert findings == []
+
+    def test_idor_no_finding_when_no_id_shaped_segment(self):
+        """A URL with no numeric/ObjectId-shaped path segment has nothing to
+        mutate - must return [] without erroring."""
+        from tasks.owasp import test_idor
+
+        session = _mock_session(get_return_value=_mock_resp('<html>Dashboard</html>'))
+        findings = test_idor(session, f'https://{TEST_DOMAIN}/dashboard', TEST_DOMAIN)
+
+        assert findings == []
+
 
 class TestOwaspCrawl:
     """_discover_urls: same-origin BFS crawl feeding the 5 test functions
@@ -240,6 +289,35 @@ class TestOwaspCrawl:
         assert any('about.php' in u for u in discovered)
         assert not any('evil.example.com' in u for u in discovered), \
             "off-origin links must never be followed"
+
+    def test_never_follows_or_records_logout_link(self):
+        """Regression test for the real bug this found against NodeGoat: a
+        same-origin /logout link must never be fetched or recorded, since
+        visiting it destroys the session the rest of the module depends on."""
+        from tasks.owasp import _discover_urls
+
+        target = f'https://{TEST_DOMAIN}/'
+        home_html = '''
+        <html><body>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/logout">Logout</a>
+            <a href="/signout">Sign Out</a>
+        </body></html>
+        '''
+
+        def mock_get(url, **kwargs):
+            if url.rstrip('/') == target.rstrip('/'):
+                return _mock_resp(home_html, headers={'Content-Type': 'text/html'})
+            if '/logout' in url or '/signout' in url:
+                pytest.fail(f"crawl must never fetch a logout-shaped link, got {url}")
+            return _mock_resp('<html>ok</html>', headers={'Content-Type': 'text/html'})
+
+        session = _mock_session(get_side_effect=mock_get)
+        discovered = _discover_urls(session, target, TEST_DOMAIN)
+
+        assert any('dashboard' in u for u in discovered)
+        assert not any('logout' in u.lower() for u in discovered)
+        assert not any('signout' in u.lower() for u in discovered)
 
     def test_respects_max_page_cap(self):
         """A page that link-bombs itself with many unique same-origin URLs
