@@ -146,6 +146,27 @@ class TestOwaspSchema:
         assert vt['payload'] == 'https://evil-vapt-test.example.com'
         assert vt['param'] and vt['url']
 
+    def test_open_redirect_same_site_echo_is_not_a_finding(self):
+        """Real false positive found live: a same-site redirect that merely
+        echoes the payload back as a query-string substring (e.g. Mutillidae's
+        `index.php?page=X&next=<value>` "return to this page" pattern) must
+        NOT be reported - only a Location that actually resolves to the
+        injected external host counts."""
+        from tasks.owasp import test_open_redirect
+
+        def mock_get(url, **kwargs):
+            params = kwargs.get('params', {})
+            if 'evil-vapt-test.example.com' in str(params.values()):
+                return _mock_resp(status=302,
+                                  location=f'https://{TEST_DOMAIN}/index.php'
+                                           f'?next=https%3A%2F%2Fevil-vapt-test.example.com')
+            return _mock_resp()
+
+        session = _mock_session(get_side_effect=mock_get)
+        findings = test_open_redirect(session, f'https://{TEST_DOMAIN}', TEST_DOMAIN)
+
+        assert findings == []
+
     def test_path_traversal_via_url_path_detected(self):
         """/etc/passwd content in response to a direct URL traversal probe
         must produce a Critical finding with a verification_target."""
@@ -187,6 +208,21 @@ class TestOwaspSchema:
         findings = test_error_disclosure(session, f'https://{TEST_DOMAIN}', TEST_DOMAIN)
 
         assert findings == []
+
+    def test_error_disclosure_detected_on_200(self):
+        """Real bug found live: PHP renders Warning/Notice text inline on a
+        normal 200 OK page by default (only an uncaught fatal becomes a 500,
+        and not always even then) - a status_code==500 requirement excluded
+        this, the far more common real-world shape. The trace pattern match
+        itself must be the signal, regardless of status code."""
+        from tasks.owasp import test_error_disclosure
+
+        trace = "PHP Warning:  mysqli::query(): in /app/db.php on line 42"
+        session = _mock_session(get_return_value=_mock_resp(trace, status=200))
+        findings = test_error_disclosure(session, f'https://{TEST_DOMAIN}', TEST_DOMAIN)
+
+        assert findings, "Warning text on a 200 response must produce a finding"
+        assert findings[0]['type'] == 'error_disclosure'
 
     def test_network_error_returns_empty(self):
         """Any network error in a test must return [] gracefully."""

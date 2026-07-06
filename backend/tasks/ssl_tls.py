@@ -105,14 +105,21 @@ def _run_testssl(scan_id: str, domain: str) -> List[dict]:
         return findings
 
     try:
-        subprocess.run(
+        # Real bug found live: this used to say `--connect-timeout`, a flag
+        # that doesn't exist in this testssl.sh version (it's
+        # `--socket-timeout`) - the bad flag made testssl.sh reject the
+        # whole argument list and print its usage text instead of scanning,
+        # exiting in under a second with no exception raised (check=False,
+        # and the returncode was never inspected), so it silently produced
+        # zero findings on every scan ever run.
+        result = subprocess.run(
             [
                 'testssl.sh',
                 '--jsonfile', out_path,
                 '--quiet',
                 '--color', '0',
                 '--warnings', 'off',
-                '--connect-timeout', '30',
+                '--socket-timeout', '30',
                 '--openssl-timeout', '30',
                 domain,
             ],
@@ -120,6 +127,9 @@ def _run_testssl(scan_id: str, domain: str) -> List[dict]:
             capture_output=True,
             check=False,
         )
+        if result.returncode != 0 and not os.path.exists(out_path):
+            logger.warning("testssl.sh exited %s with no JSON output for scan %s: %s",
+                            result.returncode, scan_id, result.stdout[-500:] if result.stdout else '')
     except subprocess.TimeoutExpired:
         logger.warning("testssl.sh timed out (180s) for scan %s - parsing partial output", scan_id)
     except Exception as e:

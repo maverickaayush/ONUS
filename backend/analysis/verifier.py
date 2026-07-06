@@ -26,8 +26,8 @@ about for the aggregator, just one stage later.
 import logging
 import re
 import time
-from typing import List
-from urllib.parse import urlencode
+from typing import List, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 import urllib3
@@ -100,15 +100,19 @@ def _promote(finding: dict, note: str) -> dict:
     return finding
 
 
-def verify_open_redirect(finding: dict) -> dict:
-    """Source: owasp.py's test_open_redirect."""
+def verify_open_redirect(finding: dict, session: Optional[requests.Session] = None) -> dict:
+    """Source: owasp.py's test_open_redirect. `session`, when given, carries
+    the same authenticated cookies/headers the original detection used
+    (see verify_findings's docstring) - a plain `requests` client otherwise,
+    unchanged from before auth support existed."""
+    client = session or requests
     vt = finding.get('verification_target') or {}
     url, param, payload = vt.get('url'), vt.get('param'), vt.get('payload')
     if not (url and param and payload):
         return _demote(finding, 'Verification skipped - missing verification_target data.')
     try:
-        resp = requests.get(url, params={param: payload}, timeout=_TIMEOUT,
-                             verify=False, allow_redirects=False)
+        resp = client.get(url, params={param: payload}, timeout=_TIMEOUT,
+                           verify=False, allow_redirects=False)
         if resp.status_code in (301, 302, 303, 307, 308) and payload in resp.headers.get('Location', ''):
             return _promote(finding, f'Re-issued request confirmed a redirect to {payload!r} via the Location header.')
         return _demote(finding, 'Re-issued request did not reproduce the redirect - target may be patched, '
@@ -117,18 +121,19 @@ def verify_open_redirect(finding: dict) -> dict:
         return _demote(finding, f'Verification request failed: {e}')
 
 
-def verify_path_traversal(finding: dict) -> dict:
+def verify_path_traversal(finding: dict, session: Optional[requests.Session] = None) -> dict:
     """Source: owasp.py's test_path_traversal."""
+    client = session or requests
     vt = finding.get('verification_target') or {}
     url, param, payload = vt.get('url'), vt.get('param'), vt.get('payload')
     if not url:
         return _demote(finding, 'Verification skipped - missing verification_target data.')
     try:
         if param:
-            resp = requests.get(url, params={param: payload}, timeout=_TIMEOUT,
-                                 verify=False, allow_redirects=False)
+            resp = client.get(url, params={param: payload}, timeout=_TIMEOUT,
+                               verify=False, allow_redirects=False)
         else:
-            resp = requests.get(url, timeout=_TIMEOUT, verify=False, allow_redirects=False)
+            resp = client.get(url, timeout=_TIMEOUT, verify=False, allow_redirects=False)
         if any(s in resp.text for s in _TRAVERSAL_SENTINELS):
             return _promote(finding, 'Re-issued request reproduced known-safe sentinel content '
                                       '(e.g. /etc/passwd markers) in the response body.')
@@ -138,9 +143,10 @@ def verify_path_traversal(finding: dict) -> dict:
         return _demote(finding, f'Verification request failed: {e}')
 
 
-def verify_sensitive_file_exposure(finding: dict) -> dict:
+def verify_sensitive_file_exposure(finding: dict, session: Optional[requests.Session] = None) -> dict:
     """Source: enumeration.py's exposed_sensitive_file, keyed off its
     _SENSITIVE_FILES list."""
+    client = session or requests
     vt = finding.get('verification_target') or {}
     url, filename = vt.get('url'), vt.get('filename')
     if not (url and filename):
@@ -149,7 +155,7 @@ def verify_sensitive_file_exposure(finding: dict) -> dict:
     if signature is None:
         return _demote(finding, f'No known content signature for {filename!r} - cannot verify automatically.')
     try:
-        resp = requests.get(url, timeout=_TIMEOUT, verify=False, allow_redirects=False)
+        resp = client.get(url, timeout=_TIMEOUT, verify=False, allow_redirects=False)
         if resp.status_code == 200 and signature(resp.text):
             return _promote(finding, f'Re-fetched {filename} and confirmed its content matches the expected file format.')
         return _demote(finding, 'Re-fetch did not reproduce the expected file content - target may be patched, '
@@ -158,16 +164,17 @@ def verify_sensitive_file_exposure(finding: dict) -> dict:
         return _demote(finding, f'Verification request failed: {e}')
 
 
-def verify_directory_listing(finding: dict) -> dict:
+def verify_directory_listing(finding: dict, session: Optional[requests.Session] = None) -> dict:
     """Source: webscan.py's Nikto integration - dispatched off the same
     directory-listing text-match webscan.py uses to set verifiable=True at
     generation time (not a dedicated headers.py autoindex check)."""
+    client = session or requests
     vt = finding.get('verification_target') or {}
     url = vt.get('url')
     if not url:
         return _demote(finding, 'Verification skipped - missing verification_target data.')
     try:
-        resp = requests.get(url, timeout=_TIMEOUT, verify=False, allow_redirects=True)
+        resp = client.get(url, timeout=_TIMEOUT, verify=False, allow_redirects=True)
         if resp.status_code == 200 and _DIRECTORY_LISTING_RE.search(resp.text):
             return _promote(finding, 'Re-fetched the URL and confirmed an autoindex-style listing is still present.')
         return _demote(finding, 'Re-fetch did not reproduce the autoindex listing - target may be patched '
@@ -176,13 +183,14 @@ def verify_directory_listing(finding: dict) -> dict:
         return _demote(finding, f'Verification request failed: {e}')
 
 
-def verify_sqli_time_based(finding: dict) -> dict:
+def verify_sqli_time_based(finding: dict, session: Optional[requests.Session] = None) -> dict:
     """
     Dormant in Phase 1: no scanning module emits sqli_time_based findings
     yet (cvss_scorer.py's _RULES entry is a forward-compat placeholder).
     Implemented so the dispatch table is complete the day a module starts
     emitting this type - unreachable on real scans today.
     """
+    client = session or requests
     vt = finding.get('verification_target') or {}
     url, param, payload = vt.get('url'), vt.get('param'), vt.get('payload')
     expected_delay = vt.get('expected_delay_seconds')
@@ -190,12 +198,12 @@ def verify_sqli_time_based(finding: dict) -> dict:
         return _demote(finding, 'Verification skipped - missing verification_target data.')
     try:
         baseline_start = time.monotonic()
-        requests.get(url, timeout=_TIMEOUT, verify=False, allow_redirects=False)
+        client.get(url, timeout=_TIMEOUT, verify=False, allow_redirects=False)
         baseline_elapsed = time.monotonic() - baseline_start
 
         probe_start = time.monotonic()
-        requests.get(url, params={param: payload}, timeout=_TIMEOUT + expected_delay,
-                     verify=False, allow_redirects=False)
+        client.get(url, params={param: payload}, timeout=_TIMEOUT + expected_delay,
+                    verify=False, allow_redirects=False)
         probe_elapsed = time.monotonic() - probe_start
 
         if probe_elapsed >= (baseline_elapsed + expected_delay - _SQLI_TIME_TOLERANCE):
@@ -206,7 +214,27 @@ def verify_sqli_time_based(finding: dict) -> dict:
         return _demote(finding, f'Verification request failed: {e}')
 
 
-def _xss_payload_fires(url: str, params: dict, marker: str) -> bool:
+def _merge_url_params(url: str, params: dict) -> str:
+    """Merge params into url's own query string correctly whether or not it
+    already has one. Real bug found live: owasp.py's test_xss passes an
+    already-crawled URL (which usually already carries its own query string,
+    e.g. Mutillidae's `index.php?page=home.php&popUpNotificationCode=HPH0`)
+    as verification_target['url'] - naively formatting f'{url}?{params}'
+    (the old code) produces a malformed URL with two `?` characters and a
+    duplicated parameter, confirmed directly from a real stored
+    verification_note. This merges into the existing query instead."""
+    parts = urlsplit(url)
+    merged = parse_qsl(parts.query, keep_blank_values=True) + list(params.items())
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(merged), parts.fragment))
+
+
+def _playwright_cookies_from_session(session: requests.Session) -> list:
+    return [{'name': c.name, 'value': c.value, 'domain': c.domain or '', 'path': c.path or '/'}
+            for c in session.cookies]
+
+
+def _xss_payload_fires(url: str, params: dict, marker: str,
+                        session: Optional[requests.Session] = None) -> bool:
     """Launch a fresh headless Chromium instance, navigate to the exact
     same request owasp.py's test_xss already sent, and check whether the
     payload's own alert(marker) call actually executes as script - a
@@ -215,19 +243,32 @@ def _xss_payload_fires(url: str, params: dict, marker: str) -> bool:
     but non-executing. Fresh browser per call (not a shared/pooled
     instance): at most one reflected_xss finding per scan (test_xss
     returns on its first match), so pooling buys nothing and avoids any
-    cross-task state leakage under Celery's prefork workers."""
+    cross-task state leakage under Celery's prefork workers.
+
+    `session`, when given, carries the same authenticated cookies/headers
+    (including a JSON-auth bearer token) the original detection used - real
+    bug found live: without this, an authenticated finding's replay always
+    hits an unauthenticated response (e.g. a login redirect) and can never
+    confirm, regardless of whether the finding is real."""
     fired = {'v': False}
 
     def _on_dialog(dialog):
         fired['v'] = marker in (dialog.message or '')
         dialog.dismiss()
 
+    full_url = _merge_url_params(url, params)
+
     with sync_playwright() as p:
         browser = p.chromium.launch(args=['--no-sandbox', '--disable-gpu'])
         try:
-            page = browser.new_page()
+            if session is not None:
+                context = browser.new_context(extra_http_headers=dict(session.headers))
+                context.add_cookies(_playwright_cookies_from_session(session))
+                page = context.new_page()
+            else:
+                page = browser.new_page()
             page.on('dialog', _on_dialog)
-            page.goto(f'{url}?{urlencode(params)}', timeout=_XSS_NAV_TIMEOUT_MS)
+            page.goto(full_url, timeout=_XSS_NAV_TIMEOUT_MS)
             page.wait_for_timeout(_XSS_POST_LOAD_WAIT_MS)
         finally:
             browser.close()
@@ -235,7 +276,7 @@ def _xss_payload_fires(url: str, params: dict, marker: str) -> bool:
     return fired['v']
 
 
-def verify_reflected_xss(finding: dict) -> dict:
+def verify_reflected_xss(finding: dict, session: Optional[requests.Session] = None) -> dict:
     """
     Phase 2. Source: owasp.py's test_xss. The only Phase 1/2 verifier that
     uses a browser instead of raw `requests` - see this module's top
@@ -247,7 +288,7 @@ def verify_reflected_xss(finding: dict) -> dict:
     if not (url and params and marker):
         return _demote(finding, 'Verification skipped - missing verification_target data.')
     try:
-        if _xss_payload_fires(url, params, marker):
+        if _xss_payload_fires(url, params, marker, session=session):
             return _promote(finding, 'Headless-browser re-check confirmed the injected payload '
                                       'executed as script (alert dialog fired).')
         return _demote(finding, 'Headless-browser re-check did not observe the payload executing - '
@@ -271,7 +312,8 @@ _VERIFIERS = {
 }
 
 
-def verify_findings(findings: List[dict], enabled: bool = True) -> List[dict]:
+def verify_findings(findings: List[dict], enabled: bool = True,
+                     session: Optional[requests.Session] = None) -> List[dict]:
     """
     Re-observe every verifiable finding via passive HTTP re-issue. Mutates
     and returns the same list - confirmed findings get confidence='confirmed'
@@ -279,6 +321,17 @@ def verify_findings(findings: List[dict], enabled: bool = True) -> List[dict]:
     confidence='unverified' with a verification_note. Never removes a finding.
 
     No-ops entirely when enabled=False (config.ENABLE_VERIFICATION).
+
+    `session`, when the scan was authenticated, is the same requests.Session
+    owasp.py's _make_session() built (cookies from a form login, or a
+    bearer-token header from a JSON login) - passed through to every
+    verifier so an authenticated finding's replay carries the same session
+    the original detection used, instead of always replaying unauthenticated
+    (real bug found live: every open_redirect/path_traversal/reflected_xss
+    finding on an authenticated scan was structurally unable to ever reach
+    confidence='confirmed' before this, since the replay had no session and
+    almost always hit a login redirect instead of reproducing the finding).
+    None for an unauthenticated scan - unchanged behavior from before.
     """
     if not enabled:
         return findings
@@ -302,7 +355,7 @@ def verify_findings(findings: List[dict], enabled: bool = True) -> List[dict]:
         if verifier is None:
             continue
         try:
-            verifier(f)
+            verifier(f, session=session)
         except Exception as e:
             logger.exception("verifier for type=%s raised unexpectedly", f.get('type'))
             _demote(f, f'Verification failed with an internal error: {e}')

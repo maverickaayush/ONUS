@@ -819,3 +819,236 @@ The 8 `test_report.py` tests errored at `import pdfplumber` (a test-only dep
 never installed). Added `backend/requirements-dev.txt` (pytest + pdfplumber,
 kept out of the lean prod image); all 8 now actually parse the generated PDF
 and pass.
+
+---
+
+## Full module audit: which finding types have never actually fired, and why
+
+A different kind of pass from everything above: instead of scanning a new
+target, every scan ever run (39 completed scans, live Postgres data) was
+queried directly for its `module_execution` status and every finding `type`
+it ever produced, cross-referenced against every `type_=` string each
+scanning module's source can possibly emit. The question wasn't "does the
+module run" (already known-yes) but "has every documented detection path
+actually fired for real, with real evidence, at least once" - a much
+stricter bar. This turned up six real, confirmed, previously-invisible bugs
+- all found by reading actual finding evidence text and actual detection/
+verification source code, not by re-reading documentation.
+
+### Bug 1 - testssl.sh completely non-functional (two missing packages)
+
+`docker compose exec worker testssl.sh --version` failed with
+`Fatal error: You need to install hexdump for this program to work`, then
+(after adding that) `...install ps...`. Two Debian packages
+(`bsdextrautils`, `procps`) were never installed in `backend/Dockerfile`.
+This silently explained **zero `testssl_*` findings across all 39 scans ever
+run** - `sslv2/sslv3/tls10/tls11_enabled`, weak ciphers, `cert_expired`/
+`expiring_soon`, all sourced from testssl.sh's parsed output, none had ever
+fired (the two `ssl_tls` findings that did fire for real, `cert_self_signed`/
+`weak_dh_params` on DVWP, came from `sslscan`, a separate tool that works
+fine). `ssl_tls.py` treats a testssl.sh failure as tolerable partial output
+(same shape as the earlier WhatWeb-gem bug), so this never surfaced.
+
+**Fixed:** added both packages to `backend/Dockerfile`. Confirmed live:
+`testssl.sh --fast` against `demo-target.example` now completes end-to-end with a
+real SSL-Labs-style grade (A+).
+
+### Bug 1b - testssl.sh still produced nothing after Bug 1's fix, for a second, independent reason
+
+Re-scanning `demo-target.example` after Bug 1's fix still showed `ssl_tls` finishing
+in 15s with zero `testssl_*` findings. Manually running the exact
+subprocess command `ssl_tls.py` uses reproduced it: testssl.sh printed its
+own usage/help text and exited, because `--connect-timeout` **is not a real
+flag in this testssl.sh version** (it's `--socket-timeout`). The bad flag
+made testssl.sh reject its whole argument list instead of scanning, in
+under a second, with no exception raised (`subprocess.run(check=False)`
+never inspected the return code) - silently zero findings, every scan,
+even after Bug 1 was fixed.
+
+**Fixed:** `--connect-timeout` -> `--socket-timeout` in `ssl_tls.py`'s
+`_run_testssl()`, plus a new warning log when testssl.sh exits non-zero
+with no JSON output, so a similar silent failure can't hide again.
+Confirmed live: the corrected flag produces a real 71-second run with real
+JSON findings; re-verified through the full scan pipeline against
+`demo-target.example` (job with real `weak_dh_params` etc. already covered above).
+
+### Bug 2 - WHOIS silently returned nothing for every real-world domain
+
+Root cause was **not** what it first looked like. Original hypothesis
+(`python-whois`'s `WhoisEntry.load()` lacking a `.in` TLD regex profile) was
+directly disproven: fed real WHOIS text through it and the regexes matched
+fine. The actual bug was one layer earlier - `whois demo-target.example` inside the
+worker returned **empty stdout** with `getaddrinfo(whois.registry.in): Name
+or service not known`. That hostname is genuinely dead everywhere (checked
+via `strace` on a working host `whois` + direct `nslookup ... 8.8.8.8` -
+NXDOMAIN globally, not a container-networking issue). Debian bookworm/main's
+`whois` package (5.5.17) ships a **stale hardcoded `.in` TLD-server table**;
+NIXI (the `.in` registry) migrated to `whois.nixiregistry.in` after 5.5.17
+was packaged - confirmed by comparing `strings $(which whois) | grep
+registry.in` between the container (`whois.registry.in`) and a host with a
+newer `whois` package (`whois.nixiregistry.in`).
+
+**Fixed:** install `whois` from `bookworm-backports` (5.6.2) instead of
+bookworm/main. **No `recon.py` code change needed at all** - the existing
+`subprocess(timeout=20)` + `WhoisEntry.load()` pattern (required by
+`docs/scanners.md`) was always correct once given real data. Confirmed live
+against `demo-target.example`: `whois_registrar` (GoDaddy.com, LLC), `whois_creation_date`,
+`whois_expiry` (28 days remaining - a real Medium-severity finding),
+`whois_nameservers`, `whois_abuse_contact` all now appear with real data,
+first time ever across 13+ scans against this domain.
+
+### Bug 3 - `verify_reflected_xss` built a malformed replay URL
+
+`analysis/verifier.py`'s `_xss_payload_fires()` did
+`page.goto(f'{url}?{urlencode(params)}')` - always appending `?params`,
+even when `url` already carried its own query string, which it usually
+does (a crawled page like Mutillidae's
+`index.php?page=home.php&popUpNotificationCode=HPH0`). Confirmed from a
+real stored `verification_note`: the actual replayed URL had **two `?`
+characters and a duplicated parameter**. Structurally broken before
+Chromium even navigated - one of the two reasons `reflected_xss` could
+never verify as `confirmed`.
+
+**Fixed:** proper query-string merge (`_merge_url_params`, `urlsplit`/
+`parse_qsl`/`urlunsplit`) instead of naive string formatting.
+
+### Bug 4 - the confidence-verification stage had no authentication at all
+
+`analysis/verifier.py` had zero references to auth/cookies/session anywhere
+- every verifier replayed with a bare, unauthenticated `requests.get()` /
+fresh Chromium navigation. But the original detections for these finding
+types, on every target where they'd ever fired (Mutillidae, NodeGoat - both
+scanned with auth), ran through `owasp.py`'s authenticated session.
+Structurally, any finding discovered behind an authenticated crawl could
+never verify - the replay had no session and would hit a login redirect
+or a generic response instead.
+
+**Fixed:** `verify_findings()` and every verifier function now accept an
+optional `session`; `scan_orchestrator.py`'s `_finalize()` builds one via
+`owasp.py`'s `_make_session(auth)` (the auth credential is still in Redis
+at Step 6b - only deleted later at Step 9) and threads it through.
+
+**Bugs 3 and 4, confirmed live together** against a real, freshly-detected
+reflected-XSS finding on DVWA (`vulnerabilities/xss_r/?name=<script>...`):
+the merged replay URL was well-formed (single `?`), and
+`verify_reflected_xss(finding, session=<real authenticated session>)`
+returned `confidence: 'confirmed'` - **the first time `reflected_xss` has
+ever reached `confirmed` in this project's history.**
+
+### Bug 5 - `test_open_redirect` false-positive (found while testing Bug 4, not originally planned)
+
+Every single `open_redirect` finding across the whole project history
+(checked: 14/14 on one fresh Mutillidae run) turned out to be the exact
+same shape - the app's own `index.php?page=X&next=<value>` "return to this
+page" pattern echoing the injected payload back into its own same-site URL,
+never actually redirecting there. `owasp.py`'s old check
+(`if payload_string in location`) only verified the payload substring
+appeared somewhere in the Location header - not that the redirect's actual
+destination was external. This is *why* `open_redirect` could never verify
+as `confirmed`: there was never a genuine open redirect to reproduce. The
+verifier was working correctly the whole time; the detector was wrong.
+
+**Fixed:** `test_open_redirect` now resolves the Location header against
+the request URL (`urljoin` + `urlsplit().netloc`) and requires it to
+genuinely match the injected external host. New regression test
+(`test_open_redirect_same_site_echo_is_not_a_finding`).
+
+### Suspects 5 & 6 (owasp.py's `sqli_error_based` and `error_disclosure`, never fired on any target)
+
+Both had never fired across the whole project history. Root-caused by
+hand-testing DVWA's classic SQLi page directly (same "verify outside the
+tool before trusting the detector" discipline as the IDOR fix):
+
+- **`sqli_error_based`**: original hypothesis (payload-order early-return
+  starving the error-based branch) was checked and found wrong - the
+  boolean payload only produces a 205-byte diff on DVWA, below the
+  500-byte threshold, so it never short-circuits. The real bug:
+  `_get_params()`'s fallback dict for a query-string-less URL
+  (`{'id':'1','q':'test','search':'test'}`) doesn't include DVWA's `Submit`
+  button field - `isset($_REQUEST['Submit'])` gates the whole page, so
+  every injection attempt was silently ignored (200 OK, empty form,
+  no error, no evidence anything was tried). Confirmed directly: identical
+  request with vs without `Submit=Submit` is the difference between DVWA
+  processing the payload and no-op'ing.
+- **`error_disclosure`**: the old `resp.status_code == 500 and
+  _TRACE_RE.search(...)` gate excluded the far more common real-world case
+  - PHP renders `Warning:`/`Parse error:` text (exactly what
+  `_TRACE_PATTERNS` targets) inline on a normal 200 OK page by default;
+  only an uncaught fatal becomes a 500, and not always even then.
+
+**Fixed:** added `'Submit': 'Submit'` to `_get_params()`'s fallback
+(documented as a known ceiling - covers DVWA/bWAPP's convention specifically,
+not every app's submit-button name; real upgrade path is extracting actual
+`<form>` input names via the existing `_FormFieldExtractor`, same as the
+login form already does); dropped `error_disclosure`'s status-code
+requirement so the trace-pattern match itself is the signal. New regression
+tests for both.
+
+**`sqli_error_based` re-verified through the real full API->Celery
+pipeline** (DVWA, authenticated): fired with `confidence: 'confirmed'`
+(a module-level definitive signal, no verifier needed) - first time ever.
+**`error_disclosure` remains logically fixed and unit-tested but not yet
+seen firing live** - this specific DVWA container has `display_errors` off
+in PHP, so no currently-available target actually exposes a PHP warning in
+its output to prove it. Documented honestly rather than claimed as closed.
+
+### Decision flow: `retry` and `cancel`, driven live for the first time
+
+`continue` had been exercised live once before (the original `owasp`
+timeout investigation). `retry` and `cancel` had only ever been
+unit-tested. Both driven live this pass:
+
+- **`retry`**, against a real second `owasp` timeout on `testphp.vulnweb.com`
+  (recon/webscan/ssl_tls/headers/tech_fingerprint/nuclei/enumeration all
+  genuinely `success`, `owasp` genuinely hit its 360s soft limit again -
+  this target is just slow, a real, understood, pre-existing condition, not
+  a regression): `POST .../decision {"action":"retry"}` correctly
+  re-dispatched only `owasp` (`retry_failed_modules` log confirmed), and
+  after the retry *also* timed out, `can_retry` correctly flipped to
+  `false` (the one-retry-per-module cap). Finalized cleanly with
+  `{"action":"continue"}` - `complete`, 7/8 modules, real PDF.
+- **`cancel`**, against a hand-built paused scan (`docs/troubleshooting.md`'s
+  documented shortcut - a forged `failed`-module envelope fed into
+  `aggregate_and_analyse` for a real `Scan` row, no need to wait out a
+  genuine failure): `POST .../decision {"action":"cancel"}` correctly set
+  `status: 'cancelled'`, no Celery dispatch, and `GET .../report` never
+  returns a PDF (`202 {"status":"pending","message":"Scan not yet
+  complete"}` - technically matches the documented contract, though a `404`
+  might read more precisely for a scan that will never complete; a minor
+  API-semantics observation, not a bug).
+
+### Ollama real output, spot-read
+
+`ai_unavailable: false` on the `testphp.vulnweb.com` re-run; read the
+actual `executive_summary` text (not just the flag) - genuinely coherent,
+correctly-scoped prose ("lacks essential email authentication records...
+absence of an HTTPS service... no web application firewall...").
+
+### Accepted, documented-only limitations (not fixed this pass, not silently dropped)
+
+- Naabu's `open_port_naabu` - needs `cap_add: NET_RAW` on the `worker`
+  service (a deliberate capability grant, out of scope for a test pass);
+  already documented in the project docs §7.
+- `headers.py`'s `weak_hsts_max_age`/`csp_unsafe_inline`/`csp_unsafe_eval`/
+  `cors_wildcard_with_credentials` and `tech_fingerprint.py`'s
+  `waf_unknown` - no tested target happens to have these exact
+  header/WAF-response shapes.
+- `error_disclosure`'s live confirmation (see above).
+
+### Summary
+
+| Bug | Status |
+|---|---|
+| testssl.sh missing packages (hexdump, ps) | Fixed, confirmed live |
+| testssl.sh bad `--connect-timeout` flag | Fixed, confirmed live |
+| WHOIS stale `.in` TLD server table | Fixed, confirmed live |
+| `verify_reflected_xss` malformed replay URL | Fixed, confirmed live |
+| Verifier stage had no authentication | Fixed, confirmed live |
+| `test_open_redirect` false-positive | Fixed, confirmed (regression test) |
+| `sqli_error_based` never fired (missing Submit param) | Fixed, confirmed live |
+| `error_disclosure` never fired (500-only gate) | Fixed, unit-tested, live confirmation still open |
+| Decision-flow `retry`/`cancel` never driven live | Confirmed live |
+
+All self-hosted targets (Mutillidae, DVWA) deployed one at a time, torn
+down (container + image) immediately after use per this project's ongoing
+disk-space discipline. 410/410 backend tests pass.

@@ -335,8 +335,26 @@ def _finalize(results: list, scan_id: str, domain: str) -> None:
         try:
             from analysis.verifier import verify_findings
             from config import settings
+            # Real bug found live: verifiers used to always replay
+            # unauthenticated, so any finding discovered behind an
+            # authenticated crawl could never reach confidence='confirmed'.
+            # Build the same session owasp.py's _make_session() would (auth
+            # credential is still in Redis - deleted at Step 9 below, after
+            # this) so verifiers replay with the same cookies/bearer token
+            # the original detection used. None when the scan had no auth,
+            # same as before this fix.
+            verify_session = None
+            try:
+                from tasks.auth_store import get_scan_auth
+                auth = get_scan_auth(scan_id)
+                if auth:
+                    from tasks.owasp import _make_session
+                    verify_session = _make_session(auth)
+            except Exception as e:
+                logger.warning("Could not build authenticated verification session for scan %s: %s", scan_id, e)
             aggregated['findings'] = verify_findings(
                 aggregated.get('findings', []), enabled=settings.ENABLE_VERIFICATION,
+                session=verify_session,
             )
         except Exception as e:
             logger.error("Verification failed for scan %s: %s", scan_id, e)
