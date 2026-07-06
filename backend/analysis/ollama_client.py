@@ -45,7 +45,7 @@ _SYSTEM_PROMPT = (
 _REQUIRED_KEYS = {'executive_summary', 'findings'}
 _MAX_SENT_TO_AI = 50
 _JSON_RETRY_ATTEMPTS = 3  # 1 initial attempt + 2 retries, per spec
-_OLLAMA_TIMEOUT = 240  # docs/ai.md - empirically measured, unchanged by this refactor
+_OLLAMA_TIMEOUT = round(240 * settings.SCAN_TIMEOUT_MULTIPLIER)  # docs/ai.md baseline, scaled by SCAN_TIMEOUT_MULTIPLIER
 
 # Generic per-category remediation, used whenever a finding doesn't have an
 # AI-generated description: either Ollama failed outright (ai_unavailable),

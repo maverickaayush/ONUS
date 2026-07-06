@@ -12,6 +12,7 @@ from schemas import (
     ScanDecisionRequest, ScanModulesResponse,
 )
 from tasks.base_task import SCAN_MODULES, SCAN_MODULE_IDS
+from config import settings
 
 router = APIRouter(prefix="/api", tags=["scan"])
 logger = logging.getLogger(__name__)
@@ -22,9 +23,48 @@ logger = logging.getLogger(__name__)
 # an outside check: if a scan is older than every module could plausibly take
 # even in the worst case, the next status poll gives up on it instead of
 # leaving it stuck. Deadline = slowest single module's hard time_limit
-# (recon, 1080s) + aggregate_and_analyse's hard time_limit (420s) + buffer,
-# since modules run in parallel via group(), not sequentially.
-STUCK_SCAN_DEADLINE = timedelta(seconds=1080 + 420 + 120)
+# (recon) + aggregate_and_analyse's hard time_limit + buffer, since modules
+# run in parallel via group(), not sequentially. Imports the real constants
+# (not a second hardcoded copy of recon.py/scan_orchestrator.py's numbers) so
+# it can never drift out of sync when either module's own limit changes -
+# real bug found live: this used to hardcode scaled_timeout(1080), which
+# went stale the moment recon.py's own hard limit was raised past 1080.
+from tasks.recon import _RECON_HARD_LIMIT
+from tasks.scan_orchestrator import _AGGREGATE_HARD_LIMIT
+STUCK_SCAN_DEADLINE = timedelta(seconds=_RECON_HARD_LIMIT + _AGGREGATE_HARD_LIMIT + 120)
+
+
+def _reap_stuck_scans(db: Session) -> int:
+    """
+    Sweep every queued/running/analysing scan and fail the ones past
+    STUCK_SCAN_DEADLINE, instead of relying solely on someone polling that
+    specific scan's status (get_scan_status's per-scan check below - kept
+    as-is, this is additive). Real bug found live: nothing ever swept scans
+    nobody was polling anymore (an abandoned browser tab, a scan_id no
+    frontend page references), so they sat in an active status forever,
+    each one permanently occupying a MAX_CONCURRENT_SCANS slot - harmless
+    while that cap was unenforced, but once enforced (this hardening pass)
+    a handful of days-old zombie scans silently blocked every new scan
+    indefinitely. Called before the concurrency count below so a request
+    that would otherwise 429 against stale rows succeeds instead.
+    `awaiting_user_decision` is deliberately excluded - that's an operator
+    waiting on a human decision, not a timed-out task, so it has no
+    deadline here (unchanged from before).
+    """
+    cutoff = datetime.utcnow() - STUCK_SCAN_DEADLINE
+    stuck = db.query(Scan).filter(
+        Scan.status.in_([ScanStatus.queued, ScanStatus.running, ScanStatus.analysing]),
+    ).all()
+    reaped = 0
+    for scan in stuck:
+        reference_time = scan.started_at or scan.created_at
+        if reference_time and reference_time < cutoff:
+            scan.status = ScanStatus.failed
+            reaped += 1
+    if reaped:
+        db.commit()
+        logger.warning("_reap_stuck_scans: marked %d stale scan(s) failed", reaped)
+    return reaped
 
 
 @router.post("/scan", response_model=ScanResponse, status_code=202)
@@ -32,7 +72,10 @@ def create_scan(request: ScanRequest, db: Session = Depends(get_db)):
     if not request.authorized:
         raise HTTPException(status_code=403, detail="Scan requires explicit authorization")
 
-    # Duplicate detection - same domain, active scan in last 10 minutes
+    # Duplicate detection - same domain, active scan in last 10 minutes.
+    # Checked before the concurrency cap below since this path never creates
+    # a new scan (returns the existing job_id), so it shouldn't be rejected
+    # by a full worker pool.
     ten_minutes_ago = datetime.utcnow() - timedelta(minutes=10)
     existing = db.query(Scan).filter(
         and_(
@@ -45,6 +88,23 @@ def create_scan(request: ScanRequest, db: Session = Depends(get_db)):
     if existing:
         logger.info("Returning existing scan %s for domain %s", existing.id, request.domain)
         return ScanResponse(job_id=existing.id, status=existing.status.value, domain=existing.domain)
+
+    # Rate limiting (Section 8) - resource-exhaustion guard, not a security
+    # boundary. Counts scans still consuming worker/DB resources; 'complete'/
+    # 'failed'/'cancelled' don't count. Previously documented but never
+    # enforced in code.
+    _reap_stuck_scans(db)
+    active_count = db.query(Scan).filter(
+        Scan.status.in_([
+            ScanStatus.queued, ScanStatus.running,
+            ScanStatus.analysing, ScanStatus.awaiting_user_decision,
+        ])
+    ).count()
+    if active_count >= settings.MAX_CONCURRENT_SCANS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum concurrent scans ({settings.MAX_CONCURRENT_SCANS}) reached - try again shortly",
+        )
 
     scan = Scan(
         domain=request.domain,

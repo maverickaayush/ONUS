@@ -6,6 +6,8 @@ from typing import Optional
 
 from celery import Task
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -58,6 +60,44 @@ _ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 # side-decorations (e.g. wafw00f's "404 Hack Not Found") never match
 # either - no literal dot between digits, no literal word "version".
 _VERSION_LINE_RE = re.compile(r'version|\bv?\d+\.\d+', re.IGNORECASE)
+
+
+def scaled_timeout(base_seconds: int) -> int:
+    """
+    Scale a module's tool subprocess timeout or Celery soft/hard limit by
+    config.SCAN_TIMEOUT_MULTIPLIER (default 1.5x over the original lab-tuned
+    baselines - see config.py). Every module timeout should route through
+    this instead of hardcoding its own real-world-adjusted number, so the
+    whole scan's patience is one env-tunable knob.
+    """
+    return max(base_seconds, round(base_seconds * settings.SCAN_TIMEOUT_MULTIPLIER))
+
+
+def mount_retry_adapter(session, total: int = 2, backoff_factor: float = 0.5):
+    """
+    Real-world hosts often sit behind a WAF/CDN that throttles with 429/503
+    under sustained scan traffic - without a retry, a transient throttle
+    response partway through a scan silently reads as "page returned 429",
+    which for owasp.py's active tests means a genuine vulnerability on that
+    page can go undetected (a false negative indistinguishable from a clean
+    result). Retries idempotent-safe methods only (GET/HEAD/OPTIONS) with
+    backoff - a scanning module doing a one-shot POST login (auth_login.py)
+    should not blindly retry that, so this is opt-in per session, not global.
+    Returns the same session for chaining.
+    """
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    retry = Retry(
+        total=total, backoff_factor=backoff_factor,
+        status_forcelist=[429, 502, 503, 504],
+        allowed_methods=['GET', 'HEAD', 'OPTIONS'],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
 
 
 def resolve_target_url(domain: str, timeout: int = 10) -> str:

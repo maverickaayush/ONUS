@@ -10,17 +10,17 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import (
     BaseTask, normalize_finding, update_module_status,
-    get_tool_version, build_module_result, resolve_target_url,
+    get_tool_version, build_module_result, resolve_target_url, scaled_timeout,
 )
 from tasks.celery_app import app
 
 logger = logging.getLogger(__name__)
 MODULE = 'tech_fingerprint'
 
-_WHATWEB_TIMEOUT = 60
-_WAFW00F_TIMEOUT = 30
-_SOFT_LIMIT = 120
-_HARD_LIMIT = 150
+_WHATWEB_TIMEOUT = scaled_timeout(60)
+_WAFW00F_TIMEOUT = scaled_timeout(30)
+_SOFT_LIMIT = scaled_timeout(120)
+_HARD_LIMIT = scaled_timeout(150)
 
 # EOL thresholds: plugin name substring (lowercase) -> minimum non-EOL (major, minor)
 _EOL_THRESHOLDS = {
@@ -44,11 +44,24 @@ def _parse_version(version_str: str) -> Optional[Tuple[int, int]]:
 
 
 def _eol_threshold(plugin_name: str) -> Optional[Tuple[int, int]]:
-    name = plugin_name.lower()
-    for key, threshold in _EOL_THRESHOLDS.items():
-        if key in name:
-            return threshold
-    return None
+    """
+    Exact match (case-insensitive) against a technology's own name, not a
+    substring check - WhatWeb reports each technology under its own distinct
+    identifier (e.g. 'PHP', 'JQuery', 'WordPress'), so a plugin's exact name
+    is the right signal, not whether one of our keys happens to appear
+    inside it. Real false positive found live: the old `key in name`
+    substring check matched 'phpMyAdmin' against 'php', 'jQuery-UI' against
+    'jquery', and any WordPress plugin (e.g. 'WordPress Super Cache')
+    against 'wordpress' - each then got scored against the WRONG product's
+    EOL threshold and flagged outdated even when fully current.
+
+    recon.py's httpx-based caller passes a combined 'name:version' string
+    (e.g. 'nginx:1.14.0') rather than WhatWeb's clean standalone name -
+    split off everything from the first ':' onward before matching, so both
+    callers compare against just the technology name either way.
+    """
+    name = plugin_name.split(':', 1)[0].strip().lower()
+    return _EOL_THRESHOLDS.get(name)
 
 
 # ---------------------------------------------------------------------------

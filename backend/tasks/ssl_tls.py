@@ -14,12 +14,14 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import (
     BaseTask, normalize_finding, update_module_status,
-    get_tool_version, build_module_result,
+    get_tool_version, build_module_result, scaled_timeout,
 )
 from tasks.celery_app import app
 
 logger = logging.getLogger(__name__)
 MODULE = 'ssl_tls'
+_TESTSSL_TIMEOUT = scaled_timeout(180)
+_SSLSCAN_TIMEOUT = scaled_timeout(60)
 
 # testssl.sh severity → normalized severity (skip INFO/OK - those are passing checks)
 _TESTSSL_SEVERITY_MAP = {
@@ -87,6 +89,8 @@ def _cert_expiry_finding(domain: str) -> Optional[dict]:
                 evidence=f'Certificate expires on {not_after.date()} ({days_left} days remaining)',
                 severity='Medium', target=domain,
             )
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.debug("cert expiry check failed for %s: %s", domain, e)
     return None
@@ -123,7 +127,7 @@ def _run_testssl(scan_id: str, domain: str) -> List[dict]:
                 '--openssl-timeout', '30',
                 domain,
             ],
-            timeout=180,
+            timeout=_TESTSSL_TIMEOUT,
             capture_output=True,
             check=False,
         )
@@ -131,7 +135,9 @@ def _run_testssl(scan_id: str, domain: str) -> List[dict]:
             logger.warning("testssl.sh exited %s with no JSON output for scan %s: %s",
                             result.returncode, scan_id, result.stdout[-500:] if result.stdout else '')
     except subprocess.TimeoutExpired:
-        logger.warning("testssl.sh timed out (180s) for scan %s - parsing partial output", scan_id)
+        logger.warning("testssl.sh timed out (%ss) for scan %s - parsing partial output", _TESTSSL_TIMEOUT, scan_id)
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("testssl.sh failed for scan %s: %s", scan_id, e)
         return findings
@@ -186,6 +192,8 @@ def _parse_testssl_json(path: str, domain: str, scan_id: str) -> List[dict]:
             ))
     except json.JSONDecodeError as e:
         logger.error("testssl.sh JSON parse error for scan %s: %s", scan_id, e)
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("testssl.sh result parse error for scan %s: %s", scan_id, e)
     return findings
@@ -206,14 +214,16 @@ def _run_sslscan(scan_id: str, domain: str) -> List[dict]:
     try:
         subprocess.run(
             ['sslscan', f'--xml={out_path}', domain],
-            timeout=60,
+            timeout=_SSLSCAN_TIMEOUT,
             capture_output=True,
             check=False,
         )
         findings = _parse_sslscan_xml(out_path, domain, scan_id)
     except subprocess.TimeoutExpired:
-        logger.warning("sslscan timed out (60s) for scan %s", scan_id)
+        logger.warning("sslscan timed out (%ss) for scan %s", _SSLSCAN_TIMEOUT, scan_id)
         findings = _parse_sslscan_xml(out_path, domain, scan_id)
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("sslscan error for scan %s: %s", scan_id, e)
     finally:
@@ -371,6 +381,8 @@ def _parse_sslscan_xml(path: str, domain: str, scan_id: str) -> List[dict]:
 
     except ET.ParseError as e:
         logger.error("sslscan XML parse error for scan %s: %s", scan_id, e)
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("sslscan result parse error for scan %s: %s", scan_id, e)
 

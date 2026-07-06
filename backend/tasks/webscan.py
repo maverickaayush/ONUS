@@ -17,7 +17,7 @@ from zapv2 import ZAPv2
 from config import settings
 from tasks.base_task import (
     BaseTask, normalize_finding, update_module_status,
-    get_tool_version, build_module_result, resolve_target_url,
+    get_tool_version, build_module_result, resolve_target_url, scaled_timeout,
 )
 from tasks.celery_app import app
 
@@ -53,12 +53,14 @@ _ZAP_RISK_MAP = {
 #   Nikto                : <= 130s  (subprocess timeout; -maxtime 120s)
 #   ----------------------------------------------------------------------
 #   worst case           : <= ~430s  (well under the 480s soft / 540s hard limit)
-_ZAP_READY_TIMEOUT = 60
-_ZAP_SCAN_BUDGET = 240
-_KATANA_TIMEOUT = 180
-_NIKTO_TIMEOUT = 130
-_WEBSCAN_SOFT_LIMIT = 480
-_WEBSCAN_HARD_LIMIT = 540
+#   All of the above scaled by SCAN_TIMEOUT_MULTIPLIER for real-world targets
+#   (larger sites, WAF throttling) slower than this measured baseline.
+_ZAP_READY_TIMEOUT = scaled_timeout(60)
+_ZAP_SCAN_BUDGET = scaled_timeout(240)
+_KATANA_TIMEOUT = scaled_timeout(180)
+_NIKTO_TIMEOUT = scaled_timeout(130)
+_WEBSCAN_SOFT_LIMIT = scaled_timeout(480)
+_WEBSCAN_HARD_LIMIT = scaled_timeout(540)
 # A ZAP status-poll can fail transiently while the daemon is alive but busy
 # (its single API thread stalls under active-scan load, or one HTTP request
 # times out) - the daemon recovers on the next poll. Only conclude the daemon
@@ -713,6 +715,15 @@ def _run_nikto(scan_id: str, domain: str, target_url: str) -> List[dict]:
         logger.warning("Nikto not installed - skipping for scan %s", scan_id)
     except json.JSONDecodeError as e:
         logger.error("Nikto JSON parse error for scan %s: %s", scan_id, e)
+    except SoftTimeLimitExceeded:
+        # Unlike _run_zap/_run_katana (executed inside ThreadPoolExecutor
+        # worker threads, where Celery's signal-based soft-limit interrupt
+        # can never land - Python only delivers signals to the main thread),
+        # _run_nikto runs sequentially in the main thread after the pool
+        # block above, so it's the one place in this file that can actually
+        # receive this exception - swallowing it here would silently absorb
+        # the module's own graceful-timeout signal.
+        raise
     except Exception as e:
         logger.error("Nikto error for scan %s: %s", scan_id, e)
     finally:

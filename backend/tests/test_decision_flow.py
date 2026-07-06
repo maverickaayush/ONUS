@@ -108,6 +108,29 @@ class TestRetry:
         assert mock_update_status.call_count == 2
         mock_chord.assert_called_once()
 
+    def test_dispatch_failure_does_not_burn_the_retry_budget(self):
+        """
+        Real bug found live (Opus review): retry_counts used to be
+        incremented and persisted BEFORE the chord() dispatch - a transient
+        broker failure there still consumed the module's one-and-only retry
+        even though nothing was ever dispatched. Confirm a chord() dispatch
+        failure leaves retry_counts untouched and status back at
+        awaiting_user_decision, so a second Retry attempt is still possible.
+        """
+        results = [e if e["module"] != "recon" else _envelope("recon", "failed", "boom") for e in ALL_SUCCESS]
+        scan = _fake_scan(status=ScanStatus.awaiting_user_decision,
+                           raw_findings={"module_results": results, "retry_counts": {}})
+        db = _db_with(scan)
+
+        with patch("database.SessionLocal", return_value=db), \
+             patch("tasks.scan_orchestrator.chord", side_effect=RuntimeError("broker unreachable")), \
+             patch("tasks.scan_orchestrator.group") as mock_group, \
+             patch("tasks.base_task.update_module_status"):
+            retry_failed_modules(SCAN_ID, DOMAIN)
+
+        assert scan.raw_findings["retry_counts"] == {}
+        assert scan.status == ScanStatus.awaiting_user_decision
+
     def test_no_retry_eligible_modules_short_circuits(self):
         results = [e if e["module"] != "recon" else _envelope("recon", "failed", "boom") for e in ALL_SUCCESS]
         scan = _fake_scan(status=ScanStatus.awaiting_user_decision,

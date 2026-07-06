@@ -33,11 +33,14 @@ import requests
 import urllib3
 from playwright.sync_api import sync_playwright
 
+from config import settings
+from tasks.base_task import mount_retry_adapter
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 15
+_TIMEOUT = round(15 * settings.SCAN_TIMEOUT_MULTIPLIER)
 
 # docs/ai.md - measured against the approved demo-target.example target: median 0.39s /
 # p95 0.93s per verification request. 60s covers ~65 findings even at the p95
@@ -46,17 +49,24 @@ _TIMEOUT = 15
 # Phase 2's verify_reflected_xss shares this same budget rather than getting
 # its own - measured at ~0.65s/check (docs/ai.md) and dispatched at most
 # once per scan (test_xss returns on its first match), it's negligible
-# against the 60s ceiling.
-_TIME_BUDGET_SECONDS = 60
+# against the 60s ceiling. Scaled by SCAN_TIMEOUT_MULTIPLIER along with every
+# other module budget (see tasks/base_task.py's scaled_timeout()) - the
+# aggregate_and_analyse/continue_after_decision Celery limits (Section 4.4b)
+# scale in lockstep so the raised verification budget still fits.
+_TIME_BUDGET_SECONDS = round(60 * settings.SCAN_TIMEOUT_MULTIPLIER)
 
 # Playwright navigation timeout for the XSS re-check, plus a short buffer
 # after load to catch a payload whose alert() fires asynchronously (the
 # onerror=alert(...) payload fires on the image's error event, not
 # synchronously during parse like the <script> payload does).
-_XSS_NAV_TIMEOUT_MS = 15000
+_XSS_NAV_TIMEOUT_MS = round(15000 * settings.SCAN_TIMEOUT_MULTIPLIER)
 _XSS_POST_LOAD_WAIT_MS = 300
 
-_TRAVERSAL_SENTINELS = ('root:x:0:', 'root:x:', 'root:!:', '/bin/bash', '/bin/sh')
+# Mirrors owasp.py's test_path_traversal indicators (kept in sync manually -
+# same false-positive fix: '/bin/bash'/'/bin/sh' are common substrings in
+# ordinary page content, and bare 'root:x:'/'root:!:' can appear without the
+# UID-0 confirmation. Require the full root passwd-line shape.
+_TRAVERSAL_SENTINELS = ('root:x:0:', 'root:!:0:')
 
 # Mirrors analysis/cvss_scorer.py's _DIRECTORY_LISTING_RE (kept as a separate
 # copy, not a shared import - tasks/analysis stay decoupled except through
@@ -87,6 +97,22 @@ _SENSITIVE_FILE_SIGNATURES = {
 # expected value - real network jitter, not a false-positive tolerance.
 _SQLI_TIME_TOLERANCE = 0.5
 
+# Default client for the plain-`requests` verifiers below when no
+# authenticated session was passed in (the common, unauthenticated-scan
+# case). Real gap this closes: a bare `requests` module call has no
+# retry/backoff, so a WAF throttling exactly during the verification
+# re-check would demote an actually-confirmed finding to
+# confidence='unverified' - which reads to the operator as "possible false
+# positive requiring manual review" rather than "transient rate limit", a
+# detection-accuracy regression, not just a resilience one. Deliberately
+# NOT used for verify_reflected_xss/_xss_payload_fires - that function
+# branches on `session is None` to decide whether to set Playwright's
+# extra_http_headers/cookies at all, and swapping in a non-None default
+# session there would silently change the exact request the XSS re-check
+# makes (requests' default headers merged into a Playwright context that
+# otherwise uses its own defaults) even for an unauthenticated scan.
+_DEFAULT_CLIENT = mount_retry_adapter(requests.Session())
+
 
 def _demote(finding: dict, note: str) -> dict:
     finding['confidence'] = 'unverified'
@@ -103,9 +129,9 @@ def _promote(finding: dict, note: str) -> dict:
 def verify_open_redirect(finding: dict, session: Optional[requests.Session] = None) -> dict:
     """Source: owasp.py's test_open_redirect. `session`, when given, carries
     the same authenticated cookies/headers the original detection used
-    (see verify_findings's docstring) - a plain `requests` client otherwise,
-    unchanged from before auth support existed."""
-    client = session or requests
+    (see verify_findings's docstring) - falls back to _DEFAULT_CLIENT
+    (retry/backoff on 429/502/503/504) otherwise."""
+    client = session or _DEFAULT_CLIENT
     vt = finding.get('verification_target') or {}
     url, param, payload = vt.get('url'), vt.get('param'), vt.get('payload')
     if not (url and param and payload):
@@ -123,7 +149,7 @@ def verify_open_redirect(finding: dict, session: Optional[requests.Session] = No
 
 def verify_path_traversal(finding: dict, session: Optional[requests.Session] = None) -> dict:
     """Source: owasp.py's test_path_traversal."""
-    client = session or requests
+    client = session or _DEFAULT_CLIENT
     vt = finding.get('verification_target') or {}
     url, param, payload = vt.get('url'), vt.get('param'), vt.get('payload')
     if not url:
@@ -146,7 +172,7 @@ def verify_path_traversal(finding: dict, session: Optional[requests.Session] = N
 def verify_sensitive_file_exposure(finding: dict, session: Optional[requests.Session] = None) -> dict:
     """Source: enumeration.py's exposed_sensitive_file, keyed off its
     _SENSITIVE_FILES list."""
-    client = session or requests
+    client = session or _DEFAULT_CLIENT
     vt = finding.get('verification_target') or {}
     url, filename = vt.get('url'), vt.get('filename')
     if not (url and filename):
@@ -168,7 +194,7 @@ def verify_directory_listing(finding: dict, session: Optional[requests.Session] 
     """Source: webscan.py's Nikto integration - dispatched off the same
     directory-listing text-match webscan.py uses to set verifiable=True at
     generation time (not a dedicated headers.py autoindex check)."""
-    client = session or requests
+    client = session or _DEFAULT_CLIENT
     vt = finding.get('verification_target') or {}
     url = vt.get('url')
     if not url:
@@ -190,7 +216,7 @@ def verify_sqli_time_based(finding: dict, session: Optional[requests.Session] = 
     Implemented so the dispatch table is complete the day a module starts
     emitting this type - unreachable on real scans today.
     """
-    client = session or requests
+    client = session or _DEFAULT_CLIENT
     vt = finding.get('verification_target') or {}
     url, param, payload = vt.get('url'), vt.get('param'), vt.get('payload')
     expected_delay = vt.get('expected_delay_seconds')
@@ -331,7 +357,13 @@ def verify_findings(findings: List[dict], enabled: bool = True,
     finding on an authenticated scan was structurally unable to ever reach
     confidence='confirmed' before this, since the replay had no session and
     almost always hit a login redirect instead of reproducing the finding).
-    None for an unauthenticated scan - unchanged behavior from before.
+    None for an unauthenticated scan - unchanged behavior from before: still
+    passed through as-is to every verifier (verify_reflected_xss's Playwright
+    context deliberately branches on `session is None` to decide whether to
+    set extra_http_headers/cookies at all, so this function must not paper
+    over that with a non-None placeholder session here). The plain-`requests`
+    verifiers instead get their own retry/backoff via _DEFAULT_CLIENT below,
+    which only kicks in when `session` is None *inside* those functions.
     """
     if not enabled:
         return findings

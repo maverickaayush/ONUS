@@ -15,13 +15,41 @@ from whois.parser import WhoisEntry
 
 from tasks.base_task import (
     BaseTask, normalize_finding, update_module_status,
-    get_tool_version, build_module_result,
+    get_tool_version, build_module_result, scaled_timeout,
 )
 from tasks.celery_app import app
 from tasks.tech_fingerprint import _eol_threshold, _parse_version
 
 logger = logging.getLogger(__name__)
 MODULE = 'recon'
+
+# Per-phase nmap/subfinder/amass/httpx/naabu/whois subprocess budgets, all
+# scaled by SCAN_TIMEOUT_MULTIPLIER for real-world targets (more open ports,
+# more subdomains, slower DNS/WHOIS servers) - see tasks/base_task.py's
+# scaled_timeout().
+_NMAP_TOP_PORTS_TIMEOUT = scaled_timeout(180)
+_NMAP_FULL_RANGE_TIMEOUT = scaled_timeout(250)
+_NMAP_FULL_RANGE_HOST_TIMEOUT = scaled_timeout(240)
+_NMAP_APP_DETECT_TIMEOUT = scaled_timeout(60)
+_SUBFINDER_TIMEOUT = scaled_timeout(60)
+_AMASS_TIMEOUT = scaled_timeout(300)
+_HTTPX_TIMEOUT = scaled_timeout(180)
+_NAABU_TIMEOUT = scaled_timeout(240)
+_WHOIS_TIMEOUT = scaled_timeout(20)
+
+# Real bug found live (Opus review + confirmed against this deployment's own
+# docker-compose.yml): the default worker container has no CAP_NET_RAW, so
+# naabu's SYN scan always fails permission-wise and the -sT CONNECT fallback
+# ALWAYS fires in this exact deployment - not a rare edge case. That fallback
+# re-runs the full naabu pass a second time (~2x _NAABU_TIMEOUT worst case),
+# which the old soft=900/hard=1080 base budget (tuned before naabu/amass/
+# httpx were chained in) never accounted for. Worst-case chain at
+# multiplier=1.0: nmap responsive-path 430s + subfinder 60s + amass 300s +
+# httpx 180s + naabu 240s*2=480s + whois 20s + dns ~24s ~= 1494s - already
+# past the old 1080s hard limit before any SCAN_TIMEOUT_MULTIPLIER scaling.
+# Raised with real margin over that recomputed worst case.
+_RECON_SOFT_LIMIT = scaled_timeout(1650)
+_RECON_HARD_LIMIT = scaled_timeout(1800)
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +129,8 @@ def _nmap_phase(scan_id: str, domain: str, port_args: List[str],
     except FileNotFoundError:
         logger.error("nmap not found in PATH")
         return {}
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("nmap %s phase error for scan %s: %s", tag, scan_id, e)
         return {}
@@ -161,7 +191,8 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
 
     nmap stays bounded to ~250s worst case (filtered: Phase 1 ~180s + Phase 2b
     ~60s; responsive-but-busy: Phase 1 ~30s + Phase 2a ~250s), well within
-    this task's 900s/1080s soft/hard Celery limit (see @app.task below).
+    this task's own soft/hard Celery limit (see _RECON_SOFT_LIMIT/
+    _RECON_HARD_LIMIT and the @app.task decorator below).
     """
     ports = {}
 
@@ -173,7 +204,7 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
     t0 = time.monotonic()
     ports.update(_nmap_phase(
         scan_id, domain, port_args=['--top-ports', '100'],
-        subproc_timeout=180, tag='top',
+        subproc_timeout=_NMAP_TOP_PORTS_TIMEOUT, tag='top',
     ))
     phase1_elapsed = time.monotonic() - t0
 
@@ -181,7 +212,7 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
         # Phase 2a: responsive host - full port range for complete coverage.
         for portid, finding in _nmap_phase(
             scan_id, domain, port_args=['-p-'],
-            host_timeout='240s', subproc_timeout=250, tag='full',
+            host_timeout=f'{_NMAP_FULL_RANGE_HOST_TIMEOUT}s', subproc_timeout=_NMAP_FULL_RANGE_TIMEOUT, tag='full',
         ).items():
             ports.setdefault(portid, finding)
     else:
@@ -194,7 +225,7 @@ def _run_nmap(scan_id: str, domain: str) -> List[dict]:
         )
         for portid, finding in _nmap_phase(
             scan_id, domain, port_args=['-p', _APP_PORTS],
-            subproc_timeout=60, tag='app',
+            subproc_timeout=_NMAP_APP_DETECT_TIMEOUT, tag='app',
         ).items():
             ports.setdefault(portid, finding)
 
@@ -220,7 +251,7 @@ def _run_subfinder(scan_id: str, domain: str) -> List[dict]:
     try:
         result = subprocess.run(
             ['subfinder', '-d', domain, '-silent', '-o', out_path],
-            timeout=60,
+            timeout=_SUBFINDER_TIMEOUT,
             capture_output=True,
             check=False,
         )
@@ -248,6 +279,8 @@ def _run_subfinder(scan_id: str, domain: str) -> List[dict]:
         logger.warning("subfinder timed out (30s) for scan %s", scan_id)
     except FileNotFoundError:
         logger.warning("subfinder not installed - subdomain enumeration skipped")
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("subfinder error for scan %s: %s", scan_id, e)
     finally:
@@ -277,7 +310,7 @@ def _run_amass(scan_id: str, domain: str) -> List[str]:
         subprocess.run(
             ['amass', 'enum', '-passive', '-d', domain,
              '-json', out_path, '-timeout', '5'],
-            timeout=300, capture_output=True, check=False,
+            timeout=_AMASS_TIMEOUT, capture_output=True, check=False,
         )
         if os.path.exists(out_path):
             with open(out_path) as f:
@@ -295,6 +328,8 @@ def _run_amass(scan_id: str, domain: str) -> List[str]:
         logger.warning("amass timed out (300s) for scan %s", scan_id)
     except FileNotFoundError:
         logger.warning("amass not installed - deep subdomain enum skipped")
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("amass error for scan %s: %s", scan_id, e)
     finally:
@@ -327,7 +362,7 @@ def _run_httpx(scan_id: str, domain: str, subdomains: List[str]) -> List[dict]:
             ['httpx', '-l', subs_path, '-json', '-status-code', '-title',
              '-tech-detect', '-tls-probe', '-timeout', '10', '-threads', '20',
              '-silent', '-o', out_path],
-            timeout=180, capture_output=True, check=False,
+            timeout=_HTTPX_TIMEOUT, capture_output=True, check=False,
         )
 
         if os.path.exists(out_path):
@@ -351,6 +386,8 @@ def _run_httpx(scan_id: str, domain: str, subdomains: List[str]) -> List[dict]:
         logger.warning("httpx timed out (180s) for scan %s", scan_id)
     except FileNotFoundError:
         logger.warning("httpx not installed - live-host probing skipped")
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("httpx error for scan %s: %s", scan_id, e)
     finally:
@@ -416,7 +453,7 @@ def _run_naabu(scan_id: str, domain: str, live_hosts: List[dict]) -> List[dict]:
         cmd = ['naabu', '-list', hosts_path, '-top-ports', '1000',
                '-rate', '1000', '-c', '25', '-json', '-o', out_path,
                '-silent', '-no-color']
-        proc = subprocess.run(cmd, timeout=240, capture_output=True, check=False)
+        proc = subprocess.run(cmd, timeout=_NAABU_TIMEOUT, capture_output=True, check=False)
         stderr = (proc.stderr or b'').decode(errors='ignore').lower()
 
         if 'permission denied' in stderr or 'operation not permitted' in stderr:
@@ -424,7 +461,7 @@ def _run_naabu(scan_id: str, domain: str, live_hosts: List[dict]) -> List[dict]:
                 "naabu SYN scan unavailable (needs CAP_NET_RAW) for scan %s - "
                 "falling back to CONNECT scan (-sT)", scan_id,
             )
-            subprocess.run(cmd + ['-sT'], timeout=240, capture_output=True, check=False)
+            subprocess.run(cmd + ['-sT'], timeout=_NAABU_TIMEOUT, capture_output=True, check=False)
 
         if os.path.exists(out_path):
             with open(out_path) as f:
@@ -450,6 +487,8 @@ def _run_naabu(scan_id: str, domain: str, live_hosts: List[dict]) -> List[dict]:
         logger.warning("naabu timed out (240s) for scan %s", scan_id)
     except FileNotFoundError:
         logger.warning("naabu not installed - subdomain port pre-scan skipped")
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("naabu error for scan %s: %s", scan_id, e)
     finally:
@@ -474,7 +513,7 @@ def _run_whois(scan_id: str, domain: str) -> List[dict]:
         # (SIGKILL-enforced) so a hung/rate-limiting WHOIS server can never stall
         # recon. python-whois's parser then turns the raw text into fields.
         proc = subprocess.run(
-            ['whois', domain], timeout=20, capture_output=True, check=False,
+            ['whois', domain], timeout=_WHOIS_TIMEOUT, capture_output=True, check=False,
         )
         text = proc.stdout.decode(errors='ignore')
         if not text.strip():
@@ -553,6 +592,8 @@ def _run_whois(scan_id: str, domain: str) -> List[dict]:
             "Install it (apt install whois); the Docker image must include it.",
             scan_id,
         )
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("whois error for scan %s: %s", scan_id, e)
 
@@ -646,15 +687,21 @@ def _run_dns(scan_id: str, domain: str) -> List[dict]:
 
 # Recon's worst case was ~356s (nmap + subfinder + WHOIS + DNS) under the
 # previous 600s/660s ceiling. Amass/httpx/Naabu were added as a chained
-# subdomain -> liveness -> port pipeline (added post-Step 9), pushing the
-# worst case to roughly: previous ~356s + Amass 300s + httpx 180s + Naabu
-# 240s (x2 if the SYN->CONNECT fallback fires) = ~1080-1320s. Rather than
-# let a slow-but-legitimate run get SIGKILL'd mid-chain, the ceiling is
-# raised again to soft=900s/hard=1080s - still free (webscan is not the
-# gating module anymore, but recon runs in parallel with it either way and
-# is never on the pipeline's critical path for aggregation to start).
+# subdomain -> liveness -> port pipeline (added post-Step 9). That earlier
+# ~1080-1320s re-estimate assumed the Naabu SYN->CONNECT fallback was a rare
+# edge case - it isn't: this deployment's worker container has no
+# CAP_NET_RAW (docker-compose.yml), so the fallback fires on every single
+# real scan, making the x2 Naabu case the NORMAL case, not the exception.
+# Recomputed worst case at multiplier=1.0: nmap responsive-path 430s +
+# subfinder 60s + Amass 300s + httpx 180s + Naabu 240s*2=480s + whois 20s +
+# DNS ~24s ~= 1494s - already past the old 1080s hard limit before any
+# SCAN_TIMEOUT_MULTIPLIER scaling. Raised to soft=1650s/hard=1800s (base,
+# see _RECON_SOFT_LIMIT/_RECON_HARD_LIMIT above) for real headroom - still
+# free (webscan is not the gating module anymore, but recon runs in
+# parallel with it either way and is never on the pipeline's critical path
+# for aggregation to start).
 @app.task(base=BaseTask, name='tasks.recon.run_recon',
-          soft_time_limit=900, time_limit=1080)
+          soft_time_limit=_RECON_SOFT_LIMIT, time_limit=_RECON_HARD_LIMIT)
 def run_recon(scan_id: str, domain: str) -> dict:
     """
     Recon module: nmap port scan, subfinder + Amass subdomain enumeration,
@@ -694,10 +741,10 @@ def run_recon(scan_id: str, domain: str) -> dict:
         return build_module_result(MODULE, findings, tool_versions, status='success',
                                     duration_seconds=time.monotonic() - start)
     except SoftTimeLimitExceeded:
-        logger.warning("recon hit its soft time limit (900s) for scan %s", scan_id)
+        logger.warning("recon hit its soft time limit (%ds) for scan %s", _RECON_SOFT_LIMIT, scan_id)
         update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='timeout',
-                                    error='Module exceeded its soft time limit (900s)',
+                                    error=f'Module exceeded its soft time limit ({_RECON_SOFT_LIMIT}s)',
                                     duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("recon unexpected error scan=%s: %s", scan_id, e)
