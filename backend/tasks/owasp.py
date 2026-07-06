@@ -53,7 +53,19 @@ def _get_params(target: str) -> dict:
     parsed = urllib.parse.urlparse(target)
     params = dict(urllib.parse.parse_qsl(parsed.query))
     if not params:
-        params = {'id': '1', 'q': 'test', 'search': 'test'}
+        # Real bug found live: DVWA's classic vulnerable pages (SQLi, XSS
+        # reflected, etc.) are GET-form-gated behind `isset($_REQUEST['Submit'])`
+        # - without a submit-button-shaped param, the app renders the empty
+        # form and never processes `id` at all, so every injection here was
+        # silently a no-op (no error, 0 findings, no evidence anything was
+        # even attempted). Confirmed directly: the exact same request with
+        # vs without `Submit=Submit` is the difference between DVWA
+        # processing the payload and silently ignoring it.
+        # ponytail: `Submit` covers DVWA/bWAPP's own convention, not every
+        # app's submit-button name - a real upgrade path (extracting actual
+        # <form> input names via _FormFieldExtractor, already used for the
+        # login form) exists if a future target needs it.
+        params = {'id': '1', 'q': 'test', 'search': 'test', 'Submit': 'Submit'}
     return params
 
 
@@ -445,7 +457,21 @@ def test_open_redirect(session: requests.Session, target: str, domain: str) -> L
                 )
                 if resp.status_code in (301, 302, 303, 307, 308):
                     location = resp.headers.get('Location', '')
-                    if 'evil-vapt-test.example.com' in location:
+                    # Real false-positive bug found live: a plain substring
+                    # check on the raw Location header matches plenty of
+                    # apps' own "return to this page" pattern (e.g.
+                    # Mutillidae's `index.php?page=X&next=<value>`, which
+                    # echoes the payload back into its OWN same-site URL
+                    # verbatim rather than ever redirecting there) - the
+                    # payload string is present, but the browser is never
+                    # actually sent to the external host. Resolve the
+                    # Location against the request URL (handles relative
+                    # paths) and require its netloc to genuinely be the
+                    # injected external host.
+                    resolved_netloc = urllib.parse.urlsplit(
+                        urllib.parse.urljoin(target, location)).netloc
+                    external_netloc = urllib.parse.urlsplit(external_url).netloc
+                    if resolved_netloc == external_netloc:
                         findings.append(normalize_finding(
                             module=MODULE, tool='owasp', type_='open_redirect',
                             title='Open Redirect vulnerability',
@@ -474,11 +500,11 @@ def test_error_disclosure(session: requests.Session, target: str, domain: str) -
     findings = []
     probes = [
         # Invalid parameter type
-        {'id': "' INVALID", 'page': '-1'},
+        {'id': "' INVALID", 'page': '-1', 'Submit': 'Submit'},
         # Extremely long value
-        {'q': 'A' * 4096},
+        {'q': 'A' * 4096, 'Submit': 'Submit'},
         # Null bytes / special chars
-        {'id': '\x00\x01\x02'},
+        {'id': '\x00\x01\x02', 'Submit': 'Submit'},
     ]
 
     try:
@@ -487,13 +513,22 @@ def test_error_disclosure(session: requests.Session, target: str, domain: str) -
                 resp = session.get(target, params=params,
                                     timeout=_TIMEOUT, verify=False,
                                     allow_redirects=True)
-                if resp.status_code == 500 and _TRACE_RE.search(resp.text):
-                    # Find the matched pattern for evidence
-                    match = _TRACE_RE.search(resp.text)
+                # Real bug found live: requiring status_code==500 excludes
+                # the far more common real-world case - PHP renders a
+                # Warning/Notice (exactly what _TRACE_PATTERNS looks for)
+                # inline on a normal 200 OK page by default; only an
+                # uncaught fatal error becomes a 500, and not always even
+                # then depending on server config. The trace pattern match
+                # itself is the actual signal (a specific, low-false-
+                # positive-rate set of real framework/DBMS error strings) -
+                # the status code was an over-restrictive additional gate
+                # that contradicted the pattern list's own intent.
+                match = _TRACE_RE.search(resp.text)
+                if match:
                     snippet = resp.text[max(0, match.start()-30):match.end()+80]
                     findings.append(normalize_finding(
                         module=MODULE, tool='owasp', type_='error_disclosure',
-                        title='Error/stack trace disclosure on 500 response',
+                        title=f'Error/stack trace disclosure (HTTP {resp.status_code})',
                         evidence=f'Stack trace or framework error exposed: ...{snippet[:200]}...',
                         severity='Medium', target=domain,
                     ))

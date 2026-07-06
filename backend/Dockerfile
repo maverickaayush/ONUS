@@ -20,7 +20,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     ca-certificates \
     dnsutils \
-    whois \
     git \
     unzip \
     perl \
@@ -28,9 +27,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml-writer-perl \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
+    bsdextrautils \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
-# testssl.sh
+# whois - from bookworm-backports, NOT plain bookworm/main. Real bug found
+# by actually running `whois` against a real domain (demo-target.example) inside the
+# built image: bookworm/main's whois 5.5.17 ships a stale hardcoded TLD
+# server table - `.in` still points at `whois.registry.in`, a hostname
+# that no longer resolves anywhere (confirmed via strace: NIXI, the .in
+# registry, migrated to `whois.nixiregistry.in` at some point after
+# 5.5.17 was packaged). Every real-world non-.com/.net/.org domain this
+# tool has ever scanned silently got zero WHOIS findings because of this -
+# not a python-whois parsing bug (WhoisEntry.load's regexes are fine and
+# correctly extract every field once the binary actually returns text).
+# 5.6.2~bpo12+1 has the current table - confirmed live.
+RUN echo "deb http://deb.debian.org/debian bookworm-backports main" \
+    > /etc/apt/sources.list.d/backports.list && \
+    apt-get update && apt-get install -y -t bookworm-backports --no-install-recommends whois \
+    && rm -rf /var/lib/apt/lists/*
+
+# testssl.sh - needs `hexdump` (bsdextrautils) and `ps` (procps) above, real
+# bug found by running it live: both were missing and it failed with
+# "Fatal error: You need to install hexdump/ps for this program to work",
+# so it silently never produced a finding on any scan, ever (same silent-
+# failure shape as the WhatWeb gem bug below).
 RUN git clone --depth 1 https://github.com/drwetter/testssl.sh.git \
     /opt/testssl.sh && \
     ln -s /opt/testssl.sh/testssl.sh /usr/local/bin/testssl.sh
