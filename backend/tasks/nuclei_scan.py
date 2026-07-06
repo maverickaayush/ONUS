@@ -9,7 +9,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import (
     BaseTask, normalize_finding, update_module_status,
-    get_tool_version, build_module_result, resolve_target_url,
+    get_tool_version, build_module_result, resolve_target_url, scaled_timeout,
 )
 from tasks.celery_app import app
 
@@ -22,9 +22,11 @@ MODULE = 'nuclei'
 # killed before completion on essentially every real scan, not just slow
 # ones. Raised with margin above the observed 550s, same calibrate-from-
 # measurement approach as recon/webscan/enumeration's own timeout budgets.
-_NUCLEI_TIMEOUT = 600
-_SOFT_LIMIT = 660
-_HARD_LIMIT = 720
+# Further scaled by SCAN_TIMEOUT_MULTIPLIER for real-world targets slower
+# than the measured baseline.
+_NUCLEI_TIMEOUT = scaled_timeout(600)
+_SOFT_LIMIT = scaled_timeout(660)
+_HARD_LIMIT = scaled_timeout(720)
 
 # Nuclei's own template-authored severity is treated as authoritative (community
 # researchers know the CVE better than a generic per-type table) - map it

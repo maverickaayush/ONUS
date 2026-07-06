@@ -10,7 +10,8 @@ import requests
 from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import (
-    BaseTask, normalize_finding, update_module_status, build_module_result, resolve_target_url,
+    BaseTask, normalize_finding, update_module_status, build_module_result,
+    resolve_target_url, scaled_timeout, mount_retry_adapter,
 )
 from tasks.celery_app import app
 
@@ -19,7 +20,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
 MODULE = 'owasp'
 
-_TIMEOUT = 30
+_TIMEOUT = scaled_timeout(30)
 _SESSION_KWARGS = dict(timeout=_TIMEOUT, verify=False, allow_redirects=False)
 
 # SQL error patterns that indicate injection vulnerability
@@ -82,8 +83,8 @@ def _get_params(target: str) -> dict:
 # just *some* same-origin ones - cheap to get itself.
 # ---------------------------------------------------------------------------
 _MAX_CRAWL_PAGES = 20
-_CRAWL_PAGE_TIMEOUT = 10
-_CRAWL_BUDGET_SECONDS = 60
+_CRAWL_PAGE_TIMEOUT = scaled_timeout(10)
+_CRAWL_BUDGET_SECONDS = scaled_timeout(60)
 
 
 class _LinkExtractor(HTMLParser):
@@ -164,6 +165,12 @@ def _make_session(auth: Optional[dict]) -> requests.Session:
     otherwise-working authenticated scan into a hard failure.
     """
     session = requests.Session()
+    # GET-only retry/backoff on 429/502/503/504 - a real WAF throttling mid-scan
+    # would otherwise silently read as "clean" on whatever page it hit next,
+    # indistinguishable from a genuinely non-vulnerable result (see
+    # mount_retry_adapter's docstring). Login POSTs below intentionally aren't
+    # retried by this adapter (GET/HEAD/OPTIONS only).
+    mount_retry_adapter(session)
     if not auth:
         return session
 
@@ -385,7 +392,14 @@ def test_path_traversal(session: requests.Session, target: str, domain: str) -> 
         '/../../../../etc/passwd',
         '/%2e%2e/%2e%2e/%2e%2e/etc/passwd',
     ]
-    indicators = ['root:x:', 'root:!:', '/bin/bash', '/bin/sh']
+    # Real false positive found live (Opus review): '/bin/bash'/'/bin/sh'
+    # are common substrings in ordinary page content (shell tutorials, docs,
+    # sysadmin blog posts) - a traversal probe landing on any normal 200 page
+    # that happens to mention a shell path was flagged Critical. Require the
+    # UID-0 root passwd-line shape instead ('root:x:0:'/'root:!:0:' - the
+    # real /etc/passwd format is `root:x:0:0:root:/root:/bin/bash`), which
+    # essentially never appears outside an actual passwd file dump.
+    indicators = ['root:x:0:', 'root:!:0:']
 
     try:
         parsed = urllib.parse.urlparse(target)
@@ -569,8 +583,10 @@ def test_idor(session: requests.Session, target: str, domain: str) -> List[dict]
 
     Only meaningful with authenticated scanning (schemas.py's AuthConfig) -
     without a login, "my resource" vs. "someone else's resource" mostly
-    doesn't apply. Still runs unconditionally like the other 4 tests; it's
-    just unlikely to find anything on an anonymous session.
+    doesn't apply. run_owasp only dispatches this test when the scan has
+    auth configured (real false positive found live otherwise: any site with
+    sequential-looking IDs and distinct-but-public per-ID content - product
+    pages, blog posts - reads as a High IDOR with no login involved at all).
 
     # ponytail: adjacent-id guessing only catches sequential/auto-increment-
     # shaped ids (confirmed effective against NodeGoat's own textbook IDOR at
@@ -639,7 +655,7 @@ def test_idor(session: requests.Session, target: str, domain: str) -> List[dict]
 
 
 @app.task(base=BaseTask, name='tasks.owasp.run_owasp',
-          soft_time_limit=360, time_limit=420)
+          soft_time_limit=scaled_timeout(360), time_limit=scaled_timeout(420))
 def run_owasp(scan_id: str, domain: str) -> dict:
     """
     OWASP Top 10 module: 6 non-destructive active tests (SQLi, XSS, path
@@ -680,13 +696,25 @@ def run_owasp(scan_id: str, domain: str) -> dict:
     findings = []
     target = resolve_target_url(domain)
     from tasks.auth_store import get_scan_auth
-    session = _make_session(get_scan_auth(scan_id))
+    auth = get_scan_auth(scan_id)
+    session = _make_session(auth)
+
+    # test_idor is only meaningful with an authenticated session (its own
+    # docstring says so) - real false-positive found live (Opus review): run
+    # unconditionally, it flags any site with sequential-looking numeric IDs
+    # and distinct-but-public content per ID (product pages, blog posts,
+    # news articles) as a High IDOR, since there's no "someone else's data"
+    # concept to violate without a login. Gate it on auth actually being
+    # configured for this scan instead of always dispatching it.
+    active_tests = (test_sqli, test_xss, test_path_traversal,
+                     test_open_redirect, test_error_disclosure)
+    if auth:
+        active_tests = active_tests + (test_idor,)
 
     try:
         discovered = _discover_urls(session, target, domain)
         for url in discovered:
-            for test_fn in (test_sqli, test_xss, test_path_traversal,
-                            test_open_redirect, test_error_disclosure, test_idor):
+            for test_fn in active_tests:
                 try:
                     findings.extend(test_fn(session, url, domain))
                 except SoftTimeLimitExceeded:

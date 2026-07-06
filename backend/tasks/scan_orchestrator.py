@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from celery import group, chord
 from tasks.celery_app import app
-from tasks.base_task import SCAN_MODULE_IDS
+from tasks.base_task import SCAN_MODULE_IDS, scaled_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,24 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
         run_enumeration.s(scan_id, domain),
     )
 
-    chord(scanning_group)(aggregate_and_analyse.s(scan_id, domain))
+    try:
+        chord(scanning_group)(aggregate_and_analyse.s(scan_id, domain))
+    except Exception as e:
+        # A transient broker (Redis) failure right here would otherwise leave
+        # the scan at status='running' with zero modules actually dispatched -
+        # nothing ever reports back, so this is invisible until the blunt
+        # time-based STUCK_SCAN_DEADLINE reaper eventually catches it (~2500s+).
+        # Fail fast instead, same pattern as routers/scan.py's create_scan()
+        # handling scan_orchestrator.delay() failing to enqueue.
+        logger.error("scan_orchestrator: failed to dispatch scanning group for scan %s: %s", scan_id, e)
+        db = SessionLocal()
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.failed
+                db.commit()
+        finally:
+            db.close()
 
 
 # Per-task limit raised from the global 300s/360s default. With Ollama's
@@ -117,9 +134,16 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
 # the confidence-verification stage (analysis/verifier.py) - see docs/ai.md
 # for the real median/p95 numbers measured against the approved demo-target.example
 # target that this is based on. 440/500 keeps the same 60s soft->hard gap
-# as the pre-verification 360/420 pair.
+# as the pre-verification 360/420 pair. Named constants (not inlined in the
+# decorators below) so routers/scan.py's STUCK_SCAN_DEADLINE can import the
+# real value instead of carrying a second hardcoded copy that can drift out
+# of sync (real bug found live: it previously did exactly that).
+_AGGREGATE_SOFT_LIMIT = scaled_timeout(440)
+_AGGREGATE_HARD_LIMIT = scaled_timeout(500)
+
+
 @app.task(name='tasks.scan_orchestrator.aggregate_and_analyse',
-          soft_time_limit=440, time_limit=500)
+          soft_time_limit=_AGGREGATE_SOFT_LIMIT, time_limit=_AGGREGATE_HARD_LIMIT)
 def aggregate_and_analyse(results: list, scan_id: str, domain: str) -> None:
     """
     Chord callback: called once all 8 scanning subtasks complete.
@@ -172,7 +196,7 @@ def _pause_for_decision(results: list, scan_id: str, retry_counts: Dict[str, int
 
 
 @app.task(name='tasks.scan_orchestrator.continue_after_decision',
-          soft_time_limit=440, time_limit=500)
+          soft_time_limit=_AGGREGATE_SOFT_LIMIT, time_limit=_AGGREGATE_HARD_LIMIT)
 def continue_after_decision(scan_id: str, domain: str) -> None:
     """
     Operator chose 'Continue Without Failed Modules' - finalise using
@@ -246,8 +270,41 @@ def retry_failed_modules(scan_id: str, domain: str) -> None:
     }
 
     for m in retryable:
-        retry_counts[m] = retry_counts.get(m, 0) + 1
         update_module_status(scan_id, m, 'queued')
+
+    logger.info("scan %s retrying modules: %s", scan_id, retryable)
+    retry_group = group(task_map[m].s(scan_id, domain) for m in retryable)
+    try:
+        chord(retry_group)(_merge_retry_results.s(scan_id, domain, results, retryable))
+    except Exception as e:
+        # Same broker-dispatch-failure concern as scan_orchestrator() above -
+        # a failed chord() call here would otherwise leave the scan at
+        # 'running' with the retry never actually dispatched. Put it back to
+        # awaiting_user_decision (not 'failed') so the operator can retry
+        # again or fall back to continue/cancel, rather than losing the scan
+        # outright over what's likely a transient Redis blip.
+        logger.error("retry_failed_modules: failed to dispatch retry group for scan %s: %s", scan_id, e)
+        db = SessionLocal()
+        try:
+            scan = db.query(Scan).filter(Scan.id == scan_id).first()
+            if scan:
+                scan.status = ScanStatus.awaiting_user_decision
+                db.commit()
+        finally:
+            db.close()
+        return
+
+    # Only record this retry attempt (consuming each module's one retry)
+    # once the dispatch has actually succeeded. Real bug found live (Opus
+    # review): retry_counts used to be incremented and persisted BEFORE the
+    # chord() dispatch above - a transient broker failure there still
+    # consumed the module's one-and-only retry even though nothing was ever
+    # dispatched, contradicting the except block's own "operator can retry
+    # again" comment (MAX_RETRIES_PER_MODULE=1 then permanently blocked
+    # Retry for that module after a dispatch failure that wasn't the
+    # operator's or the module's fault).
+    for m in retryable:
+        retry_counts[m] = retry_counts.get(m, 0) + 1
 
     db = SessionLocal()
     try:
@@ -260,10 +317,6 @@ def retry_failed_modules(scan_id: str, domain: str) -> None:
             db.commit()
     finally:
         db.close()
-
-    logger.info("scan %s retrying modules: %s", scan_id, retryable)
-    retry_group = group(task_map[m].s(scan_id, domain) for m in retryable)
-    chord(retry_group)(_merge_retry_results.s(scan_id, domain, results, retryable))
 
 
 @app.task(name='tasks.scan_orchestrator._merge_retry_results')

@@ -119,7 +119,7 @@ class TestVerificationDeterminism:
         from tasks.scan_orchestrator import _score_and_describe
 
         with patch('analysis.ollama_client.analyse') as mock_analyse, \
-             patch('analysis.verifier.requests.get', return_value=self._mock_redirect_resp()):
+             patch('analysis.verifier._DEFAULT_CLIENT.get', return_value=self._mock_redirect_resp()):
             mock_analyse.return_value = {
                 'executive_summary': 'x', 'descriptions': {}, 'ai_unavailable': True,
             }
@@ -147,7 +147,7 @@ class TestVerificationDeterminism:
         """ENABLE_VERIFICATION=False must never touch the network and must
         leave every finding at its module-assigned baseline confidence."""
         aggregated = aggregate(_raw_findings_with_verifiable())
-        with patch('analysis.verifier.requests.get') as mock_get:
+        with patch('analysis.verifier._DEFAULT_CLIENT.get') as mock_get:
             aggregated['findings'] = verify_findings(aggregated['findings'], enabled=False)
         mock_get.assert_not_called()
         redirect = next(f for f in aggregated['findings'] if f['type'] == 'open_redirect')

@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import os
@@ -16,7 +15,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import (
     BaseTask, normalize_finding, update_module_status,
-    get_tool_version, build_module_result, resolve_target_url,
+    get_tool_version, build_module_result, resolve_target_url, scaled_timeout,
 )
 from tasks.celery_app import app
 
@@ -28,12 +27,14 @@ MODULE = 'enumeration'
 # Timing budget: baseline calibration (<=10s, probes run concurrently) +
 # FFUF (<=130s) + a handful of sequential admin-panel login-form checks
 # (~10s each, typically 0-3 hits) - raised from 180/240 for headroom, same
-# pattern as recon/webscan's documented per-module ceilings.
-_FFUF_TIMEOUT = 130
-_SOFT_LIMIT = 220
-_HARD_LIMIT = 280
+# pattern as recon/webscan's documented per-module ceilings. Further scaled
+# by SCAN_TIMEOUT_MULTIPLIER for real-world targets slower than the
+# measured baseline (larger wordlists, WAF rate-limiting, network latency).
+_FFUF_TIMEOUT = scaled_timeout(130)
+_SOFT_LIMIT = scaled_timeout(220)
+_HARD_LIMIT = scaled_timeout(280)
 _WORDLIST = '/opt/wordlists/common.txt'
-_BASELINE_TIMEOUT = 10
+_BASELINE_TIMEOUT = scaled_timeout(10)
 
 _SENSITIVE_FILES = (
     '.env', '.git/config', '.git/head', 'backup.sql', 'dump.sql', 'database.sql',
@@ -75,12 +76,11 @@ def _calibrate_baseline(target: str) -> Optional[dict]:
     a finding. Returns None if the target returns clean, inconsistent 404s -
     no baseline filtering needed.
     """
-    def _probe(path: str) -> Optional[Tuple[int, int, str]]:
+    def _probe(path: str) -> Optional[Tuple[int, int]]:
         try:
             resp = requests.get(f'{target}{path}', timeout=_BASELINE_TIMEOUT,
                                  verify=False, allow_redirects=False)
-            body = resp.content[:1024]
-            return (resp.status_code, len(resp.content), hashlib.sha256(body).hexdigest())
+            return (resp.status_code, len(resp.content))
         except requests.RequestException:
             return None
 
@@ -111,7 +111,6 @@ def _calibrate_baseline(target: str) -> Optional[dict]:
         'status': statuses.pop(),
         'size_range': (size_min, size_max),
         'size_median': size_median,
-        'body_hash_set': {s[2] for s in samples},
     }
 
 
@@ -249,7 +248,15 @@ def _run_ffuf(scan_id: str, target: str, domain: str) -> List[dict]:
             length = hit.get('length', 0)
             total_hits += 1
 
-            if _within_baseline(status_code, length, baseline):
+            # Real bug found live (Opus review): baseline filtering only
+            # compares status+size, never body content - a genuine exposed
+            # .env/.git/config that happens to land within the guaranteed-404
+            # baseline's size cluster was silently dropped as noise before it
+            # was ever classified as sensitive. A sensitive-file match is
+            # always worth surfacing regardless of baseline collision - the
+            # cost of an occasional false positive here is far lower than
+            # silently losing a real credential-exposure Critical.
+            if _within_baseline(status_code, length, baseline) and not _matched_sensitive_file(path):
                 baseline_filtered += 1
                 continue
 

@@ -25,6 +25,19 @@ class Settings(BaseSettings):
     # 4.4's disk-growth concern; see scan_orchestrator.py's _finalize()).
     # Empty = pruning is a no-op (e.g. native dev, no shared volume set up).
     ZAP_SESSIONS_DIR: str = ""
+    # Every module's internal tool subprocess timeouts and Celery soft/hard
+    # limits are lab-tuned (DVWA/testphp.vulnweb.com - fast, small, no WAF).
+    # Real-world targets are slower (WAF rate-limiting, larger content,
+    # network latency), so scale every budget by this one knob instead of
+    # hand-tuning each module's constants - see tasks/base_task.py's
+    # scaled_timeout(). 1.5 = default real-world headroom; raise further via
+    # env for known-slow targets, or drop to 1.0 to reproduce the original
+    # lab-tuned timings.
+    SCAN_TIMEOUT_MULTIPLIER: float = 1.5
+    # Concurrent-scan cap (Section 8) - a resource-exhaustion guard, not a
+    # security boundary. Raise via env for deployments with more worker
+    # capacity; this was previously documented but never enforced in code.
+    MAX_CONCURRENT_SCANS: int = 5
 
 
 settings = Settings()

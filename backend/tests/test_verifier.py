@@ -48,7 +48,7 @@ class TestNeverDropsFindings:
         f = _finding(type='open_redirect',
                      verification_target={'url': 'https://x.test', 'param': 'next',
                                            'payload': 'https://evil-vapt-test.example.com'})
-        with patch('analysis.verifier.requests.get', return_value=_mock_resp(status=200)):
+        with patch('analysis.verifier._DEFAULT_CLIENT.get', return_value=_mock_resp(status=200)):
             result = verify_open_redirect(f)
         assert result is f  # same object, not removed/replaced
         assert result['confidence'] == 'unverified'
@@ -58,7 +58,7 @@ class TestNeverDropsFindings:
         f = _finding(type='open_redirect',
                      verification_target={'url': 'https://x.test', 'param': 'next',
                                            'payload': 'https://evil-vapt-test.example.com'})
-        with patch('analysis.verifier.requests.get',
+        with patch('analysis.verifier._DEFAULT_CLIENT.get',
                    side_effect=requests.exceptions.ConnectionError('refused')):
             result = verify_open_redirect(f)
         assert result['confidence'] == 'unverified'
@@ -90,7 +90,7 @@ class TestVerifyOpenRedirect:
                      verification_target={'url': 'https://x.test', 'param': 'next',
                                            'payload': 'https://evil-vapt-test.example.com'})
         resp = _mock_resp(status=302, location='https://evil-vapt-test.example.com/pwned')
-        with patch('analysis.verifier.requests.get', return_value=resp):
+        with patch('analysis.verifier._DEFAULT_CLIENT.get', return_value=resp):
             result = verify_open_redirect(f)
         assert result['confidence'] == 'confirmed'
 
@@ -98,7 +98,7 @@ class TestVerifyOpenRedirect:
         f = _finding(type='open_redirect',
                      verification_target={'url': 'https://x.test', 'param': 'next',
                                            'payload': 'https://evil-vapt-test.example.com'})
-        with patch('analysis.verifier.requests.get', return_value=_mock_resp(status=200)):
+        with patch('analysis.verifier._DEFAULT_CLIENT.get', return_value=_mock_resp(status=200)):
             result = verify_open_redirect(f)
         assert result['confidence'] == 'unverified'
 
@@ -108,7 +108,7 @@ class TestVerifyPathTraversal:
     def test_sentinel_reproduced_confirms(self):
         f = _finding(type='path_traversal',
                      verification_target={'url': 'https://x.test/etc/passwd', 'param': None, 'payload': None})
-        with patch('analysis.verifier.requests.get',
+        with patch('analysis.verifier._DEFAULT_CLIENT.get',
                    return_value=_mock_resp('root:x:0:0:root:/root:/bin/bash')):
             result = verify_path_traversal(f)
         assert result['confidence'] == 'confirmed'
@@ -116,7 +116,7 @@ class TestVerifyPathTraversal:
     def test_patched_response_demotes(self):
         f = _finding(type='path_traversal',
                      verification_target={'url': 'https://x.test/etc/passwd', 'param': None, 'payload': None})
-        with patch('analysis.verifier.requests.get', return_value=_mock_resp('404 not found')):
+        with patch('analysis.verifier._DEFAULT_CLIENT.get', return_value=_mock_resp('404 not found')):
             result = verify_path_traversal(f)
         assert result['confidence'] == 'unverified'
 
@@ -124,7 +124,7 @@ class TestVerifyPathTraversal:
         f = _finding(type='path_traversal',
                      verification_target={'url': 'https://x.test', 'param': 'file',
                                            'payload': '../../../../etc/passwd'})
-        with patch('analysis.verifier.requests.get') as mock_get:
+        with patch('analysis.verifier._DEFAULT_CLIENT.get') as mock_get:
             mock_get.return_value = _mock_resp('root:x:0:0:root')
             verify_path_traversal(f)
         _, kwargs = mock_get.call_args
@@ -136,7 +136,7 @@ class TestVerifySensitiveFileExposure:
     def test_env_content_confirms(self):
         f = _finding(type='exposed_sensitive_file',
                      verification_target={'url': 'https://x.test/.env', 'filename': '.env'})
-        with patch('analysis.verifier.requests.get',
+        with patch('analysis.verifier._DEFAULT_CLIENT.get',
                    return_value=_mock_resp('DB_PASSWORD=hunter2\nDEBUG=True\n')):
             result = verify_sensitive_file_exposure(f)
         assert result['confidence'] == 'confirmed'
@@ -145,7 +145,7 @@ class TestVerifySensitiveFileExposure:
         """A generic HTML 200 error page must not false-positive as .env content."""
         f = _finding(type='exposed_sensitive_file',
                      verification_target={'url': 'https://x.test/.env', 'filename': '.env'})
-        with patch('analysis.verifier.requests.get',
+        with patch('analysis.verifier._DEFAULT_CLIENT.get',
                    return_value=_mock_resp('<html><body>Not Found</body></html>')):
             result = verify_sensitive_file_exposure(f)
         assert result['confidence'] == 'unverified'
@@ -153,7 +153,7 @@ class TestVerifySensitiveFileExposure:
     def test_gitconfig_content_confirms(self):
         f = _finding(type='exposed_sensitive_file',
                      verification_target={'url': 'https://x.test/.git/config', 'filename': '.git/config'})
-        with patch('analysis.verifier.requests.get',
+        with patch('analysis.verifier._DEFAULT_CLIENT.get',
                    return_value=_mock_resp('[core]\n\trepositoryformatversion = 0\n')):
             result = verify_sensitive_file_exposure(f)
         assert result['confidence'] == 'confirmed'
@@ -170,7 +170,7 @@ class TestVerifyDirectoryListing:
     def test_autoindex_reproduced_confirms(self):
         f = _finding(type='nikto_finding',
                      verification_target={'url': 'https://x.test/public/'})
-        with patch('analysis.verifier.requests.get',
+        with patch('analysis.verifier._DEFAULT_CLIENT.get',
                    return_value=_mock_resp('<title>Index of /public</title>')):
             result = verify_directory_listing(f)
         assert result['confidence'] == 'confirmed'
@@ -178,7 +178,7 @@ class TestVerifyDirectoryListing:
     def test_no_longer_listing_demotes(self):
         f = _finding(type='nikto_finding',
                      verification_target={'url': 'https://x.test/public/'})
-        with patch('analysis.verifier.requests.get', return_value=_mock_resp(status=403)):
+        with patch('analysis.verifier._DEFAULT_CLIENT.get', return_value=_mock_resp(status=403)):
             result = verify_directory_listing(f)
         assert result['confidence'] == 'unverified'
 
@@ -197,7 +197,7 @@ class TestVerifySqliTimeBased:
             calls[0] += 1
             return _mock_resp('ok')
 
-        with patch('analysis.verifier.requests.get', side_effect=fake_get), \
+        with patch('analysis.verifier._DEFAULT_CLIENT.get', side_effect=fake_get), \
              patch('analysis.verifier.time.monotonic', side_effect=[0, 0, 0, 3.2]):
             result = verify_sqli_time_based(f)
         assert result['confidence'] == 'confirmed'
@@ -206,7 +206,7 @@ class TestVerifySqliTimeBased:
         f = _finding(type='sqli_time_based',
                      verification_target={'url': 'https://x.test', 'param': 'id',
                                            'payload': "1' AND SLEEP(3)--", 'expected_delay_seconds': 3})
-        with patch('analysis.verifier.requests.get', return_value=_mock_resp('ok')), \
+        with patch('analysis.verifier._DEFAULT_CLIENT.get', return_value=_mock_resp('ok')), \
              patch('analysis.verifier.time.monotonic', side_effect=[0, 0, 0, 0.1]):
             result = verify_sqli_time_based(f)
         assert result['confidence'] == 'unverified'
@@ -346,14 +346,14 @@ class TestVerifyFindingsDispatch:
 
     def test_disabled_is_a_full_noop(self):
         f = _finding(type='open_redirect', verification_target={})
-        with patch('analysis.verifier.requests.get') as mock_get:
+        with patch('analysis.verifier._DEFAULT_CLIENT.get') as mock_get:
             result = verify_findings([f], enabled=False)
         mock_get.assert_not_called()
         assert result[0]['confidence'] == 'probable'  # untouched
 
     def test_non_verifiable_finding_is_skipped(self):
         f = {'type': 'open_redirect', 'severity': 'Medium', 'verifiable': False}
-        with patch('analysis.verifier.requests.get') as mock_get:
+        with patch('analysis.verifier._DEFAULT_CLIENT.get') as mock_get:
             verify_findings([f], enabled=True)
         mock_get.assert_not_called()
 
@@ -368,7 +368,7 @@ class TestVerifyFindingsDispatch:
         f = _finding(type='open_redirect',
                      verification_target={'url': 'https://x.test', 'param': 'next',
                                            'payload': 'https://evil-vapt-test.example.com'})
-        with patch('analysis.verifier.requests.get', side_effect=RuntimeError('boom')):
+        with patch('analysis.verifier._DEFAULT_CLIENT.get', side_effect=RuntimeError('boom')):
             result = verify_findings([f], enabled=True)
         assert result[0]['confidence'] == 'unverified'
 

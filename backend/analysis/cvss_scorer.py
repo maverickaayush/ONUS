@@ -162,7 +162,7 @@ _RULES: Dict[str, Rule] = {
     'path_traversal_suspected': 'AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:N',  # not yet emitted - forward-compat
     'open_redirect':          'AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N',
     'error_disclosure':       'AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N',
-    'idor':                   'AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:L/A:N',   # not yet emitted - forward-compat
+    'idor':                   'AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:L/A:N',
 
     # --- SSL/TLS (tasks/ssl_tls.py) ---
     'tls10_enabled':      'AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N',

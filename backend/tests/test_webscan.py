@@ -57,7 +57,8 @@ class TestWebscanRemoteZap:
         mock_start.assert_not_called()
         # _kill_zap is still called (no-op on proc=None) - confirm it was called with None
         mock_kill.assert_called_once_with(None)
-        mock_wait.assert_called_once_with('http://zap:8090', timeout=60)
+        from tasks.webscan import _ZAP_READY_TIMEOUT
+        mock_wait.assert_called_once_with('http://zap:8090', timeout=_ZAP_READY_TIMEOUT)
 
     def test_remote_zap_creates_session_per_scan(self):
         """Remote mode must isolate scans via a named ZAP session, not a port."""
