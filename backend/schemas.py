@@ -15,10 +15,20 @@ class AuthConfig(BaseModel):
     Never persisted (see tasks/auth_store.py's docstring) - routers/scan.py
     writes this straight to Redis, never onto the Scan row in models.py.
 
-    v1 scope: form-based (application/x-www-form-urlencoded) login only.
-    JSON-API logins (e.g. Juice Shop's Angular SPA POSTing JSON to
-    /rest/user/login) aren't handled by this shape and are a fair follow-up,
-    not this pass.
+    Two login shapes, selected by login_type ('auto' by default - the login
+    URL is GETted and sniffed, so the common case needs only login_url +
+    username + password; 'form'/'json' force it):
+      - 'form': application/x-www-form-urlencoded POST. owasp.py and
+        webscan.py's ZAP script both GET the login page, submit every field on
+        it with username/password overridden (picks up CSRF tokens + submit-
+        button fields with no special-casing).
+      - 'json': JSON-API login (modern SPAs - e.g. Juice Shop POSTing
+        {email, password} to /rest/user/login). POSTs the creds as a JSON body
+        (username_field/password_field double as the JSON keys), reads a bearer
+        token out of the response via token_json_path, and sends it as
+        token_header (default 'Authorization: Bearer <token>') on every
+        subsequent request - owasp.py as a Session header, webscan.py via ZAP's
+        Replacer add-on. See tasks/auth_login.py.
 
     logged_in_indicator is used by owasp.py's _make_session() only, as a
     one-time, best-effort check right after login (log a warning if it
@@ -38,6 +48,14 @@ class AuthConfig(BaseModel):
     username_field: str = "username"
     password_field: str = "password"
     logged_in_indicator: Optional[str] = None  # regex; None = skip the check - owasp.py only, see above
+    # 'auto' (default) GETs the login URL and sniffs form vs JSON; 'form'/'json'
+    # force it. See tasks/auth_login.py's resolve_login_type/detect_login_type.
+    login_type: Literal["auto", "form", "json"] = "auto"
+    # JSON login only. Optional: if omitted, the token is auto-discovered from
+    # the login response (most token-shaped/JWT value wins).
+    token_json_path: Optional[str] = None       # dot-path to the token, e.g. 'authentication.token'
+    token_header: str = "Authorization"         # header the token is sent in
+    token_header_prefix: str = "Bearer "        # value prefix (note trailing space)
 
 
 class ScanRequest(BaseModel):

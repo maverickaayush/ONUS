@@ -71,9 +71,18 @@ RUN curl -L -o /tmp/ffuf.tar.gz \
     rm ffuf.tar.gz
 
 # WhatWeb - not published as a Rubygem, installed from source same as nikto/
-# testssl.sh above (verified: no "whatweb" gem on rubygems.org).
-RUN apt-get update && apt-get install -y --no-install-recommends ruby ruby-dev \
+# testssl.sh above (verified: no "whatweb" gem on rubygems.org). Its own
+# Gemfile requires ipaddr/addressable/json (the mongo/rchardet/test/dev
+# groups are optional and skipped) - installed directly via `gem install`
+# rather than `bundle install` to avoid pulling in those optional groups.
+# Real bug found during practicality testing: this step was missing
+# entirely, so the binary existed but `whatweb --version` reported
+# "missing dependencies" on every scan - silently non-functional the whole
+# time, never caught because tech_fingerprint treats a WhatWeb failure as
+# tolerable partial success (Section 4.3).
+RUN apt-get update && apt-get install -y --no-install-recommends ruby ruby-dev build-essential \
     && rm -rf /var/lib/apt/lists/* \
+    && gem install ipaddr addressable json --no-document \
     && git clone --depth 1 https://github.com/urbanadventurer/WhatWeb.git /opt/whatweb \
     && ln -s /opt/whatweb/whatweb /usr/local/bin/whatweb \
     && chmod +x /opt/whatweb/whatweb

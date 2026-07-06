@@ -196,6 +196,93 @@ services:
     ports:
       - "8085:80"
 
+  # DVWP (Damn Vulnerable WordPress, github.com/vavkamil/dvwp - vendored into
+  # ./dvwp-src same as nodegoat-src above) behind an OWASP ModSecurity/CRS
+  # reverse proxy. Closes 3 real coverage gaps found in this tool's own
+  # practicality testing (docs/test_findings.md): ssl_tls/tech_fingerprint
+  # had never seen a real TLS handshake or a real WAF (every prior target was
+  # plain HTTP, unprotected), and nuclei had found 0 findings across every
+  # scan this whole phase - DVWP ships genuinely outdated WordPress plugins
+  # (social-warfare, wp-file-upload, etc.) with known CVEs nuclei's
+  # WordPress-template category should match. dvwp-wordpress has no host
+  # port and no plain-HTTP alias - reachable only through the WAF/TLS proxy,
+  # which is the entire point of this target.
+  dvwp-mysql:
+    image: mysql:5.7
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+    networks:
+      default:
+        aliases:
+          - dvwp-mysql
+
+  dvwp-wordpress:
+    build:
+      context: ./dvwp-src
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - dvwp-mysql
+    environment:
+      WORDPRESS_DB_HOST: dvwp-mysql
+      WORDPRESS_DB_PASSWORD: password
+    volumes:
+      - dvwp_wp:/var/www/html
+    # dvwp-direct.local (in addition to the plain container-name DNS entry,
+    # which validators.domain() rejects for having no dot) - lets one control
+    # scan hit WordPress unobstructed, to isolate "nuclei/whatweb's own logic
+    # is broken" from "the WAF in front is correctly blocking active probes"
+    # (real, confirmed distinction found in this pass - see test_findings.md).
+    networks:
+      default:
+        aliases:
+          - dvwp-direct.local
+          - dvwp-wordpress
+
+  dvwp-setup:
+    # One-shot: installs WP core + activates DVWP's bundled vulnerable
+    # plugins, then exits - same wp-cli pattern as DVWP's own compose file.
+    image: wordpress:cli-php7.1
+    depends_on:
+      - dvwp-wordpress
+    environment:
+      WORDPRESS_DB_HOST: dvwp-mysql
+      WORDPRESS_DB_PASSWORD: password
+    volumes:
+      - dvwp_wp:/var/www/html
+      - ./dvwp-src/bin/install-wp.sh:/usr/local/bin/install-wp:ro
+    entrypoint: sh -c "sleep 15 && sed 's#127.0.0.1:31337#dvwp.local#' /usr/local/bin/install-wp | sh"
+    networks:
+      default:
+
+  dvwp-waf:
+    image: owasp/modsecurity-crs:nginx-alpine
+    restart: unless-stopped
+    depends_on:
+      - dvwp-wordpress
+    # Runs as an unprivileged user by default - can't bind :80/:443 without
+    # this, same reasoning as webgoat/nodegoat above. Needed here (rather
+    # than remapping to a high port) because ssl_tls.py hardcodes checking
+    # domain:443 directly. The image's own entrypoint additionally hard-
+    # blocks PORT/SSL_PORT<1024 with a static check unconditioned on actual
+    # capabilities - neutralized by bind-mounting a no-op over that one
+    # check script.
+    cap_add:
+      - NET_BIND_SERVICE
+    volumes:
+      - ./dvwp-src/noop.sh:/docker-entrypoint.d/01-check-low-port.sh:ro
+    environment:
+      BACKEND: http://dvwp-wordpress:80
+      PORT: "80"
+      SSL_PORT: "443"
+    networks:
+      default:
+        aliases:
+          - dvwp.local
+    ports:
+      - "8444:443"
+
   metasploitable2:
     image: tleemcjr/metasploitable2
     restart: unless-stopped
@@ -260,3 +347,4 @@ services:
 volumes:
   postgres_data:
   ollama_data:    # kept for a future containerized-Ollama migration; unused while Ollama runs natively
+  dvwp_wp:

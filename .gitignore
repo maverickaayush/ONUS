@@ -50,3 +50,4 @@ graphify-out/
 
 # Vendored source for targets with no prebuilt image (built via compose, not pulled)
 /nodegoat-src/
+/dvwp-src/

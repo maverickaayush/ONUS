@@ -59,6 +59,15 @@ _KATANA_TIMEOUT = 180
 _NIKTO_TIMEOUT = 130
 _WEBSCAN_SOFT_LIMIT = 480
 _WEBSCAN_HARD_LIMIT = 540
+# A ZAP status-poll can fail transiently while the daemon is alive but busy
+# (its single API thread stalls under active-scan load, or one HTTP request
+# times out) - the daemon recovers on the next poll. Only conclude the daemon
+# is actually unreachable after this many *consecutive* failed polls, so one
+# blip no longer discards a whole scan's findings. Confirmed real: webscan
+# reported "ZAP unreachable" while the container had never restarted
+# (RestartCount unchanged) - i.e. a false positive from a single blip.
+_ZAP_POLL_MAX_CONSECUTIVE_FAILURES = 4
+_ZAP_POLL_FAILURE_BACKOFF = 3  # seconds between retries of a failed poll
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +176,75 @@ def _wait_for_zap(base_url: str, timeout: int = _ZAP_READY_TIMEOUT) -> bool:
     return False
 
 
+def _is_zap_scan_id(val) -> bool:
+    """
+    ZAP's spider.scan()/ascan.scan() return the new scan's id as a numeric
+    string ('0', '1', ...). On failure they instead hand back a non-numeric
+    status string ('does_not_exist', 'url_not_in_context', ...) which must NOT
+    then be fed to status() as if it were a real id - doing so is exactly what
+    made a reachable-but-idle ZAP look "unreachable" (int('does_not_exist')
+    raised, and the old code read that as a disconnect).
+    """
+    try:
+        return int(val) >= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _poll_zap_scan(status_fn, scan_deadline: float, interval: int,
+                   scan_id: str, phase: str) -> str:
+    """
+    Poll a ZAP scan's progress (spider or active scan) until it reaches 100%,
+    the shared scan budget runs out, ZAP goes genuinely unreachable, or the
+    scan handle becomes invalid. `status_fn` is a zero-arg callable returning
+    ZAP's percent-complete string (e.g. lambda: zap.spider.status(spider_id)).
+
+    Returns one of: 'complete' | 'budget' | 'disconnected' | 'invalid'.
+
+    Two failure modes are deliberately kept distinct - conflating them is the
+    original bug this fixes:
+      - status_fn() *raising* (ConnectionError/timeout) = ZAP is unreachable.
+        A single one is NOT fatal - ZAP's API blips while the daemon is alive
+        but saturated (effectively single-threaded under active-scan load).
+        Only _ZAP_POLL_MAX_CONSECUTIVE_FAILURES in a row, with a short backoff
+        and the counter reset on any success, concludes the daemon is gone
+        ('disconnected'). One blip used to abandon the whole scan.
+      - status_fn() *returning a non-numeric string* ('does_not_exist') = ZAP
+        is perfectly reachable but the scan handle is gone/never valid. That's
+        'invalid', NOT a disconnect - the phase just can't produce results,
+        and the caller collects whatever alerts already exist and reports
+        success rather than a misleading 'partial'.
+    """
+    consecutive_failures = 0
+    while time.monotonic() < scan_deadline:
+        try:
+            raw = status_fn()
+        except Exception as e:
+            consecutive_failures += 1
+            if consecutive_failures >= _ZAP_POLL_MAX_CONSECUTIVE_FAILURES:
+                logger.error("ZAP %s status failed %d times in a row for scan "
+                             "%s - treating ZAP as unreachable: %s",
+                             phase, consecutive_failures, scan_id, e)
+                return 'disconnected'
+            logger.warning("ZAP %s status check blipped for scan %s "
+                           "(failure %d/%d, retrying): %s", phase, scan_id,
+                           consecutive_failures,
+                           _ZAP_POLL_MAX_CONSECUTIVE_FAILURES, e)
+            time.sleep(_ZAP_POLL_FAILURE_BACKOFF)
+            continue
+        try:
+            if int(raw) >= 100:
+                return 'complete'
+            consecutive_failures = 0
+        except (TypeError, ValueError):
+            logger.warning("ZAP %s returned a non-numeric status %r for scan "
+                           "%s - scan handle invalid, ending this phase "
+                           "(ZAP itself is still reachable)", phase, raw, scan_id)
+            return 'invalid'
+        time.sleep(interval)
+    return 'budget'
+
+
 # ---------------------------------------------------------------------------
 # ZAP scanning
 # ---------------------------------------------------------------------------
@@ -204,6 +282,10 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
     proc = None
     zap_version = None
     disconnected_mid_scan = False
+    # Set when a JSON-auth Replacer rule is added, so the finally block can
+    # remove it - the rule is GLOBAL on the shared ZAP sidecar, so leaving it
+    # would leak this scan's bearer token into every later scan's requests.
+    json_auth_rule_desc = None
     remote_zap_url = settings.ZAP_URL.rstrip('/')
 
     try:
@@ -292,7 +374,40 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
         # load - concurrency wasn't touched in the end.
         from tasks.auth_store import get_scan_auth
         auth = get_scan_auth(scan_id)
-        if auth:
+        # login_type defaults to auto-detection (form vs JSON sniffed from the
+        # login URL) unless the operator forced 'form'/'json'.
+        from tasks.auth_login import resolve_login_type
+        auth_login_type = resolve_login_type(auth) if auth else None
+        if auth and auth_login_type == 'json':
+            # JSON-API login: fetch a bearer token in Python, then inject it
+            # into every ZAP request via the Replacer add-on. No auth script /
+            # forced-user needed for a static bearer token - the Replacer rule
+            # adds the header to all initiators. (Confirmed the replacer
+            # component is present on the ZAP sidecar.)
+            try:
+                from tasks.auth_login import fetch_json_auth_token, auth_header_from
+                token = fetch_json_auth_token(auth)
+                if token:
+                    header, value = auth_header_from(auth, token)
+                    # Scan-scoped description (removed in finally) + url-scoped
+                    # to this target only, so the header never lands on a
+                    # concurrent scan's requests through the shared sidecar.
+                    # (Same-target concurrency can't happen - Section 8 rejects
+                    # duplicate active scans for one domain.)
+                    json_auth_rule_desc = f'vapt-json-auth-{scan_id}'
+                    zap.replacer.add_rule(
+                        description=json_auth_rule_desc, enabled='true',
+                        matchtype='REQ_HEADER', matchregex='false',
+                        matchstring=header, replacement=value, initiators='',
+                        url=re.escape(target_url) + '.*')
+                    logger.info("ZAP JSON auth header injected for scan %s", scan_id)
+                else:
+                    logger.warning("ZAP JSON login failed for scan %s "
+                                   "(continuing unauthenticated)", scan_id)
+            except Exception as e:
+                logger.warning("ZAP JSON auth setup failed for scan %s "
+                               "(continuing unauthenticated): %s", scan_id, e)
+        elif auth:
             try:
                 ctx_name = f'ctx-{scan_id}'
                 context_id = zap.context.new_context(ctx_name)
@@ -336,36 +451,44 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
         # --- Spider ---
         logger.info("ZAP spider starting for scan %s", scan_id)
         spider_id = zap.spider.scan(target_url)
-        while time.monotonic() < scan_deadline:
-            try:
-                if int(zap.spider.status(spider_id)) >= 100:
-                    break
-            except Exception as e:
-                logger.error("ZAP spider status check failed for scan %s (ZAP "
-                             "may have gone unreachable): %s", scan_id, e)
-                disconnected_mid_scan = True
-                break
-            time.sleep(3)
+        if not _is_zap_scan_id(spider_id):
+            # ZAP is reachable but the spider didn't start (returned an error
+            # string, not a scan id) - usually nothing spiderable in scope.
+            # Not a disconnect; fall through to alert collection.
+            logger.warning("ZAP spider did not start for scan %s (returned %r) "
+                           "- skipping to alert collection", scan_id, spider_id)
         else:
-            logger.warning("ZAP spider hit scan budget for scan %s", scan_id)
+            spider_outcome = _poll_zap_scan(
+                lambda: zap.spider.status(spider_id),
+                scan_deadline, 3, scan_id, 'spider')
+            if spider_outcome == 'disconnected':
+                disconnected_mid_scan = True
+            elif spider_outcome == 'budget':
+                logger.warning("ZAP spider hit scan budget for scan %s", scan_id)
 
-        # --- Active scan (only if budget remains) ---
-        if time.monotonic() < scan_deadline:
+        # --- Active scan (only if budget remains AND ZAP is still reachable) ---
+        # A spider-phase disconnect skips ascan (zap.ascan.scan would just
+        # raise into the outer handler and lose the alerts we can still try to
+        # collect below); we fall straight through to alert collection.
+        if not disconnected_mid_scan and time.monotonic() < scan_deadline:
             logger.info("ZAP active scan starting for scan %s", scan_id)
             ascan_id = zap.ascan.scan(target_url)
-            while time.monotonic() < scan_deadline:
-                try:
-                    if int(zap.ascan.status(ascan_id)) >= 100:
-                        break
-                except Exception as e:
-                    logger.error("ZAP active scan status check failed for scan %s "
-                                 "(ZAP may have gone unreachable): %s", scan_id, e)
-                    disconnected_mid_scan = True
-                    break
-                time.sleep(5)
+            if not _is_zap_scan_id(ascan_id):
+                # Reachable ZAP, but nothing in scope to actively scan (this is
+                # exactly the testphp 'does_not_exist' case). Collect whatever
+                # the spider found; do NOT report a misleading disconnect.
+                logger.warning("ZAP active scan did not start for scan %s "
+                               "(returned %r) - collecting spider alerts only",
+                               scan_id, ascan_id)
             else:
-                logger.warning("ZAP active scan hit scan budget for scan %s - "
-                               "collecting alerts found so far", scan_id)
+                ascan_outcome = _poll_zap_scan(
+                    lambda: zap.ascan.status(ascan_id),
+                    scan_deadline, 5, scan_id, 'active scan')
+                if ascan_outcome == 'disconnected':
+                    disconnected_mid_scan = True
+                elif ascan_outcome == 'budget':
+                    logger.warning("ZAP active scan hit scan budget for scan %s "
+                                   "- collecting alerts found so far", scan_id)
 
         # --- Collect alerts (whatever exists, even on a budget cut) ---
         try:
@@ -397,6 +520,16 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
     except Exception as e:
         logger.error("ZAP unexpected error for scan %s: %s", scan_id, e)
     finally:
+        # Remove the JSON-auth Replacer rule so this scan's bearer token never
+        # leaks into later scans on the shared sidecar. Best-effort - a
+        # dangling rule is url-scoped to this target anyway, but clean is
+        # better. `zap` may be unbound if ZAP never became reachable.
+        if json_auth_rule_desc:
+            try:
+                zap.replacer.remove_rule(json_auth_rule_desc)
+            except Exception as e:
+                logger.warning("Failed to remove ZAP JSON auth rule %s: %s",
+                               json_auth_rule_desc, e)
         _kill_zap(proc)  # no-op when proc is None (remote ZAP mode)
         logger.info("ZAP scan finished for scan %s", scan_id)
 

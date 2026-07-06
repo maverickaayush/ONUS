@@ -19,7 +19,7 @@ SCAN_ID = 'test-nuclei-v1'
 
 
 def _write_ndjson(scan_id: str, results: list):
-    path = f'/tmp/nuclei_{scan_id}.json'
+    path = f'/tmp/nuclei_{scan_id}.jsonl'
     with open(path, 'w') as f:
         f.write('\n'.join(json.dumps(r) for r in results))
 
@@ -49,7 +49,7 @@ class TestNucleiSchema:
         assert f['cvss'] == 9.0
         assert f['template_id'] == 'CVE-2021-44228'
         assert f['cve_id'] == 'CVE-2021-44228'
-        assert not os.path.exists(f'/tmp/nuclei_{SCAN_ID}.json')
+        assert not os.path.exists(f'/tmp/nuclei_{SCAN_ID}.jsonl')
 
     def test_multiple_ndjson_lines_parsed(self):
         from tasks.nuclei_scan import _run_nuclei

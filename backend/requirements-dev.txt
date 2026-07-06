@@ -1,0 +1,11 @@
+# Test-only dependencies - NOT installed into the prod image (keeps it lean).
+# Install alongside the app for running the test suite:
+#     pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+# Then:  cd backend && python3 -m pytest tests/ -v
+-r requirements.txt
+pytest>=8.0
+# Report tests parse the generated PDF back to text to assert on its content
+# (XSS escaping, confidence badges, tier/priority sort order). Without this the
+# 8 TestGeneratePdf/TestHtmlEscaping/TestConfidenceDisplay tests error out at
+# `import pdfplumber` instead of actually validating report generation.
+pdfplumber>=0.11
