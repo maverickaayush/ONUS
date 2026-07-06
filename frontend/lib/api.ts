@@ -85,6 +85,10 @@ export interface AuthConfig {
   usernameField?: string
   passwordField?: string
   loggedInIndicator?: string
+  loginType?: 'auto' | 'form' | 'json'
+  tokenJsonPath?: string   // JSON login only, e.g. 'authentication.token'
+  tokenHeader?: string
+  tokenHeaderPrefix?: string
 }
 
 export async function submitScan(
@@ -108,6 +112,10 @@ export async function submitScan(
           ...(auth.usernameField && { username_field: auth.usernameField }),
           ...(auth.passwordField && { password_field: auth.passwordField }),
           ...(auth.loggedInIndicator && { logged_in_indicator: auth.loggedInIndicator }),
+          ...(auth.loginType && { login_type: auth.loginType }),
+          ...(auth.tokenJsonPath && { token_json_path: auth.tokenJsonPath }),
+          ...(auth.tokenHeader && { token_header: auth.tokenHeader }),
+          ...(auth.tokenHeaderPrefix && { token_header_prefix: auth.tokenHeaderPrefix }),
         },
       }),
     }),

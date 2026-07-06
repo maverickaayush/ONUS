@@ -565,3 +565,257 @@ counter window - it won't find anything using genuinely random/UUID-style
 identifiers. A real upgrade path (feeding it a second real user's id
 instead of guessing) exists but wasn't needed here since NodeGoat's own ids
 are plain sequential integers.
+
+---
+
+## Coverage audit: closing the remaining detection gaps for real
+
+After the auth + IDOR work above, an honest audit of every scan run this
+whole phase showed 3 modules had never produced a real, non-fallback
+signal: **ssl_tls** (every target was plain HTTP - the finding was always
+the same "No HTTPS on port 443" line), **tech_fingerprint** (WAFW00F never
+saw an actual WAF, and WhatWeb was - unnoticed - completely non-functional),
+and **nuclei** (0 findings across every single scan this whole phase,
+including Metasploitable2/DVWA/WebGoat/Mutillidae/NodeGoat/Juice Shop).
+`recon`'s subfinder/amass/WHOIS/DNS-record logic had also only ever run
+against synthetic `.local` Docker aliases, never a real public domain.
+
+### Real bug #1: WhatWeb silently non-functional the entire time
+
+`whatweb --version` on the live worker: `"WhatWeb is not installed and is
+missing dependencies... missing gems: addressable"`. The binary was cloned
+from source correctly (`backend/Dockerfile`), but its own `Gemfile`
+(`ipaddr`, `addressable`, `json`) was never installed - `tech_fingerprint.py`
+treats a WhatWeb failure as tolerable partial success (Section 4.3), so this
+never surfaced as an error anywhere, just quietly produced nothing useful on
+every scan. Fixed: `gem install ipaddr addressable json --no-document`
+(plus `build-essential` for native extensions) right after the clone.
+Confirmed post-fix: `WhatWeb version 0.6.4`.
+
+### New target: DVWP (WordPress) behind a real WAF+TLS proxy
+
+Added `vavkamil/dvwp` ("Damn Vulnerable WordPress" - real GitHub repo,
+active CI, explicit "DO NOT EXPOSE TO INTERNET" self-hosted-only warning)
+behind `owasp/modsecurity-crs:nginx-alpine` (official OWASP image, real
+ModSecurity + CRS, TLS on :443 with a self-signed cert out of the box).
+One target closing three gaps at once: a real TLS handshake, a real WAF,
+and DVWP's own genuinely outdated WordPress + vulnerable plugins
+(`social-warfare`, `wp-file-upload`, `iwp-client`, `wp-advanced-search`,
+`wp-time-capsule`). `dvwp-wordpress` has no plain-HTTP alias of its own -
+reachable only through the WAF/TLS proxy (`dvwp.local`), which is the whole
+point of the target.
+
+Deploy note: `owasp/modsecurity-crs:nginx-alpine` runs as an unprivileged
+user and its own entrypoint hard-rejects `PORT=80`/`SSL_PORT=443` with a
+static check unconditioned on actual capabilities - neutralized with
+`cap_add: NET_BIND_SERVICE` plus a no-op bind-mounted over that one check
+script (needed because `ssl_tls.py` hardcodes checking `domain:443`
+directly, so remapping to a high port wasn't an option).
+
+**Scan against `dvwp.local`** (job `437dc1b4-2d52-44e5-8513-eb4919ff89ae`),
+all 8 modules `success`:
+- **`ssl_tls` - real analysis for the first time**: self-signed certificate
+  (High), weak DH parameters at 128 and 192 bits (High) - genuine
+  testssl.sh/sslscan output, not the "no HTTPS" fallback.
+- **`tech_fingerprint` - real WAF detection for the first time**:
+  `wafw00f` → `"WAF detected: Generic"`. WhatWeb's own probe, however, got
+  `403 Forbidden` from ModSecurity itself - a real, honest interaction, not
+  a bug: the WAF is doing its job blocking a scanner-shaped request, which
+  also means active fingerprinting through a WAF is inherently limited.
+  Confirmed directly against the unobstructed backend (below) that WhatWeb
+  correctly identifies `WordPress[5.3]`/`PHP[7.1.33]` when not blocked.
+- **`nuclei` - still 0**, and this trail led to two more real bugs below.
+
+**Control scan, same backend with no WAF in front** (`dvwp-direct.local`
+alias added directly to `dvwp-wordpress`, job
+`3da4433d-a4cf-45d3-b470-d207774e1703`): `tech_fingerprint` finding_count
+16 (up from 8 through the WAF) - confirms the WAF-blocking theory rather
+than a WhatWeb regression.
+
+### Real bug #2: nuclei was silently discarding every result, every scan, this whole phase
+
+Manual `nuclei -u http://dvwp-direct.local/` (same template flags as
+`nuclei_scan.py`) found real, serious findings in minutes: `CVE-2020-8772`
+(Critical, WordPress InfiniteWP auth bypass), `CVE-2024-9047` (Critical,
+wp-file-upload arbitrary file read), `CVE-2023-5561` (Medium, WP user email
+disclosure), an exposed `/dump.sql` (High - genuine DB dump), `wp-user-enum`
+(Low). Yet the tool's own `nuclei_scan.py` pipeline still returned 0 against
+the identical target.
+
+Root cause, found by timing the exact same invocation: the curated template
+set (`cves/`, `vulnerabilities/`, `misconfiguration/`, `exposed-panels/`,
+`technologies/`, `exposures/`) genuinely takes **~550 seconds** end-to-end
+at `-rate-limit 20` against even a single host - `_NUCLEI_TIMEOUT` was
+**240s**, so `subprocess.run(timeout=240)` was killing nuclei mid-scan on
+essentially every real run, not just slow ones. That alone would only lose
+the *tail* of the results - but `nuclei_scan.py` used `-json-export` (and,
+in one intermediate fix attempt, `-jsonl-export`), and **both dedicated
+"export" flags turned out to buffer and write their output file only once
+the run completes** - confirmed directly by killing nuclei mid-scan under
+each flag and finding the export file didn't exist at all. So every real
+finding nuclei had already found before the kill was silently discarded,
+every time, for the whole phase.
+
+Fixed at the source: plain `-o <path> -jsonl` (nuclei's normal streaming-
+output idiom, as opposed to the post-scan "export" feature) writes each
+match to disk the instant it's found - confirmed directly: a real match was
+already on disk 30 seconds into a run that `subprocess.run()` would go on to
+kill at 240s. Also raised `_NUCLEI_TIMEOUT`/soft/hard limits from
+240s/300s/360s to **600s/660s/720s** (measured-550s-plus-margin, same
+calibrate-from-real-numbers approach as recon/webscan/enumeration's own
+budgets) so the common case doesn't need the streaming fix as a safety net
+at all.
+
+**Re-verified through the tool's own real pipeline** (job
+`68077306-a921-44a6-a6c9-71c8e82c2ea7`, `dvwp-direct.local`): `nuclei`
+finding_count **8** (up from 0), completing in 549.45s - including
+`CVE-2020-8772` (Critical) and `CVE-2024-9047` flowing through correctly
+end to end. All 8 modules `success`.
+
+### `testphp.vulnweb.com`: recon against a real public domain
+
+Section 8's one pre-approved external target, re-scanned specifically to
+exercise `recon`'s subdomain/WHOIS/DNS logic against real internet
+infrastructure rather than a synthetic `.local` alias (job
+`7232c44c-6e45-4a80-832d-a20609451ce1`, later re-run as
+`3a357552-60bc-4d98-87d6-3f74a6260b0c` after the fix below). Real findings
+appeared that no Docker-local target could ever produce: an A record
+(`44.228.249.3`) and a genuine Google site-verification TXT record.
+
+subfinder/amass/WHOIS produced no findings here - checked directly and
+confirmed this is correct, not a bug: `subfinder -d vulnweb.com` (the apex
+domain) finds dozens of real subdomains, and `whois testphp.vulnweb.com`
+correctly returns "No match" - both subdomain enumeration and WHOIS
+operate at the apex-registrable-domain level, and `testphp.vulnweb.com` is
+already a specific leaf hostname with nothing further to enumerate beneath
+it. Scanning the bare `vulnweb.com` apex was not attempted - Section 8's
+authorization names `testphp.vulnweb.com` specifically, not the wider
+domain.
+
+### Real bug #3: a soft-timeout that could never do its job, found live against this real target
+
+The first `testphp.vulnweb.com` run exposed a serious, previously-invisible
+bug: `owasp` hit its 360s soft time limit, then its 420s hard time limit a
+minute later, and the scan hung at `running` for over 20 minutes with no
+progress - a live instance of the exact "hard `time_limit` SIGKILL the
+orchestrator can't see" gap Section 4.3b already documents, except
+triggering on what should have been a routine graceful soft-timeout, not a
+genuine runaway.
+
+Root cause: `celery.exceptions.SoftTimeLimitExceeded.__mro__` confirms it's
+a plain `Exception` subclass. Every one of `owasp.py`'s 6 test functions
+(plus the crawl loop, plus the outer per-URL loop in `run_owasp` itself)
+wraps its body in a broad `except Exception as e: logger.debug(...)` -
+whichever one happened to be running when Celery raised the signal caught
+it, logged a debug line, and let execution carry on to the next URL/test as
+if nothing happened, so the signal never reached `run_owasp`'s own
+`except SoftTimeLimitExceeded` handler at all. The task ran straight into
+the un-catchable hard SIGKILL every time instead of gracefully saving
+partial results at the soft limit.
+
+Fixed by adding `except SoftTimeLimitExceeded: raise` before all 8 of those
+broad catches, so the signal now always unwinds to `run_owasp`'s own
+handler. **Re-verified directly**: same target, same conditions - this time
+the soft limit fired and the task returned `status: 'timeout'` **17
+milliseconds later**, no hard-limit warning at all (previously: soft and
+hard limits fired a full minute apart, then the scan hung for 20+ more
+minutes). The scan then correctly paused at `awaiting_user_decision` with
+`module_errors: {"owasp": "Module exceeded its soft time limit"}` and
+`can_retry: true` - confirmed the full pause/continue/finalize flow (Section
+4.3b) end to end by issuing `continue`, which finalized cleanly with the
+other 7 modules' real results and the deterministic "1 of 8 scan modules
+did not complete successfully" banner.
+
+Separately observed on this same run, not investigated further: `webscan`
+reported `status: 'partial'` with `"ZAP became unreachable mid-scan"` - this
+is the pre-existing, already-documented, deliberately-deferred ZAP-restart
+pattern from earlier in this session (distinct from the auth-specific
+`insight.auth.failure` mechanism, which only applies when authentication is
+configured), not a new bug introduced by this pass.
+
+### Summary
+
+| Gap | Status |
+|---|---|
+| `ssl_tls` real TLS analysis | Closed - real findings against DVWP's WAF/TLS proxy |
+| `tech_fingerprint` WAF detection | Closed - real `wafw00f` positive hit |
+| `tech_fingerprint` CMS detection | Closed - WhatWeb gem fix + confirmed against unobstructed backend |
+| `nuclei` real CVE matching | Closed - two real bugs found and fixed (streaming output, timeout budget) |
+| `recon` real-domain subdomain/WHOIS/DNS | Closed - real DNS records confirmed against `testphp.vulnweb.com`; subfinder/WHOIS scope correctly bounded to apex domain |
+| `owasp` graceful soft-timeout | Closed - real bug found and fixed (SoftTimeLimitExceeded being swallowed) |
+
+DVWP + its WAF/TLS proxy torn down after scanning (containers, images,
+vendored `dvwp-src/` clone, ZAP session files) to free disk.
+
+---
+
+## Limitation-fix pass: ZAP resilience, JSON-API login, test coverage
+
+A follow-on "fix every limitation / increase real-life functioning" pass.
+Three previously-open items, each verified against a live target.
+
+### ZAP "unreachable mid-scan" - real root cause found (it was never a disconnect)
+
+The pre-existing, long-open pattern where `webscan` reported `partial` with 0
+ZAP findings. The live log finally showed the actual cause on the
+`testphp.vulnweb.com` run:
+
+```
+ZAP active scan status check failed ... invalid literal for int() with base 10: 'does_not_exist'
+```
+
+ZAP was perfectly reachable (`RestartCount` never moved, container up for
+hours). `zap.ascan.status(ascan_id)` returned the **string** `'does_not_exist'`
+because the active scan never validly started - testphp had nothing in ZAP's
+scope - so the scan handle was invalid. The old code did `int('does_not_exist')`,
+caught the `ValueError` in a generic `except`, and mislabeled a healthy-but-idle
+ZAP as "unreachable", discarding everything.
+
+Two distinct failure modes were being conflated; `webscan.py` now separates
+them (`_poll_zap_scan` + `_is_zap_scan_id`):
+- **status call *raises*** (ConnectionError/timeout) = genuinely unreachable.
+  A single one is no longer fatal - ZAP's API blips under active-scan load
+  while the daemon is alive. Only `_ZAP_POLL_MAX_CONSECUTIVE_FAILURES` (4) in
+  a row, with backoff, concludes it's actually gone.
+- **status call *returns a non-numeric string*** (`'does_not_exist'`) =
+  reachable ZAP, invalid/absent scan handle. Treated as "this phase produced
+  nothing", NOT a disconnect - collect whatever alerts exist and report
+  success. The scan handle is also validated up front (`_is_zap_scan_id`) so a
+  spider/ascan that can't start is skipped cleanly instead of poisoning the poll.
+
+Verified: `mutillidae.local` unauth webscan → `status: success`; 3 new unit
+regression tests (transient blip recovers, sustained failures still report
+disconnect, `'does_not_exist'` is not a disconnect). All 23 webscan tests pass.
+
+### JSON-API login (modern SPAs) - full stack
+
+`AuthConfig` gained `login_type: 'form' | 'json'`. JSON mode (`tasks/auth_login.py`,
+shared by owasp.py and webscan.py) POSTs credentials as a JSON body, pulls a
+bearer token out of the response by dot-path (`token_json_path`, e.g.
+`authentication.token`), and sends it as `Authorization: Bearer <token>` -
+owasp.py as a `requests.Session` header, ZAP via the **Replacer add-on** (no
+auth script/forced-user needed for a static token).
+
+Real bug caught during verification: the Replacer rule is **global** on the
+shared ZAP sidecar, so it would leak the token into every later scan. Fixed by
+scoping the rule to the target URL (`url=` param) *and* removing it in the
+`finally` block (scan-scoped description).
+
+Verified live against **Juice Shop** (`admin@juice-sh.op`, JSON login to
+`/rest/user/login`): token extracted through the tool's own code, injection
+logged, `webscan` `success` with **577 authenticated findings**, and post-scan
+check confirmed **no `vapt-json-auth` rule left in ZAP** (leak fix works).
+Frontend `home-form` gained a Form/JSON toggle, field-name overrides, and the
+token-path input; `tsc --noEmit` clean. 13 new tests (auth_login + owasp JSON
+session + webscan replacer/cleanup). owasp found 0 on Juice Shop - expected,
+its non-JS crawler under-reaches an Angular SPA (ZAP covers it), not a regression.
+
+Still out of scope (documented, not half-supported): cookie-only JSON logins
+(no token in the body) and JS-rendered login forms.
+
+### Report test coverage restored
+
+The 8 `test_report.py` tests errored at `import pdfplumber` (a test-only dep
+never installed). Added `backend/requirements-dev.txt` (pytest + pdfplumber,
+kept out of the lean prod image); all 8 now actually parse the generated PDF
+and pass.

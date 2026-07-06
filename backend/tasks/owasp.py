@@ -154,6 +154,23 @@ def _make_session(auth: Optional[dict]) -> requests.Session:
     session = requests.Session()
     if not auth:
         return session
+
+    # JSON-API login (modern SPAs): POST creds as JSON, set the returned bearer
+    # token as a Session header. Cookies the login sets are kept by the Session
+    # too. login_type defaults to auto-detection (resolve_login_type GETs the
+    # login URL and sniffs form vs JSON). See tasks/auth_login.py.
+    from tasks.auth_login import resolve_login_type
+    if resolve_login_type(auth) == 'json':
+        from tasks.auth_login import fetch_json_auth_token, auth_header_from
+        token = fetch_json_auth_token(auth)
+        if token:
+            header, value = auth_header_from(auth, token)
+            session.headers[header] = value
+        else:
+            logger.warning("owasp JSON login failed for %s (continuing "
+                            "unauthenticated)", auth.get('login_url'))
+        return session
+
     try:
         login_page = session.get(auth['login_url'], timeout=_TIMEOUT, verify=False)
         extractor = _FormFieldExtractor()
@@ -216,6 +233,8 @@ def _discover_urls(session: requests.Session, target: str, domain: str) -> List[
                 continue
             parser = _LinkExtractor()
             parser.feed(resp.text)
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as e:
             logger.debug("crawl fetch failed for %s: %s", url, e)
             continue
@@ -288,6 +307,8 @@ def test_sqli(session: requests.Session, target: str, domain: str) -> List[dict]
                         return findings
                 except requests.RequestException:
                     pass
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.debug("sqli test error for %s: %s", domain, e)
     return findings
@@ -334,6 +355,8 @@ def test_xss(session: requests.Session, target: str, domain: str) -> List[dict]:
                         return findings
                 except requests.RequestException:
                     pass
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.debug("xss test error for %s: %s", domain, e)
     return findings
@@ -393,6 +416,8 @@ def test_path_traversal(session: requests.Session, target: str, domain: str) -> 
                     return findings
             except requests.RequestException:
                 pass
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.debug("path traversal test error for %s: %s", domain, e)
     return findings
@@ -434,6 +459,8 @@ def test_open_redirect(session: requests.Session, target: str, domain: str) -> L
                         return findings
             except requests.RequestException:
                 pass
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.debug("open redirect test error for %s: %s", domain, e)
     return findings
@@ -473,6 +500,8 @@ def test_error_disclosure(session: requests.Session, target: str, domain: str) -
                     return findings
             except requests.RequestException:
                 pass
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.debug("error disclosure test error for %s: %s", domain, e)
     return findings
@@ -567,6 +596,8 @@ def test_idor(session: requests.Session, target: str, domain: str) -> List[dict]
                     return findings
             except requests.RequestException:
                 pass
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.debug("idor test error for %s: %s", domain, e)
     return findings
@@ -584,12 +615,30 @@ def run_owasp(scan_id: str, domain: str) -> dict:
     Pure Python (requests) - tool_versions is always empty for this module.
     Returns a build_module_result() envelope (Section 4.3 schema note).
 
-    Time budget: raised from the inherited 300s/360s default. Worst case is
-    ~40 requests/URL (6 test functions' payload counts) x up to 20 crawled
-    URLs =~ 800 requests; realistically 1-3 minutes against small local
-    targets, plus the crawl's own 60s ceiling.
-    # ponytail: sized from worst-case request-count math, not measured -
-    # recalibrate against real numbers once this has run against a live target.
+    Time budget: raised from the inherited 300s/360s default. Fast (~1-2s)
+    against local Docker targets, but real, measured behavior against a real
+    external target (testphp.vulnweb.com, docs/test_findings.md) genuinely
+    exceeded both this soft (360s) and hard (420s) limit - real internet
+    latency across ~800 worst-case requests adds up fast, unlike near-instant
+    local containers.
+
+    Real bug found and fixed alongside this measurement, not just a timeout
+    number: SoftTimeLimitExceeded is a plain Exception subclass (confirmed:
+    `SoftTimeLimitExceeded.__mro__` includes Exception), so every one of this
+    module's `except Exception` blocks - all 6 test functions, the crawl
+    loop, and the outer per-URL loop below - was silently swallowing Celery's
+    graceful-shutdown signal the instant it landed inside whichever one
+    happened to be running, letting execution carry on to the next URL/test
+    instead of unwinding. The task then ran straight into the hard time_limit
+    SIGKILL every time instead of ever reaching this function's own
+    `except SoftTimeLimitExceeded` handler below - exactly the "hard kill
+    the orchestrator can't see" gap Section 4.3b already documents, just
+    triggered every single time instead of only on a genuine runaway. Fixed
+    by re-raising SoftTimeLimitExceeded before each of those broad catches,
+    so it now actually reaches this function and returns a proper
+    status='timeout' envelope with whatever findings were already collected,
+    instead of vanishing under a SIGKILL the scan orchestrator has to wait
+    out via the coarse stuck-scan reaper.
     """
     update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
@@ -605,6 +654,8 @@ def run_owasp(scan_id: str, domain: str) -> dict:
                             test_open_redirect, test_error_disclosure, test_idor):
                 try:
                     findings.extend(test_fn(session, url, domain))
+                except SoftTimeLimitExceeded:
+                    raise
                 except Exception as e:
                     logger.error("owasp %s failed for scan %s (url=%s): %s",
                                  test_fn.__name__, scan_id, url, e)

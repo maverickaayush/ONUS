@@ -16,9 +16,15 @@ from tasks.celery_app import app
 logger = logging.getLogger(__name__)
 MODULE = 'nuclei'
 
-_NUCLEI_TIMEOUT = 240
-_SOFT_LIMIT = 300
-_HARD_LIMIT = 360
+# Measured against a real target (DVWP, docs/test_findings.md): the curated
+# template set genuinely took 550s end-to-end at -rate-limit 20 against a
+# single host - the old 240s/300s/360s budget meant this module was being
+# killed before completion on essentially every real scan, not just slow
+# ones. Raised with margin above the observed 550s, same calibrate-from-
+# measurement approach as recon/webscan/enumeration's own timeout budgets.
+_NUCLEI_TIMEOUT = 600
+_SOFT_LIMIT = 660
+_HARD_LIMIT = 720
 
 # Nuclei's own template-authored severity is treated as authoritative (community
 # researchers know the CVE better than a generic per-type table) - map it
@@ -34,7 +40,21 @@ _SEVERITY_MAP = {
 
 
 def _load_results(out_path: str) -> List[dict]:
-    """Nuclei -json-export output: NDJSON (one JSON object per line)."""
+    """Nuclei `-o <path> -jsonl` output: NDJSON, flushed to disk as each
+    match is found. Real bug found during practicality testing: the curated
+    template set (cves/, vulnerabilities/, misconfiguration/, exposed-
+    panels/, technologies/, exposures/) genuinely takes longer than
+    _NUCLEI_TIMEOUT (240s) at -rate-limit 20 against even one host, so
+    subprocess.run(timeout=...) was killing nuclei mid-scan every time.
+    The two dedicated "export" flags (-json-export, -jsonl-export) both
+    turned out to buffer and write only once the run completes - confirmed
+    directly by killing nuclei mid-scan and finding the export file didn't
+    exist at all - so every real match nuclei had already found (verified:
+    critical CVEs, an exposed DB dump) was silently discarded every time.
+    Plain `-o <path> -jsonl` (nuclei's normal streaming-output idiom, as
+    opposed to the post-scan "export" feature) writes each line the moment
+    a match is found - confirmed directly: a real match was already on disk
+    30s into a run subprocess.run() would go on to kill at 240s."""
     if not os.path.exists(out_path):
         return []
     with open(out_path) as f:
@@ -67,7 +87,7 @@ def _load_results(out_path: str) -> List[dict]:
 
 def _run_nuclei(scan_id: str, target: str, domain: str) -> List[dict]:
     findings: List[dict] = []
-    out_path = f'/tmp/nuclei_{scan_id}.json'
+    out_path = f'/tmp/nuclei_{scan_id}.jsonl'
     try:
         subprocess.run(
             [
@@ -75,7 +95,7 @@ def _run_nuclei(scan_id: str, target: str, domain: str) -> List[dict]:
                 '-t', 'cves/', '-t', 'vulnerabilities/', '-t', 'misconfiguration/',
                 '-t', 'exposed-panels/', '-t', 'technologies/', '-t', 'exposures/',
                 '-severity', 'critical,high,medium,low',
-                '-json-export', out_path,
+                '-o', out_path, '-jsonl',
                 '-silent', '-duc',
                 '-timeout', '10', '-retries', '1',
                 '-rate-limit', '20', '-max-host-error', '5',

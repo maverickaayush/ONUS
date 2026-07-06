@@ -80,6 +80,129 @@ class TestWebscanRemoteZap:
         mock_zap.core.new_session.assert_called_once_with(
             name=TEST_SCAN_ID, overwrite='true')
 
+    def test_transient_status_blip_does_not_disconnect(self):
+        """Root-cause regression: a single failed spider status poll (ZAP busy,
+        not dead) must NOT abandon the scan. The next poll succeeds, the scan
+        proceeds, and its alerts are still collected - disconnected is False."""
+        from tasks.webscan import _run_zap
+
+        mock_zap = MagicMock()
+        mock_zap.spider.scan.return_value = '1'
+        # First poll raises (blip), second says done.
+        mock_zap.spider.status.side_effect = [
+            ConnectionError("ZAP API momentarily busy"), '100']
+        mock_zap.ascan.scan.return_value = '1'
+        mock_zap.ascan.status.return_value = '100'
+        mock_zap.core.alerts.return_value = [
+            {'risk': 'High', 'alert': 'SQLi', 'evidence': 'x',
+             'url': f'https://{TEST_DOMAIN}/', 'pluginId': '40018'}]
+
+        with patch('tasks.webscan.settings') as mock_settings, \
+             patch('tasks.webscan._wait_for_zap', return_value=True), \
+             patch('tasks.webscan.ZAPv2', return_value=mock_zap), \
+             patch('tasks.webscan._kill_zap'), \
+             patch('tasks.webscan.time.sleep'):
+            mock_settings.ZAP_URL = 'http://zap:8090'
+            findings, zap_version, disconnected = _run_zap(
+                TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+
+        assert disconnected is False, "one blip must not count as a disconnect"
+        assert len(findings) == 1, "alerts must still be collected after a blip"
+
+    def test_sustained_status_failures_report_disconnect(self):
+        """The flip side: if the status poll keeps failing (ZAP genuinely
+        gone), it must still be reported as a disconnect after the retry
+        budget is exhausted - the fix must not mask a real outage."""
+        from tasks.webscan import _run_zap
+
+        mock_zap = MagicMock()
+        mock_zap.spider.scan.return_value = '1'
+        mock_zap.spider.status.side_effect = ConnectionError("ZAP is down")
+        mock_zap.core.alerts.return_value = []
+
+        with patch('tasks.webscan.settings') as mock_settings, \
+             patch('tasks.webscan._wait_for_zap', return_value=True), \
+             patch('tasks.webscan.ZAPv2', return_value=mock_zap), \
+             patch('tasks.webscan._kill_zap'), \
+             patch('tasks.webscan.time.sleep'):
+            mock_settings.ZAP_URL = 'http://zap:8090'
+            findings, zap_version, disconnected = _run_zap(
+                TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+
+        assert disconnected is True, "sustained failures must report disconnect"
+
+    def test_ascan_does_not_exist_is_not_a_disconnect(self):
+        """Real root-cause regression (testphp.vulnweb.com): when the active
+        scan can't start (nothing in scope), ZAP's ascan.status() returns the
+        string 'does_not_exist'. That is a reachable ZAP with an invalid scan
+        handle - NOT a disconnect. The spider's alerts must still be collected
+        and disconnected must be False (previously: int('does_not_exist')
+        raised, was read as 'unreachable', and the scan reported 'partial')."""
+        from tasks.webscan import _run_zap
+
+        mock_zap = MagicMock()
+        mock_zap.spider.scan.return_value = '1'
+        mock_zap.spider.status.return_value = '100'
+        # ascan.scan hands back an error string, not a numeric id.
+        mock_zap.ascan.scan.return_value = 'does_not_exist'
+        mock_zap.core.alerts.return_value = [
+            {'risk': 'Medium', 'alert': 'Header issue', 'evidence': 'y',
+             'url': f'https://{TEST_DOMAIN}/', 'pluginId': '10020'}]
+
+        with patch('tasks.webscan.settings') as mock_settings, \
+             patch('tasks.webscan._wait_for_zap', return_value=True), \
+             patch('tasks.webscan.ZAPv2', return_value=mock_zap), \
+             patch('tasks.webscan._kill_zap'), \
+             patch('tasks.webscan.time.sleep'):
+            mock_settings.ZAP_URL = 'http://zap:8090'
+            findings, zap_version, disconnected = _run_zap(
+                TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+
+        assert disconnected is False, \
+            "'does_not_exist' means reachable ZAP, invalid handle - not a disconnect"
+        assert len(findings) == 1, "spider alerts must still be collected"
+        # ascan.status must never be polled with the bogus id.
+        mock_zap.ascan.status.assert_not_called()
+
+    def test_json_auth_injects_bearer_via_replacer(self):
+        """JSON login must inject the bearer token into every ZAP request via
+        the Replacer add-on (no auth script / forced-user), and must NOT touch
+        the form-auth script path."""
+        from tasks.webscan import _run_zap
+
+        mock_zap = MagicMock()
+        mock_zap.spider.scan.return_value = '1'
+        mock_zap.spider.status.return_value = '100'
+        mock_zap.ascan.scan.return_value = '1'
+        mock_zap.ascan.status.return_value = '100'
+        mock_zap.core.alerts.return_value = []
+
+        json_auth = {'login_url': 'https://juiceshop.local/rest/user/login',
+                     'username': 'a@b.c', 'password': 'pw',
+                     'username_field': 'email', 'password_field': 'password',
+                     'login_type': 'json', 'token_json_path': 'authentication.token'}
+
+        with patch('tasks.webscan.settings') as mock_settings, \
+             patch('tasks.webscan._wait_for_zap', return_value=True), \
+             patch('tasks.webscan.ZAPv2', return_value=mock_zap), \
+             patch('tasks.webscan._kill_zap'), \
+             patch('tasks.webscan.time.sleep'), \
+             patch('tasks.auth_store.get_scan_auth', return_value=json_auth), \
+             patch('tasks.auth_login.fetch_json_auth_token', return_value='JWT'):
+            mock_settings.ZAP_URL = 'http://zap:8090'
+            _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+
+        mock_zap.replacer.add_rule.assert_called_once()
+        _, kwargs = mock_zap.replacer.add_rule.call_args
+        assert kwargs['matchstring'] == 'Authorization'
+        assert kwargs['replacement'] == 'Bearer JWT'
+        # rule must be url-scoped to the target (no cross-scan contamination)
+        assert kwargs.get('url'), "JSON auth rule must be url-scoped to the target"
+        # ...and removed afterwards so the token never leaks into later scans
+        mock_zap.replacer.remove_rule.assert_called_once()
+        # form-auth script path must not run for JSON login
+        mock_zap.authentication.set_authentication_method.assert_not_called()
+
     def test_remote_zap_not_ready_returns_empty_no_local_spawn(self):
         """Remote ZAP unreachable must return [] without ever touching local daemon code."""
         from tasks.webscan import _run_zap

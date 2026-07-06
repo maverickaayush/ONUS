@@ -108,6 +108,10 @@ export function HomeForm() {
   const [authLoginUrl, setAuthLoginUrl] = useState("")
   const [authUsername, setAuthUsername] = useState("")
   const [authPassword, setAuthPassword] = useState("")
+  const [authLoginType, setAuthLoginType] = useState<"auto" | "form" | "json">("auto")
+  const [authUsernameField, setAuthUsernameField] = useState("")
+  const [authPasswordField, setAuthPasswordField] = useState("")
+  const [authTokenJsonPath, setAuthTokenJsonPath] = useState("")
 
   useEffect(() => {
     getScanModules()
@@ -131,7 +135,16 @@ export function HomeForm() {
     // no separate enable/disable toggle needed.
     const auth: AuthConfig | undefined =
       authLoginUrl.trim() && authUsername && authPassword
-        ? { loginUrl: authLoginUrl.trim(), username: authUsername, password: authPassword }
+        ? {
+            loginUrl: authLoginUrl.trim(),
+            username: authUsername,
+            password: authPassword,
+            loginType: authLoginType,
+            ...(authUsernameField.trim() && { usernameField: authUsernameField.trim() }),
+            ...(authPasswordField.trim() && { passwordField: authPasswordField.trim() }),
+            ...(authLoginType === "json" &&
+              authTokenJsonPath.trim() && { tokenJsonPath: authTokenJsonPath.trim() }),
+          }
         : undefined
     try {
       const response = await submitScan(domain.trim(), authorized, auth)
@@ -454,10 +467,39 @@ export function HomeForm() {
           {authAccordionOpen && (
             <div className="px-4 pb-4 pt-1 border-t border-white/8 space-y-3">
               <p className="text-xs text-slate-500">
-                If the target sits behind a login form, provide credentials so
-                the scan can log in first - otherwise only the unauthenticated
+                If the target sits behind a login, provide credentials so the
+                scan can log in first - otherwise only the unauthenticated
                 surface is reachable. Leave blank to skip.
               </p>
+              <div>
+                <span className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                  Login type
+                </span>
+                <div className="inline-flex rounded-lg border border-white/10 overflow-hidden text-sm">
+                  {(["auto", "form", "json"] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setAuthLoginType(t)}
+                      className={cn(
+                        "px-4 py-1.5 transition-colors",
+                        authLoginType === t
+                          ? "bg-blue-500/80 text-white"
+                          : "bg-white/5 text-slate-400 hover:text-slate-200",
+                      )}
+                    >
+                      {t === "auto" ? "Auto-detect" : t === "form" ? "Form" : "JSON API"}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-slate-500 mt-1.5">
+                  {authLoginType === "auto"
+                    ? "Sniffs the login URL for you - HTML form vs JSON API. Just fill in URL + username + password."
+                    : authLoginType === "form"
+                      ? "Standard HTML login form (application/x-www-form-urlencoded)."
+                      : "JSON login (modern SPAs, e.g. a REST /login endpoint returning a bearer token)."}
+                </p>
+              </div>
               <div>
                 <label htmlFor="auth-login-url" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
                   Login URL
@@ -500,6 +542,60 @@ export function HomeForm() {
                   className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
                 />
               </div>
+              {/* Optional field-name overrides + JSON token path */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="auth-user-field" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                    Username field
+                  </label>
+                  <input
+                    id="auth-user-field"
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={authUsernameField}
+                    onChange={(e) => setAuthUsernameField(e.target.value)}
+                    placeholder={authLoginType === "json" ? "email" : "username"}
+                    className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="auth-pass-field" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                    Password field
+                  </label>
+                  <input
+                    id="auth-pass-field"
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={authPasswordField}
+                    onChange={(e) => setAuthPasswordField(e.target.value)}
+                    placeholder="password"
+                    className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                  />
+                </div>
+              </div>
+              {authLoginType === "json" && (
+                <div>
+                  <label htmlFor="auth-token-path" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                    Token JSON path
+                  </label>
+                  <input
+                    id="auth-token-path"
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={authTokenJsonPath}
+                    onChange={(e) => setAuthTokenJsonPath(e.target.value)}
+                    placeholder="authentication.token"
+                    className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                  />
+                  <p className="text-xs text-slate-500 mt-1.5">
+                    Dot-path to the bearer token in the login response, sent as
+                    <span className="text-slate-400"> Authorization: Bearer &lt;token&gt;</span> on every request.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>

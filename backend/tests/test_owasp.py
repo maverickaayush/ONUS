@@ -391,6 +391,33 @@ class TestOwaspModuleStatus:
         assert result['status'] == 'success'
         assert isinstance(result['findings'], list)
 
+    def test_soft_time_limit_reaches_run_owasp_not_swallowed(self):
+        """Regression test for a real bug: SoftTimeLimitExceeded is a plain
+        Exception subclass, so it used to get silently caught by whichever
+        test function's own broad `except Exception` happened to be running
+        when Celery raised it - execution would then carry on to the next
+        URL/test instead of unwinding, running straight into the un-catchable
+        hard time_limit SIGKILL every time. Every test function (and the
+        crawl loop, and the outer per-URL loop) must re-raise it instead."""
+        from celery.exceptions import SoftTimeLimitExceeded
+
+        def mock_get(url, **kwargs):
+            raise SoftTimeLimitExceeded()
+
+        status_calls = []
+
+        def record(sid, mod, status):
+            status_calls.append(status)
+
+        with patch('tasks.owasp.update_module_status', side_effect=record), \
+             patch('tasks.owasp.requests.Session.get', side_effect=mock_get):
+            from tasks.owasp import run_owasp
+            result = run_owasp.run(TEST_SCAN_ID, TEST_DOMAIN)
+
+        assert result['status'] == 'timeout', \
+            "SoftTimeLimitExceeded must reach run_owasp's own handler, not be swallowed"
+        assert status_calls[-1] == 'failed'
+
     def test_all_findings_have_required_fields(self):
         """Every finding from a full run must match Section 4.3 schema."""
         from tasks.owasp import test_sqli, test_xss, test_error_disclosure
