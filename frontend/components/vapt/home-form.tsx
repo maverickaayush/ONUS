@@ -312,6 +312,174 @@ export function HomeForm() {
               </label>
             </div>
 
+            {/* Authenticated scan (optional) - moved inside the form, before
+                Submit, and directly under the fields it actually affects.
+                Real UX gap found live: this used to live in its own
+                accordion card below the Submit button, visually separate
+                from the form - a user filling in login credentials had to
+                scroll back up to find Submit, and the button looked
+                "ready" without ever noticing the auth section existed. */}
+            <div className="mb-6 border border-white/10 rounded-2xl overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setAuthAccordionOpen((o) => !o)}
+                className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-slate-300 hover:bg-white/5 transition-colors"
+                aria-expanded={authAccordionOpen}
+              >
+                <span>Authenticated scan (optional) - fill in before starting if the target needs a login</span>
+                <svg
+                  className={cn(
+                    "h-4 w-4 text-slate-500 transition-transform flex-shrink-0 ml-2",
+                    authAccordionOpen && "rotate-180",
+                  )}
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </button>
+              {authAccordionOpen && (
+                <div className="px-4 pb-4 pt-1 border-t border-white/8 space-y-3">
+                  <p className="text-xs text-slate-500">
+                    If the target sits behind a login, provide credentials so the
+                    scan can log in first - otherwise only the unauthenticated
+                    surface is reachable. Leave blank to skip, then press
+                    Start Scan below.
+                  </p>
+                  <div>
+                    <span className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                      Login type
+                    </span>
+                    <div className="inline-flex rounded-lg border border-white/10 overflow-hidden text-sm">
+                      {(["auto", "form", "json"] as const).map((t) => (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => setAuthLoginType(t)}
+                          className={cn(
+                            "px-4 py-1.5 transition-colors",
+                            authLoginType === t
+                              ? "bg-blue-500/80 text-white"
+                              : "bg-white/5 text-slate-400 hover:text-slate-200",
+                          )}
+                        >
+                          {t === "auto" ? "Auto-detect" : t === "form" ? "Form" : "JSON API"}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1.5">
+                      {authLoginType === "auto"
+                        ? "Sniffs the login URL for you - HTML form vs JSON API. Just fill in URL + username + password."
+                        : authLoginType === "form"
+                          ? "Standard HTML login form (application/x-www-form-urlencoded)."
+                          : "JSON login (modern SPAs, e.g. a REST /login endpoint returning a bearer token)."}
+                    </p>
+                  </div>
+                  <div>
+                    <label htmlFor="auth-login-url" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                      Login URL
+                    </label>
+                    <input
+                      id="auth-login-url"
+                      type="text"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={authLoginUrl}
+                      onChange={(e) => setAuthLoginUrl(e.target.value)}
+                      placeholder="https://example.com/login.php"
+                      className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="auth-username" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                      Username
+                    </label>
+                    <input
+                      id="auth-username"
+                      type="text"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={authUsername}
+                      onChange={(e) => setAuthUsername(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="auth-password" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                      Password
+                    </label>
+                    <input
+                      id="auth-password"
+                      type="password"
+                      autoComplete="off"
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  {/* Optional field-name overrides + JSON token path */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="auth-user-field" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                        Username field
+                      </label>
+                      <input
+                        id="auth-user-field"
+                        type="text"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={authUsernameField}
+                        onChange={(e) => setAuthUsernameField(e.target.value)}
+                        placeholder={authLoginType === "json" ? "email" : "username"}
+                        className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="auth-pass-field" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                        Password field
+                      </label>
+                      <input
+                        id="auth-pass-field"
+                        type="text"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={authPasswordField}
+                        onChange={(e) => setAuthPasswordField(e.target.value)}
+                        placeholder="password"
+                        className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                      />
+                    </div>
+                  </div>
+                  {authLoginType === "json" && (
+                    <div>
+                      <label htmlFor="auth-token-path" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
+                        Token JSON path
+                      </label>
+                      <input
+                        id="auth-token-path"
+                        type="text"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={authTokenJsonPath}
+                        onChange={(e) => setAuthTokenJsonPath(e.target.value)}
+                        placeholder="authentication.token"
+                        className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
+                      />
+                      <p className="text-xs text-slate-500 mt-1.5">
+                        Dot-path to the bearer token in the login response, sent as
+                        <span className="text-slate-400"> Authorization: Bearer &lt;token&gt;</span> on every request.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Submission error */}
             {submitError && (
               <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-sm" role="alert">
@@ -436,169 +604,6 @@ export function HomeForm() {
           )}
         </div>
 
-        {/* Authenticated scan (optional) - off by default */}
-        <div
-          className="vapt-fade-up mt-4 border border-white/10 rounded-2xl backdrop-blur-sm bg-white/5 overflow-hidden"
-          style={{ animationDelay: "600ms" }}
-        >
-          <button
-            type="button"
-            onClick={() => setAuthAccordionOpen((o) => !o)}
-            className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-slate-300 hover:bg-white/5 transition-colors"
-            aria-expanded={authAccordionOpen}
-          >
-            <span>Authenticated scan (optional)</span>
-            <svg
-              className={cn(
-                "h-4 w-4 text-slate-500 transition-transform",
-                authAccordionOpen && "rotate-180",
-              )}
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                fillRule="evenodd"
-                d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </button>
-          {authAccordionOpen && (
-            <div className="px-4 pb-4 pt-1 border-t border-white/8 space-y-3">
-              <p className="text-xs text-slate-500">
-                If the target sits behind a login, provide credentials so the
-                scan can log in first - otherwise only the unauthenticated
-                surface is reachable. Leave blank to skip.
-              </p>
-              <div>
-                <span className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
-                  Login type
-                </span>
-                <div className="inline-flex rounded-lg border border-white/10 overflow-hidden text-sm">
-                  {(["auto", "form", "json"] as const).map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => setAuthLoginType(t)}
-                      className={cn(
-                        "px-4 py-1.5 transition-colors",
-                        authLoginType === t
-                          ? "bg-blue-500/80 text-white"
-                          : "bg-white/5 text-slate-400 hover:text-slate-200",
-                      )}
-                    >
-                      {t === "auto" ? "Auto-detect" : t === "form" ? "Form" : "JSON API"}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-slate-500 mt-1.5">
-                  {authLoginType === "auto"
-                    ? "Sniffs the login URL for you - HTML form vs JSON API. Just fill in URL + username + password."
-                    : authLoginType === "form"
-                      ? "Standard HTML login form (application/x-www-form-urlencoded)."
-                      : "JSON login (modern SPAs, e.g. a REST /login endpoint returning a bearer token)."}
-                </p>
-              </div>
-              <div>
-                <label htmlFor="auth-login-url" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
-                  Login URL
-                </label>
-                <input
-                  id="auth-login-url"
-                  type="text"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={authLoginUrl}
-                  onChange={(e) => setAuthLoginUrl(e.target.value)}
-                  placeholder="https://example.com/login.php"
-                  className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
-                />
-              </div>
-              <div>
-                <label htmlFor="auth-username" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
-                  Username
-                </label>
-                <input
-                  id="auth-username"
-                  type="text"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={authUsername}
-                  onChange={(e) => setAuthUsername(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
-                />
-              </div>
-              <div>
-                <label htmlFor="auth-password" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
-                  Password
-                </label>
-                <input
-                  id="auth-password"
-                  type="password"
-                  autoComplete="off"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
-                />
-              </div>
-              {/* Optional field-name overrides + JSON token path */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="auth-user-field" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
-                    Username field
-                  </label>
-                  <input
-                    id="auth-user-field"
-                    type="text"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={authUsernameField}
-                    onChange={(e) => setAuthUsernameField(e.target.value)}
-                    placeholder={authLoginType === "json" ? "email" : "username"}
-                    className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="auth-pass-field" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
-                    Password field
-                  </label>
-                  <input
-                    id="auth-pass-field"
-                    type="text"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={authPasswordField}
-                    onChange={(e) => setAuthPasswordField(e.target.value)}
-                    placeholder="password"
-                    className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
-                  />
-                </div>
-              </div>
-              {authLoginType === "json" && (
-                <div>
-                  <label htmlFor="auth-token-path" className="block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1.5">
-                    Token JSON path
-                  </label>
-                  <input
-                    id="auth-token-path"
-                    type="text"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={authTokenJsonPath}
-                    onChange={(e) => setAuthTokenJsonPath(e.target.value)}
-                    placeholder="authentication.token"
-                    className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-slate-100 placeholder:text-slate-600 text-sm focus:outline-none focus:ring-2 focus:border-blue-500/60 focus:ring-blue-500/20"
-                  />
-                  <p className="text-xs text-slate-500 mt-1.5">
-                    Dot-path to the bearer token in the login response, sent as
-                    <span className="text-slate-400"> Authorization: Bearer &lt;token&gt;</span> on every request.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
       </div>
     </main>
   )

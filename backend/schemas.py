@@ -182,3 +182,42 @@ class FindingsResponse(BaseModel):
     total_low: int
     total_informational: int
     findings: List[FindingSchema]
+
+
+class ScanListItem(BaseModel):
+    """One row of the GET /api/scans discovery listing - metadata only,
+    never raw_findings/ai_analysis content (Section 4.1)."""
+    job_id: UUID
+    target: str
+    status: str
+    created_at: datetime
+    updated_at: Optional[datetime]
+    progress: int
+    current_module: Optional[str] = None
+    overall_score: Optional[int] = None
+    awaiting_user_decision: bool
+    # Failed-module names only (no per-module error text) - kept light for
+    # a listing page; full error text stays exclusive to
+    # ScanStatusResponse.module_errors on the single-scan detail endpoint.
+    module_errors: Optional[List[str]] = None
+    modules_completed: int
+    modules_total: int
+
+    @field_serializer('created_at', 'updated_at')
+    def _serialize_timestamps(self, dt: Optional[datetime]) -> Optional[str]:
+        # Same UTC-marked ISO8601 fix as ScanStatusResponse._serialize_started_at -
+        # models.py still writes naive datetime.utcnow() values.
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+
+
+class ScanListResponse(BaseModel):
+    scans: List[ScanListItem]
+    counts: Dict[str, int]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int

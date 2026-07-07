@@ -24,6 +24,7 @@ function ShieldIcon({ className }: { className?: string }) {
 
 const NAV_ITEMS = [
   { label: "New Scan", href: "/" },
+  { label: "Scans", href: "/scans" },
   { label: "Scan Status", href: "/scan/demo/status" },
   { label: "Report", href: "/scan/demo/report" },
 ]
@@ -33,6 +34,12 @@ export function Navbar() {
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/"
+    // "/scans" has no "demo" substring, so the fallback formula below would
+    // reduce to pathname.startsWith("/scan") - which *would* match a real
+    // /scan/{id}/status or /scan/{id}/report page and wrongly highlight
+    // this pill too. Needs its own exact-match branch (the two placeholder
+    // hrefs below never matched anything anyway - this doesn't change that).
+    if (href === "/scans") return pathname === "/scans"
     return pathname.startsWith(href.replace("demo", "").slice(0, -1))
   }
 

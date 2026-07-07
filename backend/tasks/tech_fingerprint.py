@@ -134,6 +134,8 @@ def _run_whatweb(scan_id: str, target: str, domain: str) -> List[dict]:
         logger.warning("WhatWeb timed out for scan %s", scan_id)
     except FileNotFoundError:
         logger.warning("WhatWeb not installed - skipping for scan %s", scan_id)
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("WhatWeb error for scan %s: %s", scan_id, e)
     finally:
@@ -204,7 +206,13 @@ def _run_wafw00f(scan_id: str, target: str, domain: str) -> List[dict]:
         logger.warning("WAFW00F timed out for scan %s", scan_id)
     except FileNotFoundError:
         logger.warning("WAFW00F not installed - skipping for scan %s", scan_id)
+    except SoftTimeLimitExceeded:
+        raise
     except (json.JSONDecodeError, Exception) as e:
+        # A bare Exception already sat in this tuple (making json.JSONDecodeError
+        # redundant, since Exception covers it) and would have silently
+        # swallowed SoftTimeLimitExceeded too - guarded above, same real bug
+        # class found live in headers.py/enumeration.py/nuclei_scan.py this pass.
         logger.warning("WAFW00F output unparseable for scan %s: %s", scan_id, e)
         return [normalize_finding(
             module=MODULE, tool='wafw00f', type_='waf_unknown',
@@ -251,6 +259,14 @@ def run_tech_fingerprint(scan_id: str, domain: str) -> dict:
         try:
             findings.extend(_run_whatweb(scan_id, target, domain))
             whatweb_ok = True
+        except SoftTimeLimitExceeded:
+            # Real bug found live: even after _run_whatweb's own internal
+            # except re-raises this (fixed above), this outer wrapper's
+            # partial-success bookkeeping would have caught it again with a
+            # plain `except Exception`, treating a graceful timeout as
+            # "whatweb failed, keep going to wafw00f" instead of letting it
+            # reach this task's own SoftTimeLimitExceeded handler below.
+            raise
         except Exception as e:
             whatweb_error = str(e)
             logger.error("tech_fingerprint whatweb failed for scan %s: %s", scan_id, e)
@@ -258,6 +274,8 @@ def run_tech_fingerprint(scan_id: str, domain: str) -> dict:
         try:
             findings.extend(_run_wafw00f(scan_id, target, domain))
             wafw00f_ok = True
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as e:
             wafw00f_error = str(e)
             logger.error("tech_fingerprint wafw00f failed for scan %s: %s", scan_id, e)

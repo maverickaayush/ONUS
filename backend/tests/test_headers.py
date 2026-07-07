@@ -235,6 +235,30 @@ class TestHeadersModuleStatus:
 
         assert status_calls[-1] == 'complete'
 
+    def test_soft_time_limit_not_swallowed_as_unreachable(self):
+        """
+        Real bug found live (forced a real Celery SoftTimeLimitExceeded
+        against this task): `_run_headers`'s scheme-fallback loop had a bare
+        `Exception` sitting in its except tuple alongside the specific
+        request exceptions (making those specific ones redundant - Exception
+        already covers them), which silently swallowed
+        SoftTimeLimitExceeded. A soft-timeout was misreported as
+        status='success' with a 'target_unreachable' finding instead of the
+        honest status='timeout' envelope. Confirmed only after re-raising
+        SoftTimeLimitExceeded before the generic catch: the same live test
+        then correctly returned status='timeout' at ~3s instead of falsely
+        reporting success at the full duration.
+        """
+        from celery.exceptions import SoftTimeLimitExceeded
+        from tasks.headers import run_headers
+
+        with patch('tasks.headers.update_module_status'), \
+             patch('tasks.headers.requests.get', side_effect=SoftTimeLimitExceeded()):
+            result = run_headers.run(SCAN_ID, 'example.com')
+
+        assert result['status'] == 'timeout'
+        assert result['findings'] == []
+
 
 class TestHeadersLive:
     """

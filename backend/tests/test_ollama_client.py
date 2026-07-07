@@ -141,6 +141,29 @@ class TestFallbackPath:
         assert injection != crypto
         assert unknown[1]  # default template is non-empty
 
+    def test_collapsed_fingerprint_finding_gets_accurate_description_not_category_template(self):
+        """
+        Real bug found live (user-reported against demo-target.example, an approved
+        real target): a response-fingerprint-collapsed finding (aggregator's
+        >5-identical-response collapse) inherits its owasp_category from
+        whichever original finding was the group's first member, so it used
+        to get a generic per-category template written for a single
+        distinct vulnerability ("review this endpoint for unintended
+        exposure") - misleading for "1311 paths all got the same blanket
+        403." Must instead explain what a collapse actually means, keyed off
+        the aggregator's own `details.matched_paths` marker rather than
+        owasp_category.
+        """
+        collapsed = _finding('f0', owasp_category='A05:2021 - Security Misconfiguration')
+        collapsed['details'] = {'matched_paths': ['/a', '/b', '/c']}
+        description, remediation = _generic_remediation(collapsed)
+
+        assert '3' in description
+        assert 'catch-all' in description or 'blanket' in description
+        assert 'separate findings' in description
+        assert description != _generic_remediation(
+            _finding('f1', owasp_category='A05:2021 - Security Misconfiguration'))[0]
+
 
 class TestNeverRaises:
 

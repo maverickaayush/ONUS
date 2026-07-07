@@ -37,17 +37,27 @@ _HTTPX_TIMEOUT = scaled_timeout(180)
 _NAABU_TIMEOUT = scaled_timeout(240)
 _WHOIS_TIMEOUT = scaled_timeout(20)
 
-# Real bug found live (Opus review + confirmed against this deployment's own
-# docker-compose.yml): the default worker container has no CAP_NET_RAW, so
-# naabu's SYN scan always fails permission-wise and the -sT CONNECT fallback
-# ALWAYS fires in this exact deployment - not a rare edge case. That fallback
-# re-runs the full naabu pass a second time (~2x _NAABU_TIMEOUT worst case),
-# which the old soft=900/hard=1080 base budget (tuned before naabu/amass/
-# httpx were chained in) never accounted for. Worst-case chain at
-# multiplier=1.0: nmap responsive-path 430s + subfinder 60s + amass 300s +
-# httpx 180s + naabu 240s*2=480s + whois 20s + dns ~24s ~= 1494s - already
-# past the old 1080s hard limit before any SCAN_TIMEOUT_MULTIPLIER scaling.
-# Raised with real margin over that recomputed worst case.
+# Timeout headroom, not just a happy-path budget: the old soft=900/hard=1080
+# base budget was tuned before Amass/httpx/Naabu were chained in as a
+# sequential subdomain -> liveness -> port pipeline. Worst-case chain at
+# multiplier=1.0 (nmap responsive-path 430s + subfinder 60s + amass 300s +
+# httpx 180s + naabu 240s + whois 20s + dns ~24s ~= 1254s, or ~1494s if
+# naabu's -sT CONNECT fallback fires and doubles that one stage) already
+# exceeds the old 1080s hard limit before any SCAN_TIMEOUT_MULTIPLIER
+# scaling. Raised with real margin over that recomputed worst case.
+#
+# Correction, found live: an earlier version of this comment claimed the
+# CONNECT fallback "always fires in this deployment" because the worker's
+# docker-compose.yml entry has no explicit `cap_add: NET_RAW`. Verified
+# directly against the running container (`cat /proc/self/status | grep
+# CapEff`, decoded the bitmask): CAP_NET_RAW **is** present - Docker grants
+# it by default unless explicitly dropped, which this deployment doesn't
+# do, so naabu's SYN scan actually succeeds here and the fallback is the
+# rare case the project docs originally assumed, not the routine one. The timeout
+# headroom above is still worth keeping (a real deployment could easily
+# run with `cap_drop: NET_RAW` or a hardened base image where this doesn't
+# hold), but don't repeat the "always fires here" claim without re-checking
+# CapEff on the actual target container first.
 _RECON_SOFT_LIMIT = scaled_timeout(1650)
 _RECON_HARD_LIMIT = scaled_timeout(1800)
 
@@ -687,17 +697,17 @@ def _run_dns(scan_id: str, domain: str) -> List[dict]:
 
 # Recon's worst case was ~356s (nmap + subfinder + WHOIS + DNS) under the
 # previous 600s/660s ceiling. Amass/httpx/Naabu were added as a chained
-# subdomain -> liveness -> port pipeline (added post-Step 9). That earlier
-# ~1080-1320s re-estimate assumed the Naabu SYN->CONNECT fallback was a rare
-# edge case - it isn't: this deployment's worker container has no
-# CAP_NET_RAW (docker-compose.yml), so the fallback fires on every single
-# real scan, making the x2 Naabu case the NORMAL case, not the exception.
-# Recomputed worst case at multiplier=1.0: nmap responsive-path 430s +
-# subfinder 60s + Amass 300s + httpx 180s + Naabu 240s*2=480s + whois 20s +
-# DNS ~24s ~= 1494s - already past the old 1080s hard limit before any
-# SCAN_TIMEOUT_MULTIPLIER scaling. Raised to soft=1650s/hard=1800s (base,
-# see _RECON_SOFT_LIMIT/_RECON_HARD_LIMIT above) for real headroom - still
-# free (webscan is not the gating module anymore, but recon runs in
+# subdomain -> liveness -> port pipeline (added post-Step 9). Recomputed
+# worst case at multiplier=1.0: nmap responsive-path 430s + subfinder 60s +
+# Amass 300s + httpx 180s + Naabu 240s (480s if the -sT CONNECT fallback
+# fires - verified live this isn't the routine case here, since Docker
+# grants CAP_NET_RAW by default and this deployment doesn't drop it, see
+# the correction note above _RECON_SOFT_LIMIT) + whois 20s + DNS ~24s ~=
+# 1254-1494s - already past the old 1080s hard limit before any
+# SCAN_TIMEOUT_MULTIPLIER scaling, with or without the fallback. Raised to
+# soft=1650s/hard=1800s (base, see _RECON_SOFT_LIMIT/_RECON_HARD_LIMIT
+# above) for real headroom - still free (webscan is not the gating module
+# anymore, but recon runs in
 # parallel with it either way and is never on the pipeline's critical path
 # for aggregation to start).
 @app.task(base=BaseTask, name='tasks.recon.run_recon',

@@ -86,8 +86,42 @@ _DEFAULT_REMEDIATION = (
     'category and remediate accordingly.',
 )
 
+# Real bug found live (user-reported, against an approved real target -
+# demo-target.example): the aggregator's response-fingerprint collapse (>5 paths
+# sharing an identical HTTP status+size - typically a WAF/catch-all deny
+# page hit by most of the enumeration wordlist) inherits its owasp_category
+# from whichever individual finding happened to be the group's first member,
+# so it fell into the generic per-category templates above - text written
+# for a single distinct vulnerability at one endpoint ("review this endpoint
+# for unintended exposure"), not for "N paths all got the same blanket deny
+# response." That's actively misleading here: it reads like N separate
+# findings needing individual remediation, when the real, useful takeaway is
+# the opposite - the target uniformly rejected the probe, which is usually a
+# sign the control is *working*, not N misconfigurations.
+_COLLAPSE_DESCRIPTION = (
+    'This is not {count} separate findings - it means {count} different '
+    'probed paths all received the exact same HTTP response (status and '
+    'size), which almost always indicates a single catch-all page (a WAF '
+    'block page, a custom 404/403, or a login-wall redirect) rather than '
+    '{count} distinct exposures. The full list of paths that hit this '
+    'response is in the Technical Appendix.'
+)
+_COLLAPSE_REMEDIATION = (
+    'No per-path action is needed for this entry specifically - it exists '
+    'to show the enumeration scan was mostly answered by one blanket '
+    'response, which is expected behind a WAF or a consistent 403/404 '
+    'handler. Check the appendix\'s path list for anything unexpected '
+    '(e.g. a sensitive filename that should return a different status), '
+    'and confirm the blanket response itself does not leak information '
+    '(verbose error pages, stack traces) beyond the status code.'
+)
+
 
 def _generic_remediation(finding: dict) -> Tuple[str, str]:
+    matched_paths = (finding.get('details') or {}).get('matched_paths')
+    if matched_paths:
+        count = len(matched_paths)
+        return (_COLLAPSE_DESCRIPTION.format(count=count), _COLLAPSE_REMEDIATION)
     category = finding.get('owasp_category', '')
     return _GENERIC_REMEDIATION.get(category, _DEFAULT_REMEDIATION)
 

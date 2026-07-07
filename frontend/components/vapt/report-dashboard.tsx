@@ -16,7 +16,7 @@ import {
   ModuleChip,
   RiskScoreRing,
   SEVERITY_CONFIG,
-  useCountUp,
+  SummaryCard,
   type Severity,
 } from "@/components/vapt/shared"
 import { VaptBackground } from "@/components/vapt/background"
@@ -39,37 +39,9 @@ import { cn } from "@/lib/utils"
 import { getFindings, reportPdfUrl } from "@/lib/api"
 import type { FindingsResponse } from "@/lib/api"
 
-// ─── Summary Card ─────────────────────────────────────────────────────────────
-function SummaryCard({
-  severity,
-  count,
-}: {
-  severity: Severity
-  count: number
-}) {
-  const cfg = SEVERITY_CONFIG[severity]
-  const display = useCountUp(count, 800)
-  return (
-    <div
-      className="group relative rounded-2xl border border-white/8 backdrop-blur-sm bg-white/5 p-4 flex flex-col items-center gap-1 overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/8 hover:border-white/15"
-      style={{ borderTop: `3px solid ${cfg.hex}` }}
-    >
-      <div
-        className="pointer-events-none absolute -top-8 h-16 w-16 rounded-full blur-2xl opacity-40 transition-opacity group-hover:opacity-70"
-        style={{ background: cfg.glow }}
-      />
-      <span
-        className={cn("relative text-3xl font-black", cfg.text)}
-        style={{ filter: `drop-shadow(0 0 10px ${cfg.glow})` }}
-      >
-        {display}
-      </span>
-      <span className="relative text-[11px] font-medium uppercase tracking-wide text-slate-400">
-        {severity === "Informational" ? "Info" : severity}
-      </span>
-    </div>
-  )
-}
+// SummaryCard (glowing count-up card) now lives in shared.tsx - generalized
+// to accept plain color props so both this dashboard and the Scans page can
+// use the same component instead of duplicating it.
 
 // ─── Chart data (built from live counts) ─────────────────────────────────────
 function buildChartData(counts: Record<Severity, number>) {
@@ -526,9 +498,16 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             {loading
               ? Array.from({ length: 5 }).map((_, i) => <SkeletonCard key={i} />)
-              : (["Critical", "High", "Medium", "Low", "Informational"] as Severity[]).map(
-                  (sev) => <SummaryCard key={sev} severity={sev} count={counts[sev]} />,
-                )}
+              : (["Critical", "High", "Medium", "Low", "Informational"] as Severity[]).map((sev) => (
+                  <SummaryCard
+                    key={sev}
+                    label={sev === "Informational" ? "Info" : sev}
+                    count={counts[sev]}
+                    hex={SEVERITY_CONFIG[sev].hex}
+                    glow={SEVERITY_CONFIG[sev].glow}
+                    textClass={SEVERITY_CONFIG[sev].text}
+                  />
+                ))}
           </div>
         </div>
 

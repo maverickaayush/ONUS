@@ -140,6 +140,8 @@ def _run_nuclei(scan_id: str, target: str, domain: str) -> List[dict]:
         logger.warning("Nuclei timed out for scan %s", scan_id)
     except FileNotFoundError:
         logger.warning("Nuclei not installed - skipping for scan %s", scan_id)
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("Nuclei error for scan %s: %s", scan_id, e)
     finally:

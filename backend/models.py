@@ -35,6 +35,12 @@ class Scan(Base):
     risk_score = Column(Integer, nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Bumped on every ORM-level write (status transitions, risk_score, etc.)
+    # via onupdate - not bumped by base_task.py's raw-SQL module_statuses
+    # update (that's deliberately a separate, high-frequency, per-module
+    # signal; this column is "when did the scan's own record last change,"
+    # for the /api/scans listing page's "Last updated" column).
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 
     report = relationship("Report", back_populates="scan", uselist=False)
 
