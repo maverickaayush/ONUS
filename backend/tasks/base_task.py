@@ -190,18 +190,37 @@ def build_module_result(module: str, findings: list, tool_versions: Optional[dic
 
 
 def update_module_status(scan_id: str, module_name: str, status: str) -> None:
-    """Write a single module's status update directly to the DB."""
+    """
+    Write a single module's status update directly to the DB.
+
+    Real bug found live (browser-driven test against a real scan): all 8
+    modules run concurrently and each independently calls this function -
+    a plain Python read-modify-write (read the whole module_statuses dict,
+    mutate one key, write the whole dict back) loses updates under that
+    concurrency. A fast module (e.g. headers, unreachable-target fast path)
+    can write 'complete', then a slower module that had already read an
+    OLDER snapshot of the dict writes its own update afterward, overwriting
+    the fast module's status back to stale data - observed live as a scan
+    showing 'complete' overall while one module stayed stuck at 'running'
+    forever. Uses Postgres's jsonb_set in a single atomic UPDATE instead of
+    a read-then-write round trip, so concurrent callers can never clobber
+    each other's key.
+    """
     from database import SessionLocal
     from models import Scan
+    from sqlalchemy import text
 
     db = SessionLocal()
     try:
-        scan = db.query(Scan).filter(Scan.id == scan_id).first()
-        if scan:
-            statuses = dict(scan.module_statuses or {})
-            statuses[module_name] = status
-            scan.module_statuses = statuses
-            db.commit()
+        db.execute(
+            text(
+                "UPDATE scans SET module_statuses = "
+                "jsonb_set(coalesce(module_statuses, '{}'::jsonb), ARRAY[CAST(:module_name AS text)], to_jsonb(CAST(:status AS text))) "
+                "WHERE id = :scan_id"
+            ),
+            {"module_name": module_name, "status": status, "scan_id": scan_id},
+        )
+        db.commit()
     except Exception as e:
         logger.error("update_module_status failed scan=%s module=%s: %s", scan_id, module_name, e)
     finally:

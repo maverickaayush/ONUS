@@ -211,10 +211,20 @@ def _run_headers(scan_id: str, domain: str) -> List[dict]:
             break
         except requests.exceptions.SSLError:
             continue  # try next scheme
+        except SoftTimeLimitExceeded:
+            raise
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout,
-                requests.exceptions.TooManyRedirects,
-                Exception) as e:
+                requests.exceptions.TooManyRedirects) as e:
+            # Real bug found live: a bare `Exception` used to sit in this
+            # tuple alongside these specific ones (making them redundant,
+            # since Exception already covers them) and silently swallowed
+            # Celery's SoftTimeLimitExceeded - a soft-timeout on this module
+            # was misreported as 'target unreachable' instead of an honest
+            # timeout. Only catch the specific request failures this
+            # fallback is actually meant to handle; let anything else
+            # (including SoftTimeLimitExceeded, guarded above) propagate to
+            # run_headers()'s own handler.
             logger.warning("headers: %s://%s failed: %s", scheme, domain, e)
 
     if resp is None:

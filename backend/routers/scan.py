@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 from datetime import datetime, timedelta
+from typing import Dict, Optional
 from uuid import UUID
 import logging
 
@@ -9,7 +10,7 @@ from database import get_db
 from models import Scan, ScanStatus
 from schemas import (
     ScanRequest, ScanResponse, ScanStatusResponse, FindingsResponse,
-    ScanDecisionRequest, ScanModulesResponse,
+    ScanDecisionRequest, ScanModulesResponse, ScanListResponse, ScanListItem,
 )
 from tasks.base_task import SCAN_MODULES, SCAN_MODULE_IDS
 from config import settings
@@ -65,6 +66,66 @@ def _reap_stuck_scans(db: Session) -> int:
         db.commit()
         logger.warning("_reap_stuck_scans: marked %d stale scan(s) failed", reaped)
     return reaped
+
+
+def _compute_progress(scan: Scan) -> int:
+    """
+    Shared by get_scan_status and GET /api/scans so both endpoints compute
+    the same scan's % identically instead of two copies drifting apart.
+    awaiting_user_decision maps to 80 (not the old missing-entry 0) - a
+    paused-for-decision scan already finished all 8 modules, so showing 0%
+    was misleading; confirmed as a deliberate fix, not just a refactor.
+    """
+    status_order = {
+        ScanStatus.queued: 0,
+        ScanStatus.running: 20,
+        ScanStatus.analysing: 80,
+        ScanStatus.awaiting_user_decision: 80,
+        ScanStatus.complete: 100,
+        ScanStatus.failed: 0,
+    }
+    module_statuses = scan.module_statuses or {}
+    if scan.status == ScanStatus.running:
+        completed = sum(1 for s in module_statuses.values() if s == "complete")
+        return 20 + int((completed / len(SCAN_MODULE_IDS)) * 60)
+    return status_order.get(scan.status, 0)
+
+
+def _compute_module_errors(scan: Scan) -> Optional[Dict[str, str]]:
+    """
+    Shared by get_scan_status and GET /api/scans. Non-None only while
+    awaiting_user_decision - dict keys are exactly the failed-module names.
+    """
+    if scan.status != ScanStatus.awaiting_user_decision:
+        return None
+    from tasks.scan_orchestrator import _failed_modules
+
+    stash = scan.raw_findings or {}
+    results = stash.get("module_results", [])
+    failed = _failed_modules(results)
+    return {
+        r["module"]: r.get("error") or f"{r.get('status')} with no error detail"
+        for r in results if isinstance(r, dict) and r.get("module") in failed
+    }
+
+
+def _current_module(scan: Scan) -> Optional[str]:
+    """
+    None unless something is actively in flight. Multiple modules can be
+    'running' simultaneously (Celery group() dispatch) - picks the first by
+    SCAN_MODULE_IDS' canonical order. 'Analysing' is a synthetic value (no
+    module_statuses entry is 'running' during that aggregate/verify/score/
+    describe/PDF phase).
+    """
+    if scan.status == ScanStatus.analysing:
+        return "Analysing"
+    if scan.status != ScanStatus.running:
+        return None
+    module_statuses = scan.module_statuses or {}
+    for module_id in SCAN_MODULE_IDS:
+        if module_statuses.get(module_id) == "running":
+            return module_id
+    return None
 
 
 @router.post("/scan", response_model=ScanResponse, status_code=202)
@@ -152,6 +213,115 @@ def get_scan_modules():
     return ScanModulesResponse(modules=SCAN_MODULES)
 
 
+# ---------------------------------------------------------------------------
+# GET /api/scans - discovery/listing page (Scans dashboard). Read-only
+# metadata only - never returns raw_findings/ai_analysis content, and never
+# touches the retry/continue/cancel decision flow (submit_scan_decision
+# above is the only writer of scan.status via an operator action).
+# ---------------------------------------------------------------------------
+STATUS_BUCKETS: Dict[str, set] = {
+    "active": {ScanStatus.queued, ScanStatus.running, ScanStatus.analysing},
+    "awaiting_user_decision": {ScanStatus.awaiting_user_decision},
+    "completed": {ScanStatus.complete}, "complete": {ScanStatus.complete},
+    "failed": {ScanStatus.failed}, "cancelled": {ScanStatus.cancelled},
+    "queued": {ScanStatus.queued}, "running": {ScanStatus.running},
+    "analysing": {ScanStatus.analysing},
+}
+SORT_COLUMNS = {
+    "created_at": Scan.created_at, "updated_at": Scan.updated_at,
+    "status": Scan.status, "target": Scan.domain,
+}
+
+
+def _to_list_item(scan: Scan) -> ScanListItem:
+    module_statuses = scan.module_statuses or {}
+    module_errors = _compute_module_errors(scan)
+    return ScanListItem(
+        job_id=scan.id,
+        target=scan.domain,
+        status=scan.status.value,
+        created_at=scan.created_at,
+        updated_at=scan.updated_at,
+        progress=_compute_progress(scan),
+        current_module=_current_module(scan),
+        overall_score=scan.risk_score,
+        awaiting_user_decision=scan.status == ScanStatus.awaiting_user_decision,
+        module_errors=list(module_errors.keys()) if module_errors else None,
+        modules_completed=sum(1 for s in module_statuses.values() if s == "complete"),
+        modules_total=len(SCAN_MODULE_IDS),
+    )
+
+
+@router.get("/scans", response_model=ScanListResponse)
+def list_scans(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    sort: str = "created_at",
+    order: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+):
+    """
+    Paginated scan listing for the /scans discovery dashboard. status/
+    search/sort/order/page all applied server-side so they compose
+    correctly together (client-side sort/search over just one fetched page
+    would be wrong once paginated). Exactly 2 queries regardless of dataset
+    size: one GROUP BY aggregate for the always-global tab counts (never
+    touches the heavy raw_findings/ai_analysis JSONB columns), one filtered/
+    sorted/limited SELECT for the actual page - no N+1.
+    """
+    # Same rationale as create_scan's concurrency check reaping first - this
+    # page is the one most likely to be left open unattended, and is the
+    # exact page meant to surface a scan stuck past its deadline.
+    _reap_stuck_scans(db)
+
+    if status is not None and status not in STATUS_BUCKETS:
+        raise HTTPException(status_code=422, detail=f"Unknown status filter '{status}'")
+    if sort not in SORT_COLUMNS:
+        raise HTTPException(status_code=422, detail=f"Unknown sort key '{sort}'")
+    if order not in ("asc", "desc"):
+        raise HTTPException(status_code=422, detail="order must be 'asc' or 'desc'")
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+
+    # Query 1: global tab counts - always reflects the WHOLE table so tab
+    # badges never zero out just because a filter/search is currently active.
+    status_counts = dict(db.query(Scan.status, func.count(Scan.id)).group_by(Scan.status).all())
+    counts = {
+        "running": sum(status_counts.get(s, 0) for s in STATUS_BUCKETS["active"]),
+        "awaiting_user_decision": status_counts.get(ScanStatus.awaiting_user_decision, 0),
+        "completed": status_counts.get(ScanStatus.complete, 0),
+        "failed": status_counts.get(ScanStatus.failed, 0),
+        "total": sum(status_counts.values()),
+    }
+
+    # Query 2: the actual page.
+    query = db.query(Scan)
+    if status is not None:
+        query = query.filter(Scan.status.in_(STATUS_BUCKETS[status]))
+    if search:
+        # Escape LIKE wildcards in user input so a literal "%"/"_" in a
+        # domain search doesn't act as a pattern wildcard.
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(Scan.domain.ilike(f"%{escaped}%", escape="\\"))
+
+    total_matching = query.with_entities(func.count(Scan.id)).scalar()
+
+    sort_col = SORT_COLUMNS[sort]
+    query = query.order_by(sort_col.asc() if order == "asc" else sort_col.desc())
+    scans = query.offset((page - 1) * page_size).limit(page_size).all()
+
+    return ScanListResponse(
+        scans=[_to_list_item(s) for s in scans],
+        counts=counts,
+        total=total_matching,
+        page=page,
+        page_size=page_size,
+        total_pages=max(1, -(-total_matching // page_size)),
+    )
+
+
 @router.get("/scan/{scan_id}/status", response_model=ScanStatusResponse)
 def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
     scan = db.query(Scan).filter(Scan.id == scan_id).first()
@@ -169,45 +339,21 @@ def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
             scan.status = ScanStatus.failed
             db.commit()
 
-    status_order = {
-        ScanStatus.queued: 0,
-        ScanStatus.running: 20,
-        ScanStatus.analysing: 80,
-        ScanStatus.complete: 100,
-        ScanStatus.failed: 0,
-    }
-
-    module_statuses = scan.module_statuses or {}
-    completed_modules = sum(1 for s in module_statuses.values() if s == "complete")
-    base_progress = status_order.get(scan.status, 0)
-
-    if scan.status == ScanStatus.running:
-        progress = 20 + int((completed_modules / len(SCAN_MODULE_IDS)) * 60)
-    else:
-        progress = base_progress
-
-    module_errors = None
+    module_errors = _compute_module_errors(scan)
     can_retry = None
-    if scan.status == ScanStatus.awaiting_user_decision:
-        from tasks.scan_orchestrator import _failed_modules, _can_retry
+    if module_errors is not None:
+        from tasks.scan_orchestrator import _can_retry
 
         stash = scan.raw_findings or {}
-        results = stash.get("module_results", [])
-        retry_counts = stash.get("retry_counts", {})
-        failed = _failed_modules(results)
-        module_errors = {
-            r["module"]: r.get("error") or f"{r.get('status')} with no error detail"
-            for r in results if isinstance(r, dict) and r.get("module") in failed
-        }
-        can_retry = _can_retry(failed, retry_counts)
+        can_retry = _can_retry(list(module_errors.keys()), stash.get("retry_counts", {}))
 
     return ScanStatusResponse(
         job_id=scan.id,
         domain=scan.domain,
         status=scan.status.value,
-        progress=progress,
+        progress=_compute_progress(scan),
         started_at=scan.started_at,
-        modules=module_statuses,
+        modules=scan.module_statuses or {},
         module_errors=module_errors,
         can_retry=can_retry,
     )

@@ -154,3 +154,56 @@ export async function getScanModules(): Promise<ScanModuleInfo[]> {
   const data = await handle<{ modules: ScanModuleInfo[] }>(res)
   return data.modules
 }
+
+// ─── Scans discovery/listing page ───────────────────────────────────────────
+
+export interface ScanListItem {
+  job_id: string
+  target: string
+  status: ScanStatus
+  created_at: string
+  updated_at: string | null
+  progress: number
+  current_module: string | null
+  overall_score: number | null
+  awaiting_user_decision: boolean
+  module_errors?: string[] | null
+  modules_completed: number
+  modules_total: number
+}
+
+export interface ScanListParams {
+  status?: string
+  search?: string
+  sort?: 'created_at' | 'updated_at' | 'status' | 'target'
+  order?: 'asc' | 'desc'
+  page?: number
+  page_size?: number
+}
+
+export interface ScanListCounts {
+  running: number
+  awaiting_user_decision: number
+  completed: number
+  failed: number
+  total: number
+}
+
+export interface ScanListResponse {
+  scans: ScanListItem[]
+  counts: ScanListCounts
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
+export async function getScans(params: ScanListParams = {}): Promise<ScanListResponse> {
+  const qs = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== '') qs.set(k, String(v))
+  })
+  const suffix = qs.toString() ? `?${qs}` : ''
+  const res = await fetch(`/api/scans${suffix}`, { cache: 'no-store' })
+  return handle<ScanListResponse>(res)
+}

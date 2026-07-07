@@ -309,6 +309,8 @@ def _run_ffuf(scan_id: str, target: str, domain: str) -> List[dict]:
         logger.warning("FFUF not installed - skipping for scan %s", scan_id)
     except json.JSONDecodeError as e:
         logger.error("FFUF JSON parse error for scan %s: %s", scan_id, e)
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as e:
         logger.error("FFUF error for scan %s: %s", scan_id, e)
     finally:

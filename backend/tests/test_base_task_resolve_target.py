@@ -69,6 +69,49 @@ class TestResolveTargetUrl:
             assert resolve_target_url(DOMAIN) == f"http://{DOMAIN}"
 
 
+class TestUpdateModuleStatusIsAtomic:
+    """
+    Real bug found live (browser-driven test against a real scan): the old
+    implementation did a Python read-modify-write (read the whole
+    module_statuses dict, mutate one key, write the whole dict back) - under
+    8 modules updating concurrently, a slower module's write (based on an
+    older snapshot) could clobber a faster module's newer status. Confirmed
+    live: a scan showed overall status='complete' while module_statuses
+    still had one module stuck at 'running' forever.
+
+    Fixed via a single atomic SQL UPDATE (jsonb_set) instead of a read-then-
+    write round trip - assert the SQL is actually issued that way, so a
+    regression back to the read-modify-write pattern gets caught.
+    """
+
+    def test_issues_single_atomic_sql_update_not_read_then_write(self):
+        from tasks.base_task import update_module_status
+
+        db = MagicMock()
+        with patch("database.SessionLocal", return_value=db):
+            update_module_status("scan-1", "headers", "complete")
+
+        # No read-then-write: never queries the row first via .query()/.first()
+        db.query.assert_not_called()
+        db.execute.assert_called_once()
+        sql_text = str(db.execute.call_args.args[0])
+        assert "jsonb_set" in sql_text
+        params = db.execute.call_args.args[1]
+        assert params == {"module_name": "headers", "status": "complete", "scan_id": "scan-1"}
+        db.commit.assert_called_once()
+
+    def test_failure_logged_not_raised(self):
+        from tasks.base_task import update_module_status
+
+        db = MagicMock()
+        db.execute.side_effect = RuntimeError("db down")
+        # Must not raise - a status-update failure shouldn't crash the
+        # scanning task itself.
+        with patch("database.SessionLocal", return_value=db):
+            update_module_status("scan-1", "headers", "complete")
+        db.close.assert_called_once()
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-v"]))

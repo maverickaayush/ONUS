@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
+import type { ScanStatus } from "@/lib/api"
 
 // ─── Severity Types ──────────────────────────────────────────────────────────
 export type Severity = "Critical" | "High" | "Medium" | "Low" | "Informational"
@@ -119,6 +120,47 @@ export function useCountUp(target: number, duration = 800) {
   return value
 }
 
+// ─── SummaryCard ─────────────────────────────────────────────────────────────
+// Generalized from a severity-specific card (was report-dashboard.tsx-local,
+// keyed off SEVERITY_CONFIG) to plain color props, so any glowing count-up
+// stat card (severity counts, scan-status counts, etc.) can reuse it instead
+// of duplicating the visual.
+export function SummaryCard({
+  label,
+  count,
+  hex,
+  glow,
+  textClass,
+}: {
+  label: string
+  count: number
+  hex: string
+  glow: string
+  textClass: string
+}) {
+  const display = useCountUp(count, 800)
+  return (
+    <div
+      className="group relative rounded-2xl border border-white/8 backdrop-blur-sm bg-white/5 p-4 flex flex-col items-center gap-1 overflow-hidden transition-all duration-200 hover:-translate-y-0.5 hover:bg-white/8 hover:border-white/15"
+      style={{ borderTop: `3px solid ${hex}` }}
+    >
+      <div
+        className="pointer-events-none absolute -top-8 h-16 w-16 rounded-full blur-2xl opacity-40 transition-opacity group-hover:opacity-70"
+        style={{ background: glow }}
+      />
+      <span
+        className={cn("relative text-3xl font-black", textClass)}
+        style={{ filter: `drop-shadow(0 0 10px ${glow})` }}
+      >
+        {display}
+      </span>
+      <span className="relative text-[11px] font-medium uppercase tracking-wide text-slate-400">
+        {label}
+      </span>
+    </div>
+  )
+}
+
 // ─── RiskScoreRing ───────────────────────────────────────────────────────────
 export function RiskScoreRing({ score }: { score: number }) {
   const isHigh = score >= 70
@@ -207,11 +249,36 @@ export function RiskScoreRing({ score }: { score: number }) {
 }
 
 // ─── StatusChip ──────────────────────────────────────────────────────────────
+// Widened from module-only status (queued|running|complete|failed) to the
+// full scan-level ScanStatus union - every existing module-row call site
+// keeps working unchanged since those 4 values are still valid inputs.
 export function StatusChip({
   status,
 }: {
-  status: "queued" | "running" | "complete" | "failed"
+  status: ScanStatus
 }) {
+  const spinner = (
+    <svg
+      className="animate-spin h-3 w-3 mr-1.5"
+      viewBox="0 0 24 24"
+      fill="none"
+      style={{ filter: "drop-shadow(0 0 4px rgba(59,130,246,0.6))" }}
+    >
+      <circle
+        className="opacity-25"
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+      />
+      <path
+        className="opacity-75"
+        fill="currentColor"
+        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+      />
+    </svg>
+  )
   const map = {
     queued: {
       label: "Queued",
@@ -221,28 +288,23 @@ export function StatusChip({
     running: {
       label: "Running",
       cls: "bg-blue-500/10 text-blue-400 border-blue-500/30",
-      icon: (
-        <svg
-          className="animate-spin h-3 w-3 mr-1.5"
-          viewBox="0 0 24 24"
-          fill="none"
-          style={{ filter: "drop-shadow(0 0 4px rgba(59,130,246,0.6))" }}
-        >
-          <circle
-            className="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            strokeWidth="4"
-          />
-          <path
-            className="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-          />
-        </svg>
-      ),
+      icon: spinner,
+    },
+    analysing: {
+      label: "Analysing",
+      cls: "bg-purple-500/10 text-purple-400 border-purple-500/30",
+      icon: spinner,
+    },
+    awaiting_user_decision: {
+      label: "Awaiting Decision",
+      // Amber matches decision-modal.tsx's existing "needs attention" convention.
+      cls: "bg-amber-500/10 text-amber-400 border-amber-500/30",
+      icon: null,
+    },
+    cancelled: {
+      label: "Cancelled",
+      cls: "bg-slate-500/10 text-slate-400 border-slate-500/20",
+      icon: null,
     },
     complete: {
       label: "Complete",
