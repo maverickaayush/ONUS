@@ -15,4 +15,4 @@ What you'd want to happen.
 Any alternative solutions or workarounds you've thought about.
 
 **Additional context**
-Anything else relevant — links, screenshots, related issues.
+Anything else relevant - links, screenshots, related issues.

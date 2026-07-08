@@ -11,7 +11,7 @@ cp backend/subfinder-config/provider-config.yaml.example backend/subfinder-confi
 docker compose up -d
 ```
 
-Or run pieces natively — see [`docs/QUICK_REF.md`](docs/QUICK_REF.md)'s "Run
+Or run pieces natively - see [`docs/QUICK_REF.md`](docs/QUICK_REF.md)'s "Run
 commands" section for the `uvicorn --reload`, `celery worker`, and `npm run
 dev` commands.
 
@@ -24,10 +24,10 @@ pytest backend/tests
 
 ## Before you touch a scanning module
 
-Read [`the project docs`](the project docs) first — it's the architectural contract for
+Read [`the project docs`](the project docs) first - it's the architectural contract for
 this project, not background reading. In particular:
 - Every scanning module must emit the exact finding schema in §4.3, including
-  `found_by` — the aggregator's dedup depends on it.
+  `found_by` - the aggregator's dedup depends on it.
 - The safety guardrails in §8 (authorization checks, private-IP rejection,
   non-destructive-only payloads) are non-negotiable. Ask before relaxing
   anything, even for convenience during testing.

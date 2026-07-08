@@ -348,7 +348,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       # next.config.mjs's rewrites() is baked into routes-manifest.json at
-      # `next build` time, not re-read at container runtime — so this must
+      # `next build` time, not re-read at container runtime - so this must
       # be a build arg, not just a runtime `environment:` entry (which is
       # also kept below, harmlessly, for any future runtime-read usage).
       args:
