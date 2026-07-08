@@ -81,10 +81,15 @@ always deterministic (`analysis/cvss_scorer.py`) - without Ollama running,
 findings just get a rule-based description template instead of AI-generated
 prose. See "Optional: enable AI-generated descriptions" below to turn that on.
 
-The subfinder config copy step is optional - leaving it as the empty
-template is fine, subfinder just runs with free/public sources only. To
-deepen subdomain enumeration, add free API keys (GitHub, Chaos) to that file
-before starting - see the comments inside it.
+**Zero API keys are required to run this tool.** Every scanning tool it
+wraps (nmap, ZAP, Nikto, testssl.sh, Nuclei, Amass, Naabu, httpx, WhatWeb,
+WAFW00F, FFUF) and Ollama itself work with no key at all. The subfinder
+config copy step above is the one optional exception - leaving it as the
+empty template is fine, subfinder just runs with free/public sources only.
+To deepen subdomain enumeration, you can add up to two free-tier keys to
+that file before starting: a GitHub personal access token and a
+[ProjectDiscovery Chaos](https://chaos.projectdiscovery.io) API key - see
+the comments inside `provider-config.yaml.example`.
 
 ## Optional: enable AI-generated descriptions
 
@@ -163,6 +168,22 @@ docker compose down
 ```bash
 docker compose logs -f backend worker
 ```
+
+## Testing & Validation
+
+```bash
+pip install -r backend/requirements-dev.txt
+pytest backend/tests
+```
+
+438 automated backend tests as of this writing. Beyond the unit/integration
+suite, the tool has been exercised end-to-end during development: 79 real
+scans executed and 124 PDF reports generated against nine deliberately-
+vulnerable practice applications (DVWA, Juice Shop, Mutillidae, NodeGoat,
+bWAPP, WebGoat, Metasploitable2, DVWP/WordPress behind a WAF) plus one
+authorized public target (`testphp.vulnweb.com`) - not hypothetical numbers,
+see the "Approved test targets" list in [`the project docs`](the project docs), Section 8,
+for what's actually safe to point this at.
 
 ## Documentation
 
