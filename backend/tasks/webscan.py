@@ -268,7 +268,7 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
     test_findings.md's "ZAP restart pattern" notes). That case previously
     looked identical to "ZAP legitimately found nothing" (empty findings,
     status='success') - a real instance of the exact silent-data-loss anti-
-    pattern Section 4.3/the project docs warns against, since 3+ minutes of spider/
+    pattern Section 4.3/ARCHITECTURE.md warns against, since 3+ minutes of spider/
     ascan time had already been sunk into a target that never got its
     results collected.
 

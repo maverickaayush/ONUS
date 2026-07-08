@@ -1,7 +1,7 @@
 """
 Deterministic CVSS v3.1 scoring engine.
 
-Architecture invariant (the project docs Section 4.5/4.6): deterministic code owns
+Architecture invariant (ARCHITECTURE.md Section 4.5/4.6): deterministic code owns
 every number in a report - severity, cvss_score, cvss_vector, owasp_category,
 priority, risk_score. Ollama only ever produces prose. score_finding() is the
 single entry point that turns a raw finding's `type` into those five numbers,
@@ -235,7 +235,7 @@ _RULES['x_powered_by_exposed'] = _RULES['outdated_tech']
 
 
 # ---------------------------------------------------------------------------
-# Priority - independent of severity, per the project docs/spec: driven by
+# Priority - independent of severity, per ARCHITECTURE.md/spec: driven by
 # exploitability (AV/PR), not just the score bucket.
 # ---------------------------------------------------------------------------
 

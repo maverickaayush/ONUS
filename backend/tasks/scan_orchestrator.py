@@ -471,7 +471,7 @@ def _incomplete_modules_warning(module_execution: list) -> Optional[str]:
     Deterministic warning line for the report's executive summary page -
     never left to the AI to decide whether to mention. A report that hides
     a failed/timed-out module is actively misleading about the target's
-    security posture (the project docs Section 4.4).
+    security posture (ARCHITECTURE.md Section 4.4).
     """
     incomplete = [m for m in module_execution if m.get('status') not in ('success', 'partial')]
     if not incomplete:
@@ -488,7 +488,7 @@ def _score_and_describe(aggregated: dict, domain: str) -> dict:
     description pass (analysis/ollama_client.py). Numbers - severity, cvss,
     priority, owasp_category, risk_score - are computed here and never
     touched by Ollama; Ollama only ever supplies description/remediation/
-    executive_summary prose (the project docs Section 4.5/4.6).
+    executive_summary prose (ARCHITECTURE.md Section 4.5/4.6).
     """
     from analysis.cvss_scorer import score_finding, compute_risk_score
     from analysis.ollama_client import analyse, _generic_remediation

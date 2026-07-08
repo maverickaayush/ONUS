@@ -86,7 +86,7 @@ class TestPipelineDeterminism:
 def _raw_findings_with_verifiable():
     """One open_redirect finding carrying a verification_target, plus the
     baseline mix, so aggregate -> verify -> score exercises the full
-    Phase 1 pipeline stage order (the project docs: aggregate stays pure, verify
+    Phase 1 pipeline stage order (ARCHITECTURE.md: aggregate stays pure, verify
     is its own stage before scoring)."""
     findings, extra = _raw_findings()[0], _raw_findings()[1]
     verifiable = {

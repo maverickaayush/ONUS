@@ -33,12 +33,14 @@ running the suite. CI runs a Redis service container automatically.
 
 ## Before you touch a scanning module
 
-Read [`docs/QUICK_REF.md`](docs/QUICK_REF.md) first for the architecture overview and
-where to make common changes. In particular:
-- Every scanning module must emit the exact finding schema in §4.3, including
-  `found_by` - the aggregator's dedup depends on it.
-- The safety guardrails in §8 (authorization checks, private-IP rejection,
-  non-destructive-only payloads) are non-negotiable. Ask before relaxing
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first - it's the architectural
+contract for this project, not background reading. In particular:
+- Every scanning module must emit the exact finding schema (see "Scanning
+  Engine" in `ARCHITECTURE.md`), including `found_by` - the aggregator's
+  dedup depends on it.
+- The safety guardrails ("Security & Ethical Guardrails" in
+  `ARCHITECTURE.md`) - authorization checks, private-IP rejection,
+  non-destructive-only payloads - are non-negotiable. Ask before relaxing
   anything, even for convenience during testing.
 
 ## Opening a PR

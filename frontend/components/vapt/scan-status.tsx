@@ -81,7 +81,7 @@ const GENERIC_ICON = (
 // combined -> PDF), plus the initial scan dispatch: Scan, Aggregate,
 // Verify, AI Analysis, PDF Report. If _finalize()'s stage sequence changes,
 // update this array to match - it's the one hardcoded list in this file
-// deliberately left that way (see the project docs's scan-modules note for why
+// deliberately left that way (see ARCHITECTURE.md's scan-modules note for why
 // the module list above isn't).
 const FLOW_NODES = ["Scan", "Aggregate", "Verify", "AI Analysis", "PDF Report"]
 

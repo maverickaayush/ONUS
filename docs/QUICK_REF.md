@@ -10,7 +10,7 @@ in this `docs/` folder.
 
 ```
 domain → [recon | webscan | ssl_tls | headers | owasp | tech_fingerprint | nuclei | enumeration] (parallel, Celery)
-       → any module failed/timed out? → pause at awaiting_user_decision (operator retry/continue/cancel, the project docs §4.3b)
+       → any module failed/timed out? → pause at awaiting_user_decision (operator retry/continue/cancel, ARCHITECTURE.md §4.3b)
        → aggregator (dedup + OWASP-map + sort)
        → confidence verification (passive re-observation, §4.4b)
        → deterministic CVSS scoring (§4.5)
@@ -74,7 +74,7 @@ alembic revision --autogenerate -m "description"
 
 | Folder | Responsibility |
 |---|---|
-| `backend/tasks/` | The 8 Celery scanning modules (`recon.py`, `webscan.py`, `ssl_tls.py`, `headers.py`, `owasp.py`, `tech_fingerprint.py`, `nuclei_scan.py`, `enumeration.py`) + `scan_orchestrator.py` (dispatch, plus the pause/retry/continue/cancel decision flow — the project docs §4.3b) + `base_task.py` (shared `normalize_finding`/`update_module_status`/`SCAN_MODULES`) |
+| `backend/tasks/` | The 8 Celery scanning modules (`recon.py`, `webscan.py`, `ssl_tls.py`, `headers.py`, `owasp.py`, `tech_fingerprint.py`, `nuclei_scan.py`, `enumeration.py`) + `scan_orchestrator.py` (dispatch, plus the pause/retry/continue/cancel decision flow — ARCHITECTURE.md §4.3b) + `base_task.py` (shared `normalize_finding`/`update_module_status`/`SCAN_MODULES`) |
 | `backend/analysis/` | `aggregator.py` (merge/dedup/collapse/sort findings) + `verifier.py` (passive re-observation, confidence tiers, incl. Playwright-based `verify_reflected_xss`) + `cvss_scorer.py` (deterministic severity/CVSS/priority/risk_score, confidence-shifted) + `ollama_client.py` (AI description/remediation prose + fallback) |
 | `backend/reports/` | `generator.py` (WeasyPrint PDF) + `templates/report.html` (Jinja2, autoescaped) |
 | `backend/routers/` | FastAPI HTTP endpoints (`scan.py`, `report.py`) — validation + DB only, no scanning logic |
@@ -106,12 +106,12 @@ finding. Missing it breaks dedup silently.
 |---|---|
 | Add a new check to an existing scanner | `backend/tasks/{module}.py` — then add a matching rule in `backend/analysis/cvss_scorer.py`, or the new type falls back to a generic band vector |
 | Change how findings are deduplicated/collapsed | `backend/analysis/aggregator.py` |
-| Change severity/CVSS/priority/risk_score logic | `backend/analysis/cvss_scorer.py` — deterministic only, per the project docs §4.5. Never let Ollama produce these |
-| Add/change a confidence verifier | `backend/analysis/verifier.py` — passive re-observation only (the project docs §4.4b); on failure, demote to `confidence='unverified'` with a note, never drop the finding |
-| Change the AI prompt or model config | `backend/analysis/ollama_client.py` — prompt is byte-for-byte per the project docs §4.6, don't reword it; it must never ask for numbers |
+| Change severity/CVSS/priority/risk_score logic | `backend/analysis/cvss_scorer.py` — deterministic only, per ARCHITECTURE.md §4.5. Never let Ollama produce these |
+| Add/change a confidence verifier | `backend/analysis/verifier.py` — passive re-observation only (ARCHITECTURE.md §4.4b); on failure, demote to `confidence='unverified'` with a note, never drop the finding |
+| Change the AI prompt or model config | `backend/analysis/ollama_client.py` — prompt is byte-for-byte per ARCHITECTURE.md §4.6, don't reword it; it must never ask for numbers |
 | Change PDF layout/styling | `backend/reports/templates/report.html` (all CSS inline — WeasyPrint can't load external resources) |
 | Add an API endpoint | `backend/routers/scan.py` or `report.py` |
-| Change the retry/continue/cancel decision flow or its retry limit | `backend/tasks/scan_orchestrator.py` (`MAX_RETRIES_PER_MODULE`, `_pause_for_decision`, `retry_failed_modules`, `continue_after_decision`) — the project docs §4.3b |
+| Change the retry/continue/cancel decision flow or its retry limit | `backend/tasks/scan_orchestrator.py` (`MAX_RETRIES_PER_MODULE`, `_pause_for_decision`, `retry_failed_modules`, `continue_after_decision`) — ARCHITECTURE.md §4.3b |
 | Change the stuck-scan (hard-SIGKILL) reaper deadline | `backend/routers/scan.py`'s `STUCK_SCAN_DEADLINE` |
 | Add a DB column | `backend/models.py` + new Alembic migration |
 | Change frontend page behavior | `frontend/components/vapt/*.tsx` |

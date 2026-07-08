@@ -1028,7 +1028,7 @@ absence of an HTTPS service... no web application firewall...").
 
 - Naabu's `open_port_naabu` - needs `cap_add: NET_RAW` on the `worker`
   service (a deliberate capability grant, out of scope for a test pass);
-  already documented in the project docs §7.
+  already documented in ARCHITECTURE.md §7.
 - `headers.py`'s `weak_hsts_max_age`/`csp_unsafe_inline`/`csp_unsafe_eval`/
   `cors_wildcard_with_credentials` and `tech_fingerprint.py`'s
   `waf_unknown` - no tested target happens to have these exact

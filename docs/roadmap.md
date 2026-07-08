@@ -60,7 +60,7 @@ path traversal, open redirect, error disclosure — 30s timeout each).
 ## Step 6 — Aggregator + Ollama AI Analysis
 `analysis/aggregator.py`: flatten → dedupe on `(type, evidence[:100])` →
 OWASP-map → sort → truncate evidence to 500 chars.
-`analysis/ollama_client.py`: system prompt (the project docs §4.5, verbatim) →
+`analysis/ollama_client.py`: system prompt (ARCHITECTURE.md §4.5, verbatim) →
 `POST /api/chat` → parse → validate required keys → rule-based fallback on
 timeout/invalid JSON. Full timeout reasoning in `docs/ai.md`.
 

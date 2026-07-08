@@ -98,7 +98,7 @@ services:
       - ./zap-sessions:/zap-sessions
     command: celery -A tasks.celery_app worker --loglevel=info -c 5
 
-  # --- Local-only, self-hosted validation targets (the project docs §8) ---
+  # --- Local-only, self-hosted validation targets (ARCHITECTURE.md §8) ---
   # Intentionally-vulnerable practice apps, not internet services - no ToS/
   # authorization concerns since we own and run the container ourselves.
   # Reachable from backend/worker via the aliases below (Docker's embedded
