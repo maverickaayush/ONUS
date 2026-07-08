@@ -55,8 +55,7 @@ domain → [recon | webscan | ssl_tls | headers | owasp | tech_fingerprint | nuc
 <img src="docs/screenshots/architecture.png" alt="Six-layer architecture diagram" width="420">
 
 Six layers: Next.js frontend → FastAPI → Celery/Redis → 8 parallel scanning
-modules → Ollama (Qwen 2.5 7B) → WeasyPrint PDF + dashboard. Full details in
-[`the project docs`](the project docs) and [`docs/QUICK_REF.md`](docs/QUICK_REF.md).
+modules → Ollama (Qwen 2.5 7B) → WeasyPrint PDF + dashboard. Full details in [`docs/QUICK_REF.md`](docs/QUICK_REF.md).
 
 ## Prerequisites
 
@@ -181,14 +180,13 @@ suite, the tool has been exercised end-to-end during development: 79 real
 scans executed and 124 PDF reports generated against nine deliberately-
 vulnerable practice applications (DVWA, Juice Shop, Mutillidae, NodeGoat,
 bWAPP, WebGoat, Metasploitable2, DVWP/WordPress behind a WAF) plus one
-authorized public target (`testphp.vulnweb.com`) - not hypothetical numbers,
-see the "Approved test targets" list in [`the project docs`](the project docs), Section 8,
-for what's actually safe to point this at.
+authorized public target (`testphp.vulnweb.com`) - not hypothetical numbers.
+Only ever scan targets you are explicitly authorized to test - see
+[`docs/test_findings.md`](docs/test_findings.md) for the practice targets
+used during development.
 
 ## Documentation
 
-- [`the project docs`](the project docs) - full architecture, schemas, and the operational
-  contract for this project. Read this before making a non-trivial change.
 - [`docs/QUICK_REF.md`](docs/QUICK_REF.md) - run commands, folder
   responsibilities, "where do I make this change."
 - [`docs/scanners.md`](docs/scanners.md) - reasoning behind each scanning

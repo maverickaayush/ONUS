@@ -24,8 +24,8 @@ pytest backend/tests
 
 ## Before you touch a scanning module
 
-Read [`the project docs`](the project docs) first - it's the architectural contract for
-this project, not background reading. In particular:
+Read [`docs/QUICK_REF.md`](docs/QUICK_REF.md) first for the architecture overview and
+where to make common changes. In particular:
 - Every scanning module must emit the exact finding schema in §4.3, including
   `found_by` - the aggregator's dedup depends on it.
 - The safety guardrails in §8 (authorization checks, private-IP rejection,

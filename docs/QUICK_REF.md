@@ -1,7 +1,8 @@
 # Quick Reference — VAPT Tool
 
-Fast lookup for an already-oriented developer/agent. For full architecture,
-schemas, and the build sequence, see [`the project docs`](../the project docs).
+Fast lookup for an already-oriented contributor. For deeper reasoning on
+scanner timing/flags, AI tuning, and the Docker setup, see the other files
+in this `docs/` folder.
 
 ---
 
