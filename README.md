@@ -1,4 +1,4 @@
-# VAPT Tool — Automated Vulnerability Assessment & Penetration Testing
+# VAPT Tool - Automated Vulnerability Assessment & Penetration Testing
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/maverickaayush/Autonomous-AI-Powered-Vulnerability-Assessment-Platform/actions/workflows/ci.yml/badge.svg)](https://github.com/maverickaayush/Autonomous-AI-Powered-Vulnerability-Assessment-Platform/actions/workflows/ci.yml)
@@ -7,27 +7,37 @@ A locally-hosted, air-gapped VAPT tool: point it at an authorized target
 domain and it runs 8 scanning modules in parallel, deterministically scores
 every finding (CVSS v3.1), optionally adds AI-generated plain-English
 descriptions via a local LLM, and produces a PDF report plus a live web
-dashboard. No external API calls — everything runs on your own network.
+dashboard. No external API calls - everything runs on your own network.
 
 ## Features
 
-- **8 parallel scanning modules** (Celery) — network recon
+- **8 parallel scanning modules** (Celery) - network recon
   (ports/services/subdomains/DNS/WHOIS), web app scanning (ZAP + Nikto +
   Katana), SSL/TLS config, HTTP security headers, OWASP Top 10 checks, tech
   fingerprinting/WAF detection, CVE scanning (Nuclei), directory enumeration
   (FFUF).
-- **Deterministic CVSS v3.1 scoring** — severity, CVSS score/vector,
+- **Deterministic CVSS v3.1 scoring** - severity, CVSS score/vector,
   priority, and OWASP category are computed from a rule catalogue, never
   guessed by an LLM. Two runs of the same scan produce byte-identical
   numeric fields.
-- **Confidence verification** — findings are passively re-checked
+- **Confidence verification** - findings are passively re-checked
   (non-destructive re-observation only) and tagged confirmed / probable /
   unverified rather than silently dropped.
-- **Optional local AI analysis** — Ollama + Qwen 2.5 7B turns scored
+- **Optional local AI analysis** - Ollama + Qwen 2.5 7B turns scored
   findings into plain-English descriptions and remediation steps. Fully
   air-gapped; the tool works without it (see Quick start below).
-- **PDF report + web dashboard** — WeasyPrint-rendered report and a Next.js
+- **PDF report + web dashboard** - WeasyPrint-rendered report and a Next.js
   dashboard, both driven by the same scored/described findings.
+
+## Screenshots
+
+| New Scan | Live Scan Status |
+|---|---|
+| ![New Scan form](docs/screenshots/new-scan.png) | ![Scan Status page](docs/screenshots/scan-status.png) |
+
+| Report Dashboard | Scans Discovery |
+|---|---|
+| ![Report dashboard](docs/screenshots/report-dashboard.png) | ![Scans discovery dashboard](docs/screenshots/scans-dashboard.png) |
 
 ## Architecture
 
@@ -41,6 +51,8 @@ domain → [recon | webscan | ssl_tls | headers | owasp | tech_fingerprint | nuc
        → WeasyPrint PDF + PostgreSQL
        → dashboard / PDF download
 ```
+
+<img src="docs/screenshots/architecture.png" alt="Six-layer architecture diagram" width="420">
 
 Six layers: Next.js frontend → FastAPI → Celery/Redis → 8 parallel scanning
 modules → Ollama (Qwen 2.5 7B) → WeasyPrint PDF + dashboard. Full details in
@@ -65,14 +77,14 @@ docker compose ps        # wait for zap to report healthy (~2 min)
 Open **http://localhost:3000**.
 
 **This works with no Ollama install.** CVSS/severity/priority scoring is
-always deterministic (`analysis/cvss_scorer.py`) — without Ollama running,
+always deterministic (`analysis/cvss_scorer.py`) - without Ollama running,
 findings just get a rule-based description template instead of AI-generated
 prose. See "Optional: enable AI-generated descriptions" below to turn that on.
 
-The subfinder config copy step is optional — leaving it as the empty
+The subfinder config copy step is optional - leaving it as the empty
 template is fine, subfinder just runs with free/public sources only. To
 deepen subdomain enumeration, add free API keys (GitHub, Chaos) to that file
-before starting — see the comments inside it.
+before starting - see the comments inside it.
 
 ## Optional: enable AI-generated descriptions
 
@@ -96,7 +108,7 @@ host's GPU directly; containers reach it via `host.docker.internal`.
    sudo systemctl daemon-reload && sudo systemctl restart ollama
    ```
    Note: this makes Ollama reachable from your local network, not just
-   Docker — fine on a personal machine, worth a firewall rule on a shared one.
+   Docker - fine on a personal machine, worth a firewall rule on a shared one.
 4. Verify: `curl http://localhost:11434/api/tags`
 5. Restart the backend/worker so they pick it up: `docker compose restart backend worker`
 
@@ -112,8 +124,8 @@ a Compose profile so they never build/start by default:
 docker compose --profile targets up -d
 ```
 
-Most of these run from prebuilt images and need nothing extra. Two —
-`nodegoat` and `dvwp-wordpress` — build from source that isn't vendored into
+Most of these run from prebuilt images and need nothing extra. Two -
+`nodegoat` and `dvwp-wordpress` - build from source that isn't vendored into
 this repo and must be cloned first:
 
 ```bash
@@ -137,7 +149,7 @@ Env vars, set via `.env` (copied from `.env.example`):
 | `SECRET_KEY` | `change_me_to_a_long_random_string` | Backend secret key |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1` | FastAPI allowed hosts |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Where the backend/worker reach Ollama |
-| `SCAN_TIMEOUT_MULTIPLIER` | `1.5` | Scales every module's tool/Celery timeout — real-world targets are slower than lab targets; drop to `1.0` for lab-tuned timings |
+| `SCAN_TIMEOUT_MULTIPLIER` | `1.5` | Scales every module's tool/Celery timeout - real-world targets are slower than lab targets; drop to `1.0` for lab-tuned timings |
 | `MAX_CONCURRENT_SCANS` | `5` | Concurrent-scan cap (resource-exhaustion guard, also sizes the DB connection pool) |
 
 ## Stop
@@ -154,25 +166,25 @@ docker compose logs -f backend worker
 
 ## Documentation
 
-- [`the project docs`](the project docs) — full architecture, schemas, and the operational
+- [`the project docs`](the project docs) - full architecture, schemas, and the operational
   contract for this project. Read this before making a non-trivial change.
-- [`docs/QUICK_REF.md`](docs/QUICK_REF.md) — run commands, folder
+- [`docs/QUICK_REF.md`](docs/QUICK_REF.md) - run commands, folder
   responsibilities, "where do I make this change."
-- [`docs/scanners.md`](docs/scanners.md) — reasoning behind each scanning
+- [`docs/scanners.md`](docs/scanners.md) - reasoning behind each scanning
   module's timing/flag design.
-- [`docs/ai.md`](docs/ai.md) — Ollama timeout/context tuning, why scoring
+- [`docs/ai.md`](docs/ai.md) - Ollama timeout/context tuning, why scoring
   moved off the LLM entirely.
-- [`docs/docker.md`](docs/docker.md) — Docker deviation notes and build
+- [`docs/docker.md`](docs/docker.md) - Docker deviation notes and build
   gotchas.
-- [`docs/troubleshooting.md`](docs/troubleshooting.md) — how to manually
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) - how to manually
   test any module/stage in isolation.
-- [`docs/roadmap.md`](docs/roadmap.md) — historical build sequence
+- [`docs/roadmap.md`](docs/roadmap.md) - historical build sequence
   (build is complete).
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — dev setup, tests, PR expectations.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) - dev setup, tests, PR expectations.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
 
 ## Authorized use only
 
