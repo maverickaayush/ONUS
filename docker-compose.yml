@@ -104,9 +104,15 @@ services:
   # Reachable from backend/worker via the aliases below (Docker's embedded
   # DNS), and from the host browser via the published ports for manual
   # comparison against the scan report.
+  # Gated behind the "targets" Compose profile (`docker compose --profile
+  # targets up -d`) so a plain `docker compose up -d` on a fresh clone only
+  # builds/starts the 6 core app services - nodegoat/dvwp-wordpress below
+  # build from ./nodegoat-src/./dvwp-src, which don't exist until cloned
+  # separately (see README's "Optional: practice targets" section).
   juice-shop:
     image: bkimminich/juice-shop
     restart: unless-stopped
+    profiles: ["targets"]
     # Juice Shop's default port (3000) isn't 80/443, and the VAPT tool's
     # `domain` field intentionally has no port slot (Section 3 schema treats
     # it as a bare hostname) - every scanning module assumes 80/443. PORT=80
@@ -125,6 +131,7 @@ services:
   dvwa:
     image: vulnerables/web-dvwa
     restart: unless-stopped
+    profiles: ["targets"]
     networks:
       default:
         aliases:
@@ -135,6 +142,7 @@ services:
   bwapp:
     image: raesene/bwapp
     restart: unless-stopped
+    profiles: ["targets"]
     # Self-contained image (Apache+MySQL via supervisord in one container,
     # already listening on :80) - no separate DB sidecar or PORT remap
     # needed, unlike webgoat/juice-shop above.
@@ -148,6 +156,7 @@ services:
   mutillidae:
     image: citizenstig/nowasp
     restart: unless-stopped
+    profiles: ["targets"]
     # Self-contained image (tutum/lamp-based - Apache+MySQL in one container,
     # already listening on :80) - no separate DB sidecar needed, same pattern
     # as bwapp above (practicality_test_plan.md's original note assumed a
@@ -162,6 +171,7 @@ services:
   nodegoat-mongo:
     image: mongo:4.4
     restart: unless-stopped
+    profiles: ["targets"]
     user: mongodb
     networks:
       default:
@@ -173,6 +183,7 @@ services:
       context: ./nodegoat-src
       dockerfile: Dockerfile
     restart: unless-stopped
+    profiles: ["targets"]
     # No prebuilt image exists - the published `vulnerables/web-owasp-
     # nodegoat` Docker Hub repo has zero pushed tags - so this builds from
     # the vendored source in ./nodegoat-src (gitignored, `git clone
@@ -210,6 +221,7 @@ services:
   dvwp-mysql:
     image: mysql:5.7
     restart: unless-stopped
+    profiles: ["targets"]
     environment:
       MYSQL_ROOT_PASSWORD: password
     networks:
@@ -222,6 +234,7 @@ services:
       context: ./dvwp-src
       dockerfile: Dockerfile
     restart: unless-stopped
+    profiles: ["targets"]
     depends_on:
       - dvwp-mysql
     environment:
@@ -244,6 +257,7 @@ services:
     # One-shot: installs WP core + activates DVWP's bundled vulnerable
     # plugins, then exits - same wp-cli pattern as DVWP's own compose file.
     image: wordpress:cli-php7.1
+    profiles: ["targets"]
     depends_on:
       - dvwp-wordpress
     environment:
@@ -259,6 +273,7 @@ services:
   dvwp-waf:
     image: owasp/modsecurity-crs:nginx-alpine
     restart: unless-stopped
+    profiles: ["targets"]
     depends_on:
       - dvwp-wordpress
     # Runs as an unprivileged user by default - can't bind :80/:443 without
@@ -286,6 +301,7 @@ services:
   metasploitable2:
     image: tleemcjr/metasploitable2
     restart: unless-stopped
+    profiles: ["targets"]
     # Deliberately vulnerable multi-service Linux host (vsftpd backdoor, Samba,
     # Telnet, RPC, MySQL, PostgreSQL, VNC, X11, HTTP), not a single web app -
     # unlike the other targets above, intentionally NOT publishing any host
@@ -308,6 +324,7 @@ services:
   webgoat:
     image: webgoat/webgoat
     restart: unless-stopped
+    profiles: ["targets"]
     # WebGoat's Spring Boot app defaults to port 8080 under context path
     # /WebGoat (and can't bind :80 as its non-root `webgoat` user without
     # this capability) - both overridden here so it lands on the bare
