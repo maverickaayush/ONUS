@@ -1,6 +1,6 @@
 # Docker Architecture — Deviations & Build Gotchas
 
-Full reasoning behind the Docker setup summarized in `the project docs` §7. Not
+Full reasoning behind the Docker setup summarized in `ARCHITECTURE.md` §7. Not
 needed every session — read this when touching `docker-compose.yml`,
 `backend/Dockerfile`, or `frontend/Dockerfile`.
 

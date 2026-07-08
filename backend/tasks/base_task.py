@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # module names (scan_orchestrator.py's and routers/scan.py's module_statuses
 # initializers, the GET /api/scan/modules endpoint the frontend's module
 # list and stepper are wired to) now derives from this list instead - see
-# the project docs Section 4.3 for where to register a 9th module.
+# ARCHITECTURE.md Section 4.3 for where to register a 9th module.
 #
 # icon_hint is a semantic category, not a specific icon file - the frontend
 # maps known hints to bespoke icons and falls back to a generic icon for any

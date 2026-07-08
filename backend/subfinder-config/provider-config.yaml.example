@@ -5,7 +5,7 @@
 # keys below. Leaving it as-is (no keys) is fine — recon still works, just
 # with shallower subdomain coverage (free sources only).
 #
-# Free options (see the project docs Step 3 note for the full list):
+# Free options (see ARCHITECTURE.md Step 3 note for the full list):
 #   - Chaos (ProjectDiscovery): completely free — chaos.projectdiscovery.io
 #   - GitHub: free with account — Settings > Developer settings > PAT
 #

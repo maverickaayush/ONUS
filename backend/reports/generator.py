@@ -18,7 +18,7 @@ _CONFIDENCE_TIER_ORDER = {'confirmed': 0, 'probable': 1, 'unverified': 2}
 
 def _confidence_breakdown_line(counts: dict, total: int) -> str:
     """Deterministic confidence-breakdown sentence for the executive summary
-    page - computed here, not by Ollama (the project docs Section 4.6: Ollama never
+    page - computed here, not by Ollama (ARCHITECTURE.md Section 4.6: Ollama never
     produces or overrides numeric/countable claims)."""
     if total == 0:
         return ''

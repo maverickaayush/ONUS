@@ -10,7 +10,7 @@ new exploitation technique, write data, or use a payload the source module
 didn't already send once during the scan. If you're adding a verifier and
 it does anything beyond "GET (or headless-browser-navigate to) the same
 thing again and compare the response", it does not belong in this file -
-the project docs Section 8's non-destructive guardrail applies here exactly as it
+ARCHITECTURE.md Section 8's non-destructive guardrail applies here exactly as it
 does to the scanning modules. verify_reflected_xss (Phase 2) is the one
 verifier that uses a browser instead of raw `requests` - it still only
 re-issues owasp.py's own already-sent payload and observes whether the
@@ -20,7 +20,7 @@ On failure to reproduce (wrong response, timeout, connection error, or
 missing verification_target data), a finding is demoted to
 confidence='unverified' with a verification_note explaining why - it is
 NEVER dropped from the findings list. Silently dropping a finding here would
-reintroduce the exact silent-data-loss bug class the project docs Section 4.3 warns
+reintroduce the exact silent-data-loss bug class ARCHITECTURE.md Section 4.3 warns
 about for the aggregator, just one stage later.
 """
 import logging

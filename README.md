@@ -55,7 +55,9 @@ domain → [recon | webscan | ssl_tls | headers | owasp | tech_fingerprint | nuc
 <img src="docs/screenshots/architecture.png" alt="Six-layer architecture diagram" width="420">
 
 Six layers: Next.js frontend → FastAPI → Celery/Redis → 8 parallel scanning
-modules → Ollama (Qwen 2.5 7B) → WeasyPrint PDF + dashboard. Full details in [`docs/QUICK_REF.md`](docs/QUICK_REF.md).
+modules → Ollama (Qwen 2.5 7B) → WeasyPrint PDF + dashboard. Full details in
+[`ARCHITECTURE.md`](ARCHITECTURE.md) (schemas, contracts, guardrails) and
+[`docs/QUICK_REF.md`](docs/QUICK_REF.md) (quick lookup for common changes).
 
 ## Prerequisites
 
@@ -204,6 +206,9 @@ used during development.
 
 ## Documentation
 
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) - full architecture, schemas, and
+  the contracts a change should never break. Read this before making a
+  non-trivial change.
 - [`docs/QUICK_REF.md`](docs/QUICK_REF.md) - run commands, folder
   responsibilities, "where do I make this change."
 - [`docs/scanners.md`](docs/scanners.md) - reasoning behind each scanning

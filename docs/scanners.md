@@ -1,6 +1,6 @@
 # Scanner Module Deep Notes
 
-Full reasoning behind the timing/flag decisions summarized in `the project docs` §4.3.
+Full reasoning behind the timing/flag decisions summarized in `ARCHITECTURE.md` §4.3.
 Not needed every session — read this when touching `recon.py` or `webscan.py`
 timing/flags specifically.
 

@@ -1,7 +1,7 @@
 # Ollama AI Layer — Timing & Scoring-Split Notes
 
 Full reasoning behind the timeout values and the deterministic/AI split
-summarized in `the project docs` §4.5/§4.6. Not needed every session — read this
+summarized in `ARCHITECTURE.md` §4.5/§4.6. Not needed every session — read this
 when touching `ollama_client.py`, `analysis/cvss_scorer.py`, or
 `scan_orchestrator.py`'s `aggregate_and_analyse` timing.
 
@@ -15,7 +15,7 @@ A real scan against a WAF-fronted target produced a 1168-page report with
    HTTP 403 with a body size within a 17-byte range) — fixed by
    enumeration.py's baseline calibration and the aggregator's
    response-fingerprint collapse (see `docs/scanners.md` and
-   `the project docs` §4.4).
+   `ARCHITECTURE.md` §4.4).
 2. **Ollama never actually ran.** 4658 findings serialized to JSON blew
    past `num_ctx=8192` before the request even reached the model, so
    every scan silently landed on the rule-based fallback - which
@@ -132,7 +132,7 @@ Celery limit bump; 0.65s is negligible against 60s at n=1.
 instance** - lighter than the "150-300MB per headless Chromium" estimate
 often quoted for GUI/non-headless Chrome. Worst-case concurrent Chromium
 count is bounded by the existing "max 3 concurrent scans" system-wide
-guardrail (the project docs §8), not Celery's raw `worker_concurrency=5` - each
+guardrail (ARCHITECTURE.md §8), not Celery's raw `worker_concurrency=5` - each
 concurrent scan dispatches at most one XSS check, so 3 concurrent scans
 means at most 3 concurrent Chromium instances (~290MB), not 5.
 

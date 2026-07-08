@@ -25,14 +25,14 @@ crash.
 
 ## Any scanning module, in isolation
 Bypass Celery entirely and call the module function directly against an
-approved test target (`testphp.vulnweb.com` — see the project docs §9):
+approved test target (`testphp.vulnweb.com` — see ARCHITECTURE.md §9):
 ```python
 from tasks.recon import run_recon
 results = run_recon("scan_id_test_123", "testphp.vulnweb.com")
 print(results)
 ```
 Check the output is a list of dicts, each matching the normalized schema
-(the project docs §4.3) — no missing keys, no `None` where a string is expected,
+(ARCHITECTURE.md §4.3) — no missing keys, no `None` where a string is expected,
 `found_by` present on every finding.
 
 For ZAP specifically: curl `http://localhost:8090/JSON/core/view/version/`
@@ -63,7 +63,7 @@ print(findings[0]['confidence'], findings[0].get('verification_note'))
 ```
 Expect `confidence` to end up `confirmed` or `unverified` (never for the
 finding to disappear from the list — that's the one behavior that must
-never regress, see the project docs §4.4b). Set `config.ENABLE_VERIFICATION=False`
+never regress, see ARCHITECTURE.md §4.4b). Set `config.ENABLE_VERIFICATION=False`
 (or pass `enabled=False`) and confirm it's a full no-op — `requests.get`
 never called, `confidence` stays at its module-assigned baseline.
 
@@ -80,7 +80,7 @@ crashed, OOM) must demote to `unverified` with a note starting
 
 ## Operator decision flow (pause / retry / continue / cancel)
 Force a pause without a real failing module — hand-build the chord's input
-(the project docs §4.3b):
+(ARCHITECTURE.md §4.3b):
 ```python
 from tasks.scan_orchestrator import aggregate_and_analyse
 results = [{"module": "recon", "status": "failed", "error": "nmap timed out",

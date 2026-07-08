@@ -53,7 +53,7 @@ _WHOIS_TIMEOUT = scaled_timeout(20)
 # CapEff`, decoded the bitmask): CAP_NET_RAW **is** present - Docker grants
 # it by default unless explicitly dropped, which this deployment doesn't
 # do, so naabu's SYN scan actually succeeds here and the fallback is the
-# rare case the project docs originally assumed, not the routine one. The timeout
+# rare case ARCHITECTURE.md originally assumed, not the routine one. The timeout
 # headroom above is still worth keeping (a real deployment could easily
 # run with `cap_drop: NET_RAW` or a hardened base image where this doesn't
 # hold), but don't repeat the "always fires here" claim without re-checking
