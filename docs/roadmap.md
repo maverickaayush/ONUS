@@ -1,10 +1,11 @@
-# Build Roadmap (historical — all 9 steps complete)
+# Build Roadmap (historical — initial 9-step build complete, project still evolving)
 
-This project was built in 9 sequential steps over a 15-day sprint. All
-steps are done and verified end-to-end (real scan + real Ollama analysis +
-`docker-compose up --build`). Kept for historical reference only — not
-needed for ongoing implementation work. Current architecture/contracts live
-in `the project docs`.
+This project's initial build ran 9 sequential steps over a 15-day sprint,
+each done and verified end-to-end (real scan + real Ollama analysis +
+`docker-compose up --build`). That initial sequence is complete, but the
+project keeps evolving past it - this doc is kept for historical reference
+only, not as a claim that development has stopped. Current architecture/
+contracts live in [`docs/QUICK_REF.md`](QUICK_REF.md).
 
 ## 15-Day Timeline (reference pacing, not enforced)
 

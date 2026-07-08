@@ -16,3 +16,33 @@ jobs:
 
       - name: Build core services
         run: docker compose build backend worker frontend
+
+  backend-tests:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-dev.txt
+
+      - name: Run backend test suite
+        working-directory: backend
+        env:
+          REDIS_URL: redis://localhost:6379/0
+        run: pytest tests

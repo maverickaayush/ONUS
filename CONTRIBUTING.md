@@ -22,6 +22,15 @@ pip install -r backend/requirements-dev.txt
 pytest backend/tests
 ```
 
+Some tests need a local Redis instance reachable at `REDIS_URL` (default
+`redis://localhost:6379/0`) - `redis-cli ping` should return `PONG` before
+running the suite. CI runs a Redis service container automatically.
+
+## Known gaps
+
+- No frontend test suite yet (backend has 400+ tests, frontend has none) -
+  contributions adding Vitest/RTL coverage for the dashboard are welcome.
+
 ## Before you touch a scanning module
 
 Read [`docs/QUICK_REF.md`](docs/QUICK_REF.md) first for the architecture overview and

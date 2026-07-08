@@ -66,6 +66,9 @@ modules → Ollama (Qwen 2.5 7B) → WeasyPrint PDF + dashboard. Full details in
 
 ## Quick start
 
+> Needs ~6GB free disk for the first `docker compose up` (Nuclei templates +
+> headless Chromium add ~1.5GB on top of the base image) - see Prerequisites above.
+
 ```bash
 cp .env.example .env
 cp backend/subfinder-config/provider-config.yaml.example backend/subfinder-config/provider-config.yaml
@@ -128,6 +131,11 @@ a Compose profile so they never build/start by default:
 docker compose --profile targets up -d
 ```
 
+**Warning: these are intentionally-vulnerable, some genuinely backdoored,
+services** (Metasploitable2 ships a live vsftpd backdoor). Only run the
+`targets` profile on a machine that isn't reachable from the internet or a
+shared network - never on a public cloud instance or an exposed host.
+
 Most of these run from prebuilt images and need nothing extra. Two -
 `nodegoat` and `dvwp-wordpress` - build from source that isn't vendored into
 this repo and must be cloned first:
@@ -155,6 +163,15 @@ Env vars, set via `.env` (copied from `.env.example`):
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Where the backend/worker reach Ollama |
 | `SCAN_TIMEOUT_MULTIPLIER` | `1.5` | Scales every module's tool/Celery timeout - real-world targets are slower than lab targets; drop to `1.0` for lab-tuned timings |
 | `MAX_CONCURRENT_SCANS` | `5` | Concurrent-scan cap (resource-exhaustion guard, also sizes the DB connection pool) |
+
+**The `POSTGRES_PASSWORD`/`SECRET_KEY` defaults above are demo-only** -
+they're fine for a local/personal instance but change both before deploying
+anywhere reachable by anyone else.
+
+## API docs
+
+FastAPI generates interactive Swagger docs for free - once the backend is
+running, open **http://localhost:8000/docs**.
 
 ## Stop
 
