@@ -7,10 +7,48 @@ import { VaptBackground } from "@/components/vapt/background"
 import { submitScan, getScanModules, ApiError } from "@/lib/api"
 import type { ScanModuleInfo, AuthConfig } from "@/lib/api"
 
+const DOMAIN_RE = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/
+
+// Mirrors schemas.py's ScanRequest.validate_domain(): a public IPv4 literal
+// (e.g. 8.8.8.8) is a valid scan target on the backend, but the domain-shape
+// regex above alone rejects it (no dot+TLD). Kept in sync with the backend's
+// private/loopback/link-local rejection so this client-side gate doesn't
+// reject something the backend would accept, or accept something it won't.
+function ipv4Parts(value: string): number[] | null {
+  const m = value.trim().match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (!m) return null
+  const parts = m.slice(1).map(Number)
+  return parts.every((p) => p >= 0 && p <= 255) ? parts : null
+}
+
+function isPrivateOrReservedIPv4([a, b]: number[]): boolean {
+  if (a === 10) return true                       // 10.0.0.0/8
+  if (a === 172 && b >= 16 && b <= 31) return true // 172.16.0.0/12
+  if (a === 192 && b === 168) return true          // 192.168.0.0/16
+  if (a === 127) return true                       // loopback
+  if (a === 169 && b === 254) return true          // link-local
+  return false
+}
+
 function isValidDomain(value: string) {
-  return /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/.test(
-    value.trim(),
-  )
+  const ip = ipv4Parts(value)
+  if (ip) return !isPrivateOrReservedIPv4(ip)
+  return DOMAIN_RE.test(value.trim())
+}
+
+// Specific reason a value fails validation, mirroring the backend's own
+// rejection messages (schemas.py) instead of a single generic message that
+// would otherwise make "that's a private IP, not a typo" look like a typo.
+function domainErrorMessage(value: string): string {
+  const v = value.trim().toLowerCase()
+  if (v === "localhost" || v.endsWith(".localhost")) {
+    return "Scanning localhost is not permitted."
+  }
+  const ip = ipv4Parts(v)
+  if (ip && isPrivateOrReservedIPv4(ip)) {
+    return "Scanning private/internal IP addresses is not permitted."
+  }
+  return "Please enter a valid domain name (e.g. example.com or sub.example.org)"
 }
 
 // Keyed by the backend's icon_hint (a semantic category, not a specific
@@ -275,7 +313,7 @@ export function HomeForm() {
               </div>
               {touched && domain && !valid && (
                 <p id="domain-error" className="mt-2 text-xs text-red-400" role="alert">
-                  Please enter a valid domain name (e.g. example.com or sub.example.org)
+                  {domainErrorMessage(domain)}
                 </p>
               )}
             </div>

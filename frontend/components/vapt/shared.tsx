@@ -97,6 +97,29 @@ export function ModuleChip({ module }: { module: string }) {
   )
 }
 
+// ─── ConfidenceTag ───────────────────────────────────────────────────────────
+// Mirrors the PDF report's own convention (reports/generator.py): a green
+// "Verified" tag on confirmed findings, a red "Requires Manual Review" tag
+// on unverified ones - 'probable' (the default, not yet re-checked) gets no
+// tag at all, same as the PDF.
+export function ConfidenceTag({ confidence }: { confidence?: string | null }) {
+  if (confidence === "confirmed") {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 whitespace-nowrap">
+        Verified
+      </span>
+    )
+  }
+  if (confidence === "unverified") {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-500/10 text-red-300 border border-red-500/30 whitespace-nowrap">
+        Requires Manual Review
+      </span>
+    )
+  }
+  return null
+}
+
 // ─── useCountUp ──────────────────────────────────────────────────────────────
 export function useCountUp(target: number, duration = 800) {
   const [value, setValue] = useState(0)
