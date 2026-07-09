@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator, field_serializer
+from pydantic import BaseModel, Field, field_validator, field_serializer
 from typing import Optional, Dict, List, Literal
 from datetime import datetime, timezone
 from uuid import UUID
@@ -171,6 +171,29 @@ class FindingSchema(BaseModel):
     remediation: str
     priority: int
     module: str
+    # Confidence-verification stage (analysis/verifier.py) already computes
+    # these on every finding dict stored in scans.ai_analysis - this model
+    # just stopped silently dropping them at the API boundary. No new
+    # computation, no behavior change to the verification pipeline itself.
+    # New as of this field's addition - see CHANGELOG.md.
+    confidence: Optional[Literal['confirmed', 'probable', 'unverified']] = Field(
+        default=None,
+        description=(
+            "Result of passive re-observation verification (see ARCHITECTURE.md's "
+            "Confidence Verification section). 'confirmed': re-verified proof, or a "
+            "module-level definitive signal. 'probable': default - not yet re-checked, "
+            "either not verifiable or verification hasn't run. 'unverified': a "
+            "verifier ran and failed to reproduce the finding (never dropped, only "
+            "demoted - see verification_note)."
+        ),
+    )
+    verification_note: Optional[str] = Field(
+        default=None,
+        description=(
+            "Human-readable explanation from the verifier, present only on findings "
+            "a verifier actually touched (confirmed or unverified, not probable)."
+        ),
+    )
 
 
 class FindingsResponse(BaseModel):

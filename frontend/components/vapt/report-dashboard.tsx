@@ -14,6 +14,7 @@ import {
 import {
   SeverityBadge,
   ModuleChip,
+  ConfidenceTag,
   RiskScoreRing,
   SEVERITY_CONFIG,
   SummaryCard,
@@ -32,6 +33,8 @@ export interface Finding {
   priority: number
   description: string
   evidence: string
+  confidence?: string | null
+  verificationNote?: string | null
   cve?: string
   remediation: string[]
 }
@@ -98,7 +101,10 @@ function FindingRow({
         aria-expanded={open}
       >
         <td className="px-4 py-3 whitespace-nowrap">
-          <SeverityBadge severity={finding.severity} size="xs" />
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <SeverityBadge severity={finding.severity} size="xs" />
+            <ConfidenceTag confidence={finding.confidence} />
+          </div>
         </td>
         <td className="px-4 py-3">
           <span className="text-sm font-medium text-slate-200 flex items-center gap-1.5">
@@ -177,6 +183,22 @@ function FindingRow({
                     {finding.evidence}
                   </pre>
                 </div>
+
+                {/* Verification - only rendered when the confidence-verification
+                    stage actually left a note on this finding (confirmed or
+                    unverified; 'probable' findings were never re-checked and
+                    carry no note, matching the PDF report's convention). */}
+                {finding.verificationNote && (
+                  <div className="px-5 py-4 border-b border-white/8">
+                    <h4 className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-2 flex items-center gap-2">
+                      Verification
+                      <ConfidenceTag confidence={finding.confidence} />
+                    </h4>
+                    <p className="text-sm text-slate-300 leading-relaxed">
+                      {finding.verificationNote}
+                    </p>
+                  </div>
+                )}
 
                 {/* CVE / CWE reference */}
                 {finding.cve && (
@@ -428,6 +450,8 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
       priority: f.priority ?? 5,
       description: f.description ?? f.title,
       evidence: f.evidence,
+      confidence: f.confidence ?? null,
+      verificationNote: f.verification_note ?? null,
       cve: f.cve_reference ?? undefined,
       remediation: Array.isArray(f.remediation)
         ? (f.remediation as string[])

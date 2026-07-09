@@ -46,6 +46,8 @@ export interface Finding {
   module: string
   found_by: string[]
   target: string
+  confidence?: string | null
+  verification_note?: string | null
 }
 
 export interface FindingsResponse {
