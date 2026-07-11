@@ -167,19 +167,23 @@ def _check_server_info(server: str, powered_by: str, domain: str) -> List[dict]:
     version_re = re.compile(r'[/\s]\d[\d.]+')
     if server:
         if version_re.search(server):
-            findings.append(normalize_finding(
+            finding = normalize_finding(
                 module=MODULE, tool='headers', type_='server_version_exposed',
                 title=f'Server header exposes version: {server}',
                 evidence=f'Server: {server}',
                 severity='Low', target=domain,
-            ))
+            )
+            finding['server_value'] = server
+            findings.append(finding)
     if powered_by:
-        findings.append(normalize_finding(
+        finding = normalize_finding(
             module=MODULE, tool='headers', type_='x_powered_by_exposed',
             title=f'X-Powered-By header present: {powered_by}',
             evidence=f'X-Powered-By: {powered_by}',
             severity='Low', target=domain,
-        ))
+        )
+        finding['powered_by_value'] = powered_by
+        findings.append(finding)
     return findings
 
 
