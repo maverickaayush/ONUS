@@ -186,14 +186,16 @@ def _run_wafw00f(scan_id: str, target: str, domain: str) -> List[dict]:
 
         if detected:
             waf_name = detected[0].get('firewall', 'Unknown WAF')
-            return [normalize_finding(
+            finding = normalize_finding(
                 module=MODULE, tool='wafw00f', type_='waf_detected',
                 title=f'WAF detected: {waf_name}',
                 evidence=f'Target is protected by {waf_name}. Active scan results '
                          f'from webscan and owasp modules may be incomplete due to '
                          f'WAF filtering.',
                 severity='Medium', target=domain,
-            )]
+            )
+            finding['waf_name'] = waf_name
+            return [finding]
 
         return [normalize_finding(
             module=MODULE, tool='wafw00f', type_='no_waf_detected',

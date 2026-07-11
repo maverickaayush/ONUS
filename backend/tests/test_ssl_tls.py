@@ -92,6 +92,35 @@ class TestSslTlsSchema:
             assert not missing
             assert f['found_by'] == [MODULE]
 
+    def test_scantime_always_informational_regardless_of_reported_severity(self):
+        """
+        Real bug found live against clinkl.in: testssl.sh reports its own
+        "did my scan finish" signal (id='scanTime') with a graded severity
+        like WARN, which mapped to "Low" - a real vulnerability-sounding
+        severity for what's actually scan-tooling metadata, not something
+        wrong with the target. Must always come out Informational.
+        """
+        from tasks.ssl_tls import _parse_testssl_json
+
+        sample = json.dumps([
+            {'id': 'scanTime', 'severity': 'WARN', 'finding': 'Scan interrupted'},
+            {'id': 'TLS1', 'severity': 'HIGH', 'finding': 'TLS 1.0 is enabled'},
+        ])
+        path = f'/tmp/test_testssl_scantime_{TEST_SCAN_ID}.json'
+        with open(path, 'w') as f:
+            f.write(sample)
+        try:
+            findings = _parse_testssl_json(path, TEST_DOMAIN, TEST_SCAN_ID)
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+        scan_time = next(f for f in findings if f['type'] == 'testssl_scanTime')
+        assert scan_time['severity'] == 'Informational'
+        # The real vulnerability alongside it must be unaffected.
+        tls1 = next(f for f in findings if f['type'] == 'testssl_TLS1')
+        assert tls1['severity'] == 'High'
+
     def test_sslscan_xml_parsing_tls_protocols(self):
         """sslscan XML parser must flag SSLv3, TLS 1.0, TLS 1.1 correctly."""
         from tasks.ssl_tls import _parse_sslscan_xml

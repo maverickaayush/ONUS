@@ -322,11 +322,22 @@ Return valid JSON only, no markdown, no explanation outside the JSON:
 }
 ```
 
-Only the top 50 findings by priority are sent to Ollama. Invalid JSON gets
-up to 2 retries; timeout/connection errors fail straight to a rule-based
-fallback (placeholder descriptions + generic remediation), flagged with
-`ai_unavailable: True` so fallback output is never mistaken for real
-analysis.
+Finding types the deterministic scorer already recognizes (~80 types, the
+`_TYPE_REMEDIATION` catalogue) get a fixed, hand-written description and
+remediation and are excluded from the Ollama batch entirely - guaranteed
+concrete text every time, not a maybe depending on priority ranking. Of the
+remaining findings, only the top 50 by priority are sent to Ollama. Invalid
+JSON gets up to 2 retries; timeout/connection errors, and any exhausted
+retry, fail straight to a deterministic per-category fallback (the same one
+a beyond-cutoff finding already gets on the happy path - no hardcoded
+placeholder text), flagged with `ai_unavailable: True` so fallback output is
+never mistaken for real analysis.
+
+A single Ollama request batching up to 50 findings can occasionally exhaust
+the fixed `num_predict: 4096` output-token budget before finishing valid
+JSON for the last few items - not a context-window problem (input stays
+well under `num_ctx: 8192`), just a fixed output ceiling. Handled by the
+existing retry/fallback with no data loss.
 
 ### Report Generation (`backend/reports/generator.py`)
 
@@ -377,11 +388,13 @@ modal), Scans discovery dashboard (tracking many scans at once).
       "evidence": "TLS 1.0 accepted on port 443",
       "description": "The server accepts an outdated encryption protocol that no longer protects data in transit.",
       "remediation": "Disable TLS 1.0 and 1.1 in server config.",
-      "priority": 2, "module": "ssl_tls"
+      "priority": 2, "module": "ssl_tls",
+      "confidence": "probable", "verification_note": null
     }
   ]
 }
 ```
+`confidence` (`"confirmed"|"probable"|"unverified"`) and `verification_note` (string, only non-null on findings a verifier actually re-checked) are additive/optional - see the "Confidence Verification" section above for full semantics.
 
 ---
 

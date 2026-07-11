@@ -27,26 +27,121 @@ function isPrivateOrReservedIPv4([a, b]: number[]): boolean {
   if (a === 192 && b === 168) return true          // 192.168.0.0/16
   if (a === 127) return true                       // loopback
   if (a === 169 && b === 254) return true          // link-local
+  // TEST-NET-1/2/3 (RFC 5737) - documentation-only ranges the backend's
+  // ipaddress.is_private also rejects. Found live: this gate previously
+  // accepted these while the backend rejected them, so a user would pass
+  // client-side validation and only find out from a generic server error.
+  if (a === 192 && b === 0) return true            // 192.0.2.0/24
+  if (a === 198 && b === 51) return true           // 198.51.100.0/24
+  if (a === 203 && b === 0) return true            // 203.0.113.0/24
   return false
 }
 
+function isLocalhost(value: string): boolean {
+  const v = value.trim().toLowerCase()
+  return v === "localhost" || v.endsWith(".localhost")
+}
+
+// IPv6 syntax validation is delegated to the platform's own URL parser
+// (via a bracketed host) rather than a hand-rolled regex - IPv6 has too
+// many valid compressed/expanded/mixed-IPv4 forms to get right by hand.
+// Both browsers and Node (SSR) implement the same WHATWG URL Standard
+// canonical (RFC 5952) serialization, so this is consistent either way -
+// verified directly: case is lowercased, expanded forms are compressed to
+// their shortest canonical form, and malformed input throws.
+function ipv6Canonical(value: string): string | null {
+  const v = value.trim()
+  if (!v.includes(":")) return null // fast path - not IPv6-shaped
+  try {
+    return new URL(`http://[${v}]`).hostname.slice(1, -1)
+  } catch {
+    return null
+  }
+}
+
+// An IPv4-mapped IPv6 address (::ffff:a.b.c.d) inherits the private/public
+// status of the embedded IPv4 address - verified directly against the
+// backend: it rejects ::ffff:192.168.1.1 but accepts ::ffff:8.8.8.8. The
+// canonical form always renders the mapped address as two hex groups
+// (e.g. "::ffff:c0a8:101" for 192.168.1.1), never dotted-decimal.
+function ipv4MappedToOctets(canonical: string): number[] | null {
+  const m = canonical.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i)
+  if (!m) return null
+  const hi = parseInt(m[1], 16)
+  const lo = parseInt(m[2], 16)
+  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]
+}
+
+// Covers the IPv6 special-purpose ranges most relevant to a scan target
+// (loopback, unspecified, link-local, unique-local/ULA, and the
+// documentation range - an easy trap since 2001:db8::/32 examples are
+// everywhere). Not a full replica of Python's ipaddress.is_private
+// special-purpose registry (e.g. Teredo, benchmarking ranges aren't
+// covered) - same scope decision as the IPv4 side, which covers RFC 1918 +
+// loopback + link-local + TEST-NET, not the entire IANA registry.
+function isPrivateOrReservedIPv6(canonical: string): boolean {
+  if (canonical === "::1" || canonical === "::") return true // loopback / unspecified
+  if (/^fe[89ab]/i.test(canonical)) return true              // fe80::/10 link-local
+  if (/^f[cd]/i.test(canonical)) return true                 // fc00::/7 unique-local (ULA)
+  if (/^2001:d?b8:/i.test(canonical)) return true             // 2001:db8::/32 documentation
+  return false
+}
+
+// Mirrors schemas.py's exact pre-validation stripping ("the frontend
+// submits a URL"): scheme, path, and a trailing :port are all stripped
+// before any other check runs. `count(":") === 1` deliberately excludes
+// IPv6 literals (which have multiple colons) from the port-strip - same
+// guard the backend uses, so "::1" is untouched but "example.com:8080"
+// becomes "example.com". Uses indexOf/slice rather than JS's
+// String.split(sep, limit) - unlike Python's str.split(sep, maxsplit),
+// JS's limit truncates the *result array* after splitting on every
+// occurrence, not the number of splits performed, so it doesn't reproduce
+// Python's "split once from the left" semantics.
+function normalizeHost(value: string): string {
+  let host = value.trim().toLowerCase()
+  const schemeIdx = host.indexOf("://")
+  if (schemeIdx !== -1) host = host.slice(schemeIdx + 3)
+  const slashIdx = host.indexOf("/")
+  if (slashIdx !== -1) host = host.slice(0, slashIdx)
+  if ((host.match(/:/g) ?? []).length === 1) {
+    host = host.slice(0, host.indexOf(":"))
+  }
+  return host
+}
+
 function isValidDomain(value: string) {
-  const ip = ipv4Parts(value)
+  const host = normalizeHost(value)
+  if (isLocalhost(host)) return false
+  const ip = ipv4Parts(host)
   if (ip) return !isPrivateOrReservedIPv4(ip)
-  return DOMAIN_RE.test(value.trim())
+  const ipv6 = ipv6Canonical(host)
+  if (ipv6) {
+    const mapped = ipv4MappedToOctets(ipv6)
+    if (mapped) return !isPrivateOrReservedIPv4(mapped)
+    return !isPrivateOrReservedIPv6(ipv6)
+  }
+  return DOMAIN_RE.test(host)
 }
 
 // Specific reason a value fails validation, mirroring the backend's own
 // rejection messages (schemas.py) instead of a single generic message that
 // would otherwise make "that's a private IP, not a typo" look like a typo.
 function domainErrorMessage(value: string): string {
-  const v = value.trim().toLowerCase()
-  if (v === "localhost" || v.endsWith(".localhost")) {
+  const host = normalizeHost(value)
+  if (isLocalhost(host)) {
     return "Scanning localhost is not permitted."
   }
-  const ip = ipv4Parts(v)
+  const ip = ipv4Parts(host)
   if (ip && isPrivateOrReservedIPv4(ip)) {
     return "Scanning private/internal IP addresses is not permitted."
+  }
+  const ipv6 = ipv6Canonical(host)
+  if (ipv6) {
+    const mapped = ipv4MappedToOctets(ipv6)
+    const isPrivate = mapped ? isPrivateOrReservedIPv4(mapped) : isPrivateOrReservedIPv6(ipv6)
+    if (isPrivate) {
+      return "Scanning private/internal IP addresses is not permitted."
+    }
   }
   return "Please enter a valid domain name (e.g. example.com or sub.example.org)"
 }

@@ -177,12 +177,23 @@ def _parse_testssl_json(path: str, domain: str, scan_id: str) -> List[dict]:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            raw_sev = str(item.get('severity', '')).upper().strip()
-            if raw_sev in _TESTSSL_SKIP or raw_sev not in _TESTSSL_SEVERITY_MAP:
-                continue
-            severity = _TESTSSL_SEVERITY_MAP[raw_sev]
-            finding_text = item.get('finding', '') or item.get('id', '')
             item_id = item.get('id', 'ssl_finding')
+            if item_id == 'scanTime':
+                # testssl.sh's own "did my scan finish" signal, not a graded
+                # vulnerability about the target - real bug found live
+                # against clinkl.in: testssl.sh reported this as WARN (->
+                # "Low" via the map below), and since it was the only
+                # finding in that scan without a fixed remediation template,
+                # it became the sole input to the AI executive summary,
+                # which then described the whole 38-finding scan as "a
+                # single low-severity issue" about an "interruption".
+                severity = 'Informational'
+            else:
+                raw_sev = str(item.get('severity', '')).upper().strip()
+                if raw_sev in _TESTSSL_SKIP or raw_sev not in _TESTSSL_SEVERITY_MAP:
+                    continue
+                severity = _TESTSSL_SEVERITY_MAP[raw_sev]
+            finding_text = item.get('finding', '') or item_id
             findings.append(normalize_finding(
                 module=MODULE, tool='testssl',
                 type_=f'testssl_{item_id}',
