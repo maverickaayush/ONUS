@@ -82,6 +82,49 @@ class TestOwaspSchema:
 
         assert findings == []
 
+    def test_strip_query_removes_existing_query_string(self):
+        from tasks.owasp import _strip_query
+        assert _strip_query(f'https://{TEST_DOMAIN}/search?q=test') == f'https://{TEST_DOMAIN}/search'
+        assert _strip_query(f'https://{TEST_DOMAIN}/search') == f'https://{TEST_DOMAIN}/search'
+
+    def test_sqli_detects_injection_when_target_already_has_query_string(self):
+        """
+        Real bug found live (reproduced against a local mock server while
+        verifying the crawl-depth fix, docs/test_findings.md-style): calling
+        requests.get(url, params=X) when `url` already has its own query
+        string APPENDS to it rather than replacing it - a request for
+        "target?q=test" with params={'q': injected} actually sent both
+        "q=test" AND "q=<injected>", so whichever one the target server
+        preferred (often the first) could silently win, defeating the
+        injection. Invisible before the crawl-depth fix, since owasp.py
+        used to only ever re-test the bare domain root (no query string of
+        its own) - now that real discovered pages carry their own query
+        strings, this must actually work.
+        """
+        from tasks.owasp import test_sqli
+
+        seen_urls = []
+
+        def mock_get(url, **kwargs):
+            seen_urls.append(url)
+            params = kwargs.get('params', {})
+            if "' OR '1'='1" in str(params.values()):
+                return _mock_resp("You have an error in your SQL syntax near")
+            return _mock_resp("normal response " * 10)
+
+        session = _mock_session(get_side_effect=mock_get)
+        target = f'https://{TEST_DOMAIN}/search?q=test'
+        findings = test_sqli(session, target, TEST_DOMAIN)
+
+        assert findings, "injection must be detected even when target already has a query string"
+        assert findings[0]['type'] == 'sqli_error_based'
+        # every request must go out against a query-free base URL, with the
+        # full (original + injected) param set supplied via params= instead -
+        # otherwise the injected param just gets appended as a duplicate key
+        # alongside the original, untouched value.
+        assert all('?' not in u for u in seen_urls), \
+            f"requests must use a query-free base URL, got {seen_urls}"
+
     def test_xss_reflected_detected(self):
         """XSS payload reflected verbatim must produce a High finding."""
         from tasks.owasp import test_xss
@@ -383,6 +426,392 @@ class TestOwaspCrawl:
         discovered = _discover_urls(session, target, TEST_DOMAIN)
 
         assert discovered == [target]
+
+    def test_follows_meta_refresh_when_it_is_the_only_navigation(self):
+        """Real bug found live against oa.iitk.ac.in: a landing page whose
+        only navigation is a meta-refresh into the real app (no <a>/<form>
+        at all) used to leave `discovered` at just the target, silently
+        giving the whole module zero real coverage while still reporting
+        status: success."""
+        from tasks.owasp import _discover_urls
+
+        target = f'https://{TEST_DOMAIN}/'
+        landing_html = f'''
+        <html><head>
+            <meta http-equiv="refresh" content="0;url=https://{TEST_DOMAIN}/Oa/">
+        </head><body>Redirecting...</body></html>
+        '''
+        app_html = '<html><body><a href="/Oa/dashboard">Dashboard</a></body></html>'
+
+        def mock_get(url, **kwargs):
+            if url.rstrip('/') == target.rstrip('/'):
+                return _mock_resp(landing_html, headers={'Content-Type': 'text/html'})
+            if '/Oa/dashboard' in url:
+                return _mock_resp('<html>ok</html>', headers={'Content-Type': 'text/html'})
+            if url.rstrip('/').endswith('/Oa'):
+                return _mock_resp(app_html, headers={'Content-Type': 'text/html'})
+            return _mock_resp(status=404)
+
+        session = _mock_session(get_side_effect=mock_get)
+        discovered = _discover_urls(session, target, TEST_DOMAIN)
+
+        assert len(discovered) > 1, \
+            "meta-refresh target must be followed, not left undiscovered"
+        assert any('/Oa' in u for u in discovered)
+        assert any('dashboard' in u for u in discovered)
+
+    def test_meta_refresh_content_format_variants(self):
+        """Real-world meta-refresh content values vary: quoted/unquoted URL,
+        spacing, and case of the 'url=' key - all must parse."""
+        from tasks.owasp import _discover_urls
+
+        target = f'https://{TEST_DOMAIN}/'
+        for content in (
+            "0;url=/dashboard",
+            "5; URL='/dashboard'",
+            "0 ; url = /dashboard",
+        ):
+            html = f'<html><head><meta http-equiv="refresh" content="{content}"></head></html>'
+
+            def mock_get(url, **kwargs):
+                if url.rstrip('/') == target.rstrip('/'):
+                    return _mock_resp(html, headers={'Content-Type': 'text/html'})
+                return _mock_resp('<html>ok</html>', headers={'Content-Type': 'text/html'})
+
+            session = _mock_session(get_side_effect=mock_get)
+            discovered = _discover_urls(session, target, TEST_DOMAIN)
+            assert any('dashboard' in u for u in discovered), \
+                f"failed to parse meta-refresh content={content!r}"
+
+    def test_off_origin_meta_refresh_is_not_followed(self):
+        """Same same-origin guard that already applies to <a href> must also
+        apply to a meta-refresh target - a page must never be able to send
+        this crawler to an unauthorized third-party host."""
+        from tasks.owasp import _discover_urls
+
+        target = f'https://{TEST_DOMAIN}/'
+        html = '''
+        <html><head>
+            <meta http-equiv="refresh" content="0;url=https://evil.example.com/">
+        </head></html>
+        '''
+        session = _mock_session(get_return_value=_mock_resp(
+            html, headers={'Content-Type': 'text/html'}))
+        discovered = _discover_urls(session, target, TEST_DOMAIN)
+
+        assert discovered == [target]
+        assert not any('evil.example.com' in u for u in discovered)
+
+    def test_meta_refresh_to_logout_link_is_not_followed(self):
+        """Same session-destroying-link guard that already applies to
+        <a href> must also apply to a meta-refresh target."""
+        from tasks.owasp import _discover_urls
+
+        target = f'https://{TEST_DOMAIN}/'
+        html = f'''
+        <html><head>
+            <meta http-equiv="refresh" content="0;url=https://{TEST_DOMAIN}/logout">
+        </head></html>
+        '''
+
+        def mock_get(url, **kwargs):
+            if '/logout' in url:
+                pytest.fail(f"crawl must never fetch a logout-shaped meta-refresh target, got {url}")
+            return _mock_resp(html, headers={'Content-Type': 'text/html'})
+
+        session = _mock_session(get_side_effect=mock_get)
+        discovered = _discover_urls(session, target, TEST_DOMAIN)
+
+        assert discovered == [target]
+        assert not any('logout' in u.lower() for u in discovered)
+
+
+class TestMakeSessionFormLogin:
+    """
+    _make_session's form-login path (GET login page, extract every <form>
+    field via _FormFieldExtractor, override username/password, POST) had no
+    dedicated test coverage at all - TestOwaspJsonSession in
+    test_auth_login.py covers the JSON-login branch of the same function,
+    but the older, more common form-login branch was only ever exercised
+    live against real targets (DVWA, NodeGoat, ...), never in CI. Added
+    after verifying the mechanism live against a local mock server that
+    requires a real CSRF token + submit-button field to succeed.
+    """
+
+    def test_successful_login_submits_csrf_token_and_credentials(self):
+        from tasks.owasp import _make_session
+
+        login_page = _mock_resp('''
+        <form action="/login" method="POST">
+        <input type="hidden" name="csrf_token" value="tok-abc123">
+        <input type="text" name="username">
+        <input type="password" name="password">
+        <input type="submit" name="Login" value="Login">
+        </form>
+        ''')
+        post_calls = []
+
+        def fake_post(self, url, data=None, **kwargs):
+            post_calls.append(data)
+            return _mock_resp('Welcome!')
+
+        auth = {'login_url': 'https://x.test/login', 'username_field': 'username',
+                'password_field': 'password', 'username': 'realuser', 'password': 'realpass',
+                'logged_in_indicator': 'Welcome'}
+        with patch.object(requests.Session, 'get', return_value=login_page), \
+             patch.object(requests.Session, 'post', fake_post):
+            session = _make_session(auth)
+
+        assert session is not None
+        assert len(post_calls) == 1
+        posted = post_calls[0]
+        # the real submitted username/password, not the page's own defaults
+        assert posted['username'] == 'realuser'
+        assert posted['password'] == 'realpass'
+        # non-credential form fields (CSRF token, submit button) must still
+        # be present - a naive username/password-only POST silently fails
+        # against real CSRF-protected login forms (DVWA, NodeGoat).
+        assert posted['csrf_token'] == 'tok-abc123'
+        assert posted['Login'] == 'Login'
+        assert session.login_result == {
+            'attempted': True, 'outcome': 'confirmed',
+            'detail': "logged_in_indicator 'Welcome' matched the post-login response.",
+        }
+
+    def test_login_form_action_differs_from_login_url(self):
+        """
+        Real bug found live against testfire.net (Altoro Mutual): its login
+        form's action ("doLogin") is a different endpoint than the page
+        hosting it ("login.jsp"). The old code POSTed unconditionally to
+        login_url and never even reached the real endpoint - confirmed
+        directly against the live site.
+        """
+        from tasks.owasp import _make_session
+
+        login_page = _mock_resp('''
+        <form action="doLogin" method="POST">
+        <input type="text" name="uid">
+        <input type="password" name="passw">
+        </form>
+        ''')
+        post_calls = []
+
+        def fake_post(self, url, data=None, **kwargs):
+            post_calls.append(url)
+            return _mock_resp('Login Failed')
+
+        auth = {'login_url': 'https://x.test/login.jsp', 'username_field': 'uid',
+                'password_field': 'passw', 'username': 'admin', 'password': 'admin'}
+        with patch.object(requests.Session, 'get', return_value=login_page), \
+             patch.object(requests.Session, 'post', fake_post):
+            _make_session(auth)
+
+        assert post_calls == ['https://x.test/doLogin']  # not login.jsp
+
+    def test_get_method_login_form_uses_get_not_post(self):
+        """
+        Real bug found live against Google Gruyere (an intentionally
+        insecure app whose login form deliberately uses GET as one of its
+        own teaching points): the old code called session.post()
+        unconditionally regardless of the form's declared method, so a
+        GET-method login form's credentials were sent as a POST body the
+        server never reads as login parameters at all - confirmed directly:
+        self-registered a real account and it failed to authenticate until
+        this fix.
+        """
+        from tasks.owasp import _make_session
+
+        login_page = _mock_resp('''
+        <form action="login" method="get">
+        <input type="text" name="uid">
+        <input type="password" name="pw">
+        </form>
+        ''')
+        get_calls = []
+        post_calls = []
+
+        def fake_get(self, url, **kwargs):
+            if 'params' in kwargs:
+                get_calls.append((url, kwargs['params']))
+                return _mock_resp('Sign out')
+            return login_page  # the initial GET of the login page itself
+
+        def fake_post(self, url, **kwargs):
+            post_calls.append(url)
+            return _mock_resp('should not happen')
+
+        auth = {'login_url': 'https://x.test/login', 'username_field': 'uid',
+                'password_field': 'pw', 'username': 'realuser', 'password': 'realpass',
+                'logged_in_indicator': 'Sign out'}
+        with patch.object(requests.Session, 'get', fake_get), \
+             patch.object(requests.Session, 'post', fake_post):
+            session = _make_session(auth)
+
+        assert post_calls == []  # never POSTed
+        assert len(get_calls) == 1
+        url, params = get_calls[0]
+        assert url == 'https://x.test/login'
+        assert params['uid'] == 'realuser'
+        assert params['pw'] == 'realpass'
+        assert session.login_result['outcome'] == 'confirmed'
+
+    def test_multiple_forms_on_page_only_login_form_fields_used(self):
+        """
+        Real bug found live against testfire.net: its login page also has a
+        search form earlier in the HTML. The old _FormFieldExtractor merged
+        ALL forms' fields into one flat dict regardless of source - a
+        search box's field would get submitted alongside the real login
+        fields, and if the search form happened to come first, its action
+        would win over the actual login form's.
+        """
+        from tasks.owasp import _make_session
+
+        login_page = _mock_resp('''
+        <form action="/search" method="GET">
+        <input type="text" name="query">
+        </form>
+        <form action="doLogin" method="POST">
+        <input type="hidden" name="csrf_token" value="tok-xyz">
+        <input type="text" name="uid">
+        <input type="password" name="passw">
+        </form>
+        ''')
+        post_calls = []
+
+        def fake_post(self, url, data=None, **kwargs):
+            post_calls.append((url, data))
+            return _mock_resp('ok')
+
+        auth = {'login_url': 'https://x.test/login.jsp', 'username_field': 'uid',
+                'password_field': 'passw', 'username': 'admin', 'password': 'admin'}
+        with patch.object(requests.Session, 'get', return_value=login_page), \
+             patch.object(requests.Session, 'post', fake_post):
+            _make_session(auth)
+
+        assert len(post_calls) == 1
+        url, data = post_calls[0]
+        assert url == 'https://x.test/doLogin'
+        assert 'query' not in data  # the search form's field must not leak in
+        assert data['csrf_token'] == 'tok-xyz'
+
+    def test_logged_in_indicator_mismatch_marks_failed_but_still_returns_session(self):
+        """A wrong logged_in_indicator regex must not turn an otherwise-
+        working authenticated scan into a hard failure - best-effort only -
+        but it must be visible in login_result, not just a log line."""
+        from tasks.owasp import _make_session
+
+        login_page = _mock_resp('<form action="/login" method="POST"><input type="password" name="p"></form>')
+        auth = {'login_url': 'https://x.test/login', 'username_field': 'username',
+                'password_field': 'password', 'username': 'realuser', 'password': 'realpass',
+                'logged_in_indicator': 'this-string-will-never-appear'}
+        with patch.object(requests.Session, 'get', return_value=login_page), \
+             patch.object(requests.Session, 'post', return_value=_mock_resp('Welcome!')):
+            session = _make_session(auth)
+
+        assert session is not None  # degrades to a warning, not a hard failure
+        assert session.login_result['attempted'] is True
+        assert session.login_result['outcome'] == 'failed'
+
+    def test_no_indicator_password_field_still_present_marks_failed(self):
+        """Best-effort heuristic when no logged_in_indicator is configured:
+        a password field still present in the post-login response strongly
+        suggests we're looking at the login page again."""
+        from tasks.owasp import _make_session
+
+        login_page = _mock_resp('<form action="/login" method="POST"><input type="password" name="p"></form>')
+        still_login_form = _mock_resp('<form action="/login" method="POST"><input type="password" name="p"></form>')
+        auth = {'login_url': 'https://x.test/login', 'username_field': 'username',
+                'password_field': 'password', 'username': 'realuser', 'password': 'wrongpass'}
+        with patch.object(requests.Session, 'get', return_value=login_page), \
+             patch.object(requests.Session, 'post', return_value=still_login_form):
+            session = _make_session(auth)
+
+        assert session.login_result['outcome'] == 'failed'
+
+    def test_no_indicator_password_field_gone_marks_probable(self):
+        """Best-effort heuristic when no logged_in_indicator is configured:
+        no password field in the response is a reasonable but unconfirmed
+        sign of success - reported as 'probable', never 'confirmed'."""
+        from tasks.owasp import _make_session
+
+        login_page = _mock_resp('<form action="/login" method="POST"><input type="password" name="p"></form>')
+        dashboard = _mock_resp('<html>Welcome to your dashboard</html>')
+        auth = {'login_url': 'https://x.test/login', 'username_field': 'username',
+                'password_field': 'password', 'username': 'realuser', 'password': 'realpass'}
+        with patch.object(requests.Session, 'get', return_value=login_page), \
+             patch.object(requests.Session, 'post', return_value=dashboard):
+            session = _make_session(auth)
+
+        assert session.login_result['outcome'] == 'probable'
+
+    def test_login_page_fetch_failure_falls_back_unauthenticated(self):
+        """A network error fetching the login page must not crash the
+        module - continue unauthenticated, same non-fatal posture as the
+        JSON-login branch."""
+        from tasks.owasp import _make_session
+
+        auth = {'login_url': 'https://x.test/login', 'username_field': 'username',
+                'password_field': 'password', 'username': 'realuser', 'password': 'realpass'}
+        with patch.object(requests.Session, 'get',
+                          side_effect=requests.exceptions.ConnectionError('refused')):
+            session = _make_session(auth)
+
+        assert session is not None
+        assert 'session' not in session.cookies  # never got a real cookie
+        assert session.login_result['outcome'] == 'error'
+
+    def test_no_auth_returns_plain_session(self):
+        from tasks.owasp import _make_session
+        session = _make_session(None)
+        assert isinstance(session, requests.Session)
+        assert not session.cookies
+        assert 'Authorization' not in session.headers
+        assert session.login_result == {'attempted': False, 'outcome': None, 'detail': None}
+
+
+class TestLoginResultFinding:
+    """_login_result_finding turns _make_session's login_result into a
+    normal finding, so authentication success/failure is visible in the
+    dashboard/PDF report - previously invisible anywhere outside worker
+    logs."""
+
+    def test_not_attempted_produces_no_finding(self):
+        from tasks.owasp import _login_result_finding
+        result = _login_result_finding({'attempted': False, 'outcome': None, 'detail': None}, TEST_DOMAIN)
+        assert result is None
+
+    def test_confirmed_produces_informational_finding(self):
+        from tasks.owasp import _login_result_finding
+        f = _login_result_finding(
+            {'attempted': True, 'outcome': 'confirmed', 'detail': 'matched'}, TEST_DOMAIN)
+        assert f['type'] == 'auth_login_confirmed'
+        assert f['severity'] == 'Informational'
+        assert f['confidence'] == 'confirmed'
+        assert REQUIRED_FIELDS <= set(f.keys())
+
+    def test_probable_produces_informational_finding(self):
+        from tasks.owasp import _login_result_finding
+        f = _login_result_finding(
+            {'attempted': True, 'outcome': 'probable', 'detail': 'no indicator'}, TEST_DOMAIN)
+        assert f['type'] == 'auth_login_probable'
+        assert f['severity'] == 'Informational'
+        assert f['confidence'] == 'probable'
+
+    def test_failed_produces_medium_finding(self):
+        from tasks.owasp import _login_result_finding
+        f = _login_result_finding(
+            {'attempted': True, 'outcome': 'failed', 'detail': 'still a login form'}, TEST_DOMAIN)
+        assert f['type'] == 'auth_login_failed'
+        assert f['severity'] == 'Medium'
+        assert f['confidence'] == 'probable'
+
+    def test_error_also_produces_medium_failed_finding(self):
+        from tasks.owasp import _login_result_finding
+        f = _login_result_finding(
+            {'attempted': True, 'outcome': 'error', 'detail': 'connection refused'}, TEST_DOMAIN)
+        assert f['type'] == 'auth_login_failed'
+        assert f['severity'] == 'Medium'
+        assert 'connection refused' in f['evidence']
 
 
 class TestOwaspModuleStatus:

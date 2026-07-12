@@ -1026,6 +1026,48 @@ _TYPE_REMEDIATION = {
         "different ID belonging to another user/record and confirm access "
         "is now denied.",
     ),
+    'auth_login_confirmed': (
+        "This scan was configured to log in before testing, and the login "
+        "was confirmed to work - the operator-provided \"logged in\" check "
+        "matched the response after submitting credentials, so the "
+        "authenticated tests in this report ran against real, logged-in "
+        "content as intended.",
+        "No action needed - this confirms the scan's authenticated tests "
+        "actually ran as configured. If findings behind login were expected "
+        "but are missing from this report, that reflects the application's "
+        "actual state, not a scanning gap.",
+    ),
+    'auth_login_probable': (
+        "This scan was configured to log in before testing, and the login "
+        "response no longer showed a login form - a reasonable but "
+        "unconfirmed sign that it worked, since no explicit \"logged in\" "
+        "check was configured to verify it directly.",
+        "1) Identify a piece of text or element that only appears after a "
+        "real successful login on this application (e.g. \"Welcome back\", "
+        "\"Log out\", an account name). 2) Set that as the scan's "
+        "logged_in_indicator so future scans confirm login instead of "
+        "guessing. 3) Re-run the scan and confirm this finding upgrades to "
+        "a definite \"login confirmed\" result.",
+    ),
+    'auth_login_failed': (
+        "This scan was configured to log in before testing, but the login "
+        "did not succeed (either an explicit \"logged in\" check failed to "
+        "match, the response still showed a login form, or the login "
+        "request itself errored - see the evidence for which). Every "
+        "\"authenticated\" test in this report therefore actually ran "
+        "against the site as an anonymous visitor, so findings that only "
+        "exist behind a login were not tested at all.",
+        "1) Check the evidence for the specific reason (wrong credentials, "
+        "a changed login form, an unexpected redirect, or a network/"
+        "timeout error). 2) Manually log in to the application with the "
+        "configured username/password to confirm the credentials "
+        "themselves are still valid. 3) If the login form uses a CSRF "
+        "token or extra hidden fields, confirm the scan's login_url points "
+        "at the page that actually hosts the login form, not a different "
+        "page. 4) Re-run the scan and confirm this finding upgrades to a "
+        "confirmed or probable login before trusting any \"clean\" result "
+        "on authenticated content.",
+    ),
 
     # --- webscan.py (katana) ---
     'crawled_endpoint_katana': (

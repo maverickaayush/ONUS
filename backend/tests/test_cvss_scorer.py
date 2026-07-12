@@ -177,6 +177,15 @@ class TestTrustSource:
         assert expiring['severity'] == 'Medium'
         assert informational['severity'] == 'Informational'
 
+    def test_auth_login_types_use_owasp_py_computed_severity(self):
+        # owasp.py's _login_result_finding already decided the right
+        # severity from its own login-outcome detection - same trust-source
+        # reasoning as whois_expiry, not a technical CVSS characteristic.
+        confirmed = score_finding({'type': 'auth_login_confirmed', 'severity': 'Informational'})
+        failed = score_finding({'type': 'auth_login_failed', 'severity': 'Medium'})
+        assert confirmed['severity'] == 'Informational'
+        assert failed['severity'] == 'Medium'
+
 
 class TestMostSpecificWins:
 

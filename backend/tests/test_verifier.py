@@ -83,6 +83,35 @@ class TestNeverDropsFindings:
 # Per-verifier success/failure fixtures
 # ---------------------------------------------------------------------------
 
+class TestMergeUrlParams:
+    """
+    Real bug found live (reproduced directly, then via a full local-server
+    A/B comparison for owasp.py's parallel fix): concatenating a URL's
+    existing query with new params via parse_qsl(...) + list(...) keeps
+    BOTH occurrences of a shared key instead of letting the new value win -
+    a "merge" that doesn't actually override defeats the point of
+    re-issuing the payload during verification.
+    """
+
+    def test_no_existing_query(self):
+        from analysis.verifier import _merge_url_params
+        assert _merge_url_params('https://x.test/search', {'q': 'payload'}) == \
+            'https://x.test/search?q=payload'
+
+    def test_overlapping_key_is_overridden_not_duplicated(self):
+        from analysis.verifier import _merge_url_params
+        result = _merge_url_params('https://x.test/search?q=original', {'q': 'payload'})
+        assert result == 'https://x.test/search?q=payload'
+        assert result.count('q=') == 1
+
+    def test_non_overlapping_existing_params_are_preserved(self):
+        from analysis.verifier import _merge_url_params
+        result = _merge_url_params('https://x.test/search?page=2&sort=asc', {'q': 'payload'})
+        assert 'page=2' in result
+        assert 'sort=asc' in result
+        assert 'q=payload' in result
+
+
 class TestVerifyOpenRedirect:
 
     def test_reproduced_redirect_confirms(self):
@@ -92,6 +121,18 @@ class TestVerifyOpenRedirect:
         resp = _mock_resp(status=302, location='https://evil-vapt-test.example.com/pwned')
         with patch('analysis.verifier._DEFAULT_CLIENT.get', return_value=resp):
             result = verify_open_redirect(f)
+        assert result['confidence'] == 'confirmed'
+
+    def test_overlapping_existing_query_param_is_overridden(self):
+        f = _finding(type='open_redirect',
+                     verification_target={'url': 'https://x.test?next=safe.html', 'param': 'next',
+                                           'payload': 'https://evil-vapt-test.example.com'})
+        resp = _mock_resp(status=302, location='https://evil-vapt-test.example.com/pwned')
+        with patch('analysis.verifier._DEFAULT_CLIENT.get') as mock_get:
+            mock_get.return_value = resp
+            result = verify_open_redirect(f)
+        args, _ = mock_get.call_args
+        assert args[0].count('next=') == 1
         assert result['confidence'] == 'confirmed'
 
     def test_no_longer_redirecting_demotes(self):
@@ -120,15 +161,22 @@ class TestVerifyPathTraversal:
             result = verify_path_traversal(f)
         assert result['confidence'] == 'unverified'
 
-    def test_param_based_traversal_uses_params_kwarg(self):
+    def test_param_based_traversal_merges_into_url(self):
+        # Real bug found live: passing the param separately via params=
+        # kwarg while `url` might already carry its own query string
+        # duplicates the key instead of overriding it (same class of bug as
+        # owasp.py's _strip_query fix) - _merge_url_params builds the
+        # complete, correctly-merged URL instead, with no separate params
+        # kwarg needed.
         f = _finding(type='path_traversal',
-                     verification_target={'url': 'https://x.test', 'param': 'file',
+                     verification_target={'url': 'https://x.test?file=safe.txt', 'param': 'file',
                                            'payload': '../../../../etc/passwd'})
         with patch('analysis.verifier._DEFAULT_CLIENT.get') as mock_get:
             mock_get.return_value = _mock_resp('root:x:0:0:root')
             verify_path_traversal(f)
-        _, kwargs = mock_get.call_args
-        assert kwargs['params'] == {'file': '../../../../etc/passwd'}
+        args, kwargs = mock_get.call_args
+        assert 'params' not in kwargs
+        assert args[0] == 'https://x.test?file=..%2F..%2F..%2F..%2Fetc%2Fpasswd'
 
 
 class TestVerifySensitiveFileExposure:

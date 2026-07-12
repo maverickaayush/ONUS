@@ -137,7 +137,7 @@ def verify_open_redirect(finding: dict, session: Optional[requests.Session] = No
     if not (url and param and payload):
         return _demote(finding, 'Verification skipped - missing verification_target data.')
     try:
-        resp = client.get(url, params={param: payload}, timeout=_TIMEOUT,
+        resp = client.get(_merge_url_params(url, {param: payload}), timeout=_TIMEOUT,
                            verify=False, allow_redirects=False)
         if resp.status_code in (301, 302, 303, 307, 308) and payload in resp.headers.get('Location', ''):
             return _promote(finding, f'Re-issued request confirmed a redirect to {payload!r} via the Location header.')
@@ -156,7 +156,7 @@ def verify_path_traversal(finding: dict, session: Optional[requests.Session] = N
         return _demote(finding, 'Verification skipped - missing verification_target data.')
     try:
         if param:
-            resp = client.get(url, params={param: payload}, timeout=_TIMEOUT,
+            resp = client.get(_merge_url_params(url, {param: payload}), timeout=_TIMEOUT,
                                verify=False, allow_redirects=False)
         else:
             resp = client.get(url, timeout=_TIMEOUT, verify=False, allow_redirects=False)
@@ -228,7 +228,7 @@ def verify_sqli_time_based(finding: dict, session: Optional[requests.Session] = 
         baseline_elapsed = time.monotonic() - baseline_start
 
         probe_start = time.monotonic()
-        client.get(url, params={param: payload}, timeout=_TIMEOUT + expected_delay,
+        client.get(_merge_url_params(url, {param: payload}), timeout=_TIMEOUT + expected_delay,
                     verify=False, allow_redirects=False)
         probe_elapsed = time.monotonic() - probe_start
 
@@ -248,10 +248,24 @@ def _merge_url_params(url: str, params: dict) -> str:
     as verification_target['url'] - naively formatting f'{url}?{params}'
     (the old code) produces a malformed URL with two `?` characters and a
     duplicated parameter, confirmed directly from a real stored
-    verification_note. This merges into the existing query instead."""
+    verification_note. This merges into the existing query instead.
+
+    Second real bug found live (reproduced directly - _merge_url_params(
+    'https://x/search?q=test', {'q': 'INJECTED'}) returned
+    '...?q=test&q=INJECTED', not '...?q=INJECTED'): concatenating the
+    existing query with the new params via parse_qsl(...) + list(...) keeps
+    BOTH occurrences of a shared key rather than letting `params` win -
+    whichever the target server happens to prefer for a duplicate key
+    silently decides whether the injected value is even evaluated. A dict
+    update, not a list concatenation, is what "merge" actually means here.
+    Not reachable via owasp.py today (test_xss now hands this a query-free
+    base URL - see owasp.py's _strip_query), but this function has no way to
+    guarantee that stays true for every future caller, so it needs to be
+    correct on its own."""
     parts = urlsplit(url)
-    merged = parse_qsl(parts.query, keep_blank_values=True) + list(params.items())
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(merged), parts.fragment))
+    existing = dict(parse_qsl(parts.query, keep_blank_values=True))
+    existing.update(params)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(existing), parts.fragment))
 
 
 def _playwright_cookies_from_session(session: requests.Session) -> list:
