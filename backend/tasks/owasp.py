@@ -70,6 +70,24 @@ def _get_params(target: str) -> dict:
     return params
 
 
+def _strip_query(target: str) -> str:
+    """
+    Base URL for a re-request that supplies its own complete `params=` dict.
+    Real bug found live (reproduced against a local mock server built to
+    verify the crawl-depth fix above): requests.get(url, params=X) APPENDS
+    to a URL's existing query string rather than replacing it - a request
+    for "target?q=test" with params={'q': "' OR '1'='1"} actually sends
+    "?q=test&q=%27+OR+%271%27%3D%271", both values present. Whether the
+    injected payload even gets evaluated then depends on which duplicate key
+    the target framework happens to prefer. Invisible before the crawl-depth
+    fix, since owasp.py only ever re-tested the bare domain root (which
+    normally has no query string of its own) - now that real discovered
+    pages like "/search?q=..." are reachable, this directly blunts every
+    param-based test below unless the base URL is query-free first.
+    """
+    return urllib.parse.urlsplit(target)._replace(query='').geturl()
+
+
 # ---------------------------------------------------------------------------
 # Same-origin crawl - so the 5 test functions below reach more than just the
 # bare domain root. Real vulnerable pages are often a click or two deep (e.g.
@@ -87,8 +105,28 @@ _CRAWL_PAGE_TIMEOUT = scaled_timeout(10)
 _CRAWL_BUDGET_SECONDS = scaled_timeout(60)
 
 
+_META_REFRESH_URL_RE = re.compile(r'url\s*=\s*[\'"]?([^\'";]+)', re.IGNORECASE)
+
+
 class _LinkExtractor(HTMLParser):
-    """Collects <a href=...> and <form action=...> targets from one page."""
+    """
+    Collects <a href=...>, <form action=...>, and <meta http-equiv="refresh">
+    redirect targets from one page. Same-origin and session-destroying-link
+    filtering happens uniformly in _discover_urls() for everything collected
+    here, regardless of source - this class only extracts candidate URLs, it
+    never decides which ones are safe to follow.
+
+    Real gap found live: a page whose only navigation is a meta-refresh (a
+    static landing-page shell that bounces into the real app - e.g.
+    oa.iitk.ac.in's homepage refreshing into /Oa/) was invisible to this
+    crawler when it only looked at <a>/<form> - `discovered` stayed at just
+    the single starting URL, so every test function had nothing to inject
+    into and the whole module completed in well under a second reporting a
+    clean 0-finding "success" with zero real coverage of the actual
+    application. The refresh delay in `content="N;url=..."` is deliberately
+    ignored - this is a crawler, not a browser simulating a human waiting it
+    out.
+    """
 
     def __init__(self):
         super().__init__()
@@ -100,6 +138,10 @@ class _LinkExtractor(HTMLParser):
             self.links.append(attrs_dict['href'])
         elif tag == 'form' and attrs_dict.get('action'):
             self.links.append(attrs_dict['action'])
+        elif tag == 'meta' and (attrs_dict.get('http-equiv') or '').lower() == 'refresh':
+            match = _META_REFRESH_URL_RE.search(attrs_dict.get('content') or '')
+            if match:
+                self.links.append(match.group(1).strip())
 
 
 def _normalize_url(url: str) -> str:
@@ -123,20 +165,57 @@ class _FormFieldExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
         self.fields: dict = {}
+        self.action: Optional[str] = None
+        self.method: Optional[str] = None
+        self.found_login_form = False
         self._in_form = False
+        self._current_fields: dict = {}
+        self._current_action: Optional[str] = None
+        self._current_method: Optional[str] = None
+        self._current_has_password = False
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         attrs_dict = dict(attrs)
         if tag == 'form':
             self._in_form = True
+            self._current_fields = {}
+            self._current_action = attrs_dict.get('action')
+            self._current_method = attrs_dict.get('method')
+            self._current_has_password = False
         elif tag == 'input' and self._in_form:
             name = attrs_dict.get('name')
             if name:
-                self.fields[name] = attrs_dict.get('value', '')
+                self._current_fields[name] = attrs_dict.get('value', '')
+            if (attrs_dict.get('type') or '').lower() == 'password':
+                self._current_has_password = True
 
     def handle_endtag(self, tag: str) -> None:
         if tag == 'form':
             self._in_form = False
+            if self._current_has_password:
+                # The login form specifically - keep its own fields/action,
+                # discarding any other form on the same page (e.g. a search
+                # box). Real bug found live against testfire.net (Altoro
+                # Mutual): its login page also has a search form earlier in
+                # the HTML, and the previous version merged both forms'
+                # fields into one flat dict regardless of source, with no
+                # way to know which form the CSRF-token-shaped fields
+                # actually belonged to.
+                self.fields = self._current_fields
+                self.action = self._current_action
+                self.method = self._current_method
+                self.found_login_form = True
+
+
+def _response_looks_like_login_form(text: str) -> bool:
+    """True if a password-type input is present anywhere in the response -
+    used as a best-effort "did the login actually work" signal when no
+    logged_in_indicator is configured. Reuses _FormFieldExtractor's own
+    password-detection rather than a separate regex, so both places agree
+    on what counts as a login form."""
+    extractor = _FormFieldExtractor()
+    extractor.feed(text)
+    return extractor.found_login_form
 
 
 def _make_session(auth: Optional[dict]) -> requests.Session:
@@ -163,8 +242,18 @@ def _make_session(auth: Optional[dict]) -> requests.Session:
     post-login response, this logs a warning and continues anyway rather
     than aborting the scan - a wrong indicator regex shouldn't turn an
     otherwise-working authenticated scan into a hard failure.
+
+    Sets `session.login_result` to a dict the caller can turn into a
+    finding (see run_owasp) - `{'attempted': bool, 'outcome': str, 'detail':
+    str}`, `outcome` one of 'confirmed'/'probable'/'failed'/'error'. Added
+    because a silently-degraded authenticated scan (auth configured, login
+    actually failed, every "authenticated" test then ran unauthenticated
+    against nothing but public content) was completely invisible anywhere
+    in the report before this - the operator had no way to tell "0 findings
+    behind login" apart from "0 findings, and also the login never worked."
     """
     session = requests.Session()
+    session.login_result = {'attempted': False, 'outcome': None, 'detail': None}
     # GET-only retry/backoff on 429/502/503/504 - a real WAF throttling mid-scan
     # would otherwise silently read as "clean" on whatever page it hit next,
     # indistinguishable from a genuinely non-vulnerable result (see
@@ -173,6 +262,8 @@ def _make_session(auth: Optional[dict]) -> requests.Session:
     mount_retry_adapter(session)
     if not auth:
         return session
+
+    session.login_result['attempted'] = True
 
     # JSON-API login (modern SPAs): POST creds as JSON, set the returned bearer
     # token as a Session header. Cookies the login sets are kept by the Session
@@ -185,9 +276,16 @@ def _make_session(auth: Optional[dict]) -> requests.Session:
         if token:
             header, value = auth_header_from(auth, token)
             session.headers[header] = value
+            session.login_result.update(outcome='confirmed',
+                                         detail='JSON login returned a usable auth token.')
         else:
             logger.warning("owasp JSON login failed for %s (continuing "
                             "unauthenticated)", auth.get('login_url'))
+            session.login_result.update(
+                outcome='failed',
+                detail='JSON login POST did not return an extractable token - see '
+                       'worker logs for the specific failure (request error, non-2xx '
+                       'status, or no token found in the response body).')
         return session
 
     try:
@@ -198,18 +296,88 @@ def _make_session(auth: Optional[dict]) -> requests.Session:
         form_data[auth['username_field']] = auth['username']
         form_data[auth['password_field']] = auth['password']
 
-        resp = session.post(
-            auth['login_url'], data=form_data,
-            timeout=_TIMEOUT, verify=False, allow_redirects=True,
-        )
+        # Real bug found live against testfire.net (Altoro Mutual): its
+        # login form's action ("doLogin") is a different endpoint than the
+        # page hosting it ("login.jsp") - POSTing to login_url unconditionally
+        # (the old behavior) silently hit the wrong URL and never even
+        # attempted authentication (confirmed directly: it returns a 200
+        # that just re-serves the login page, vs. the real endpoint's 302 +
+        # explicit "Login Failed" on bad creds). Resolve the form's own
+        # action relative to login_url when the login form declared one;
+        # fall back to login_url itself when it didn't (a form with no
+        # explicit action submits back to its own page - the previous,
+        # still-correct assumption for that case).
+        post_url = urllib.parse.urljoin(auth['login_url'], extractor.action) \
+            if extractor.action else auth['login_url']
+
+        # Real bug found live against Google Gruyere (an intentionally
+        # insecure app whose login form deliberately uses GET, credentials
+        # visible in the URL, as one of its own teaching points): this
+        # unconditionally used session.post(), so a GET-method login form's
+        # credentials were sent as a POST body the server never reads as
+        # login parameters at all - a silent failure, same failure class as
+        # the wrong-endpoint bug above, just via HTTP method instead of URL.
+        # Defaults to POST when the form doesn't declare a method (or none
+        # was found at all) - HTML technically defaults an absent method to
+        # GET, but every real login form seen in this feature's other
+        # verification targets (DVWA, NodeGoat, Altoro Mutual) uses POST
+        # explicitly, so POST remains the safer default for the unknown case
+        # rather than flipping behavior those already-working targets rely on.
+        if (extractor.method or '').lower() == 'get':
+            # Same duplicate-query-string trap as the OWASP test functions'
+            # own fix (_strip_query) - params= appends to an existing query
+            # string rather than replacing it, so post_url must be
+            # query-free before combining it with the full form_data here.
+            resp = session.get(
+                _strip_query(post_url), params=form_data,
+                timeout=_TIMEOUT, verify=False, allow_redirects=True,
+            )
+        else:
+            resp = session.post(
+                post_url, data=form_data,
+                timeout=_TIMEOUT, verify=False, allow_redirects=True,
+            )
         indicator = auth.get('logged_in_indicator')
-        if indicator and not re.search(indicator, resp.text):
-            logger.warning("owasp login for domain may have failed - "
-                            "logged_in_indicator %r not found in post-login "
-                            "response", indicator)
+        if indicator:
+            # Deterministic - the operator told us exactly what "logged in"
+            # looks like for this app.
+            if re.search(indicator, resp.text):
+                session.login_result.update(
+                    outcome='confirmed',
+                    detail=f'logged_in_indicator {indicator!r} matched the post-login response.')
+            else:
+                logger.warning("owasp login for domain may have failed - "
+                                "logged_in_indicator %r not found in post-login "
+                                "response", indicator)
+                session.login_result.update(
+                    outcome='failed',
+                    detail=f'logged_in_indicator {indicator!r} did not match the '
+                           f'post-login response - login likely failed, or the '
+                           f'indicator itself needs adjusting.')
+        else:
+            # No operator-provided indicator - best-effort heuristic only.
+            # A login FORM (a password-type input) still present in the
+            # response strongly suggests we're looking at the login page
+            # again, i.e. it failed; its absence is a reasonable but not
+            # certain signal of success, so it's reported as "probable",
+            # never "confirmed", without an explicit indicator.
+            if _response_looks_like_login_form(resp.text):
+                session.login_result.update(
+                    outcome='failed',
+                    detail='No logged_in_indicator configured; the post-login response '
+                           'still contains a password field, which usually means the '
+                           'login form was shown again (login likely failed).')
+            else:
+                session.login_result.update(
+                    outcome='probable',
+                    detail='No logged_in_indicator configured, so this is a best-effort '
+                           'guess: the post-login response no longer shows a login form, '
+                           'which is consistent with (but does not confirm) success. '
+                           'Set logged_in_indicator for a reliable check.')
     except requests.RequestException as e:
         logger.warning("owasp login POST to %s failed (continuing "
                         "unauthenticated): %s", auth.get('login_url'), e)
+        session.login_result.update(outcome='error', detail=f'Login request failed: {e}')
     return session
 
 
@@ -287,10 +455,11 @@ def test_sqli(session: requests.Session, target: str, domain: str) -> List[dict]
     findings = []
     payloads = ["' OR '1'='1", "'", "' OR 1=1--", "1 AND 1=1", "1 AND 1=2"]
     base_params = _get_params(target)
+    base_url = _strip_query(target)
 
     try:
         # Baseline response for boolean comparison
-        baseline = session.get(target, params=base_params, **_SESSION_KWARGS)
+        baseline = session.get(base_url, params=base_params, **_SESSION_KWARGS)
         baseline_len = len(baseline.text)
 
         for param in list(base_params.keys())[:3]:  # limit to first 3 params
@@ -298,7 +467,7 @@ def test_sqli(session: requests.Session, target: str, domain: str) -> List[dict]
                 injected = dict(base_params)
                 injected[param] = payload
                 try:
-                    resp = session.get(target, params=injected, **_SESSION_KWARGS)
+                    resp = session.get(base_url, params=injected, **_SESSION_KWARGS)
                     body = resp.text
 
                     if _SQL_ERROR_RE.search(body):
@@ -346,6 +515,7 @@ def test_xss(session: requests.Session, target: str, domain: str) -> List[dict]:
         f"'{marker}",
     ]
     base_params = _get_params(target)
+    base_url = _strip_query(target)
 
     try:
         for param in list(base_params.keys())[:3]:
@@ -353,7 +523,7 @@ def test_xss(session: requests.Session, target: str, domain: str) -> List[dict]:
                 injected = dict(base_params)
                 injected[param] = payload
                 try:
-                    resp = session.get(target, params=injected, **_SESSION_KWARGS)
+                    resp = session.get(base_url, params=injected, **_SESSION_KWARGS)
                     if marker in resp.text and payload in resp.text:
                         findings.append(normalize_finding(
                             module=MODULE, tool='owasp', type_='reflected_xss',
@@ -368,7 +538,7 @@ def test_xss(session: requests.Session, target: str, domain: str) -> List[dict]:
                             # the alert dialog actually fires, not just
                             # whether the string is present in the response.
                             confidence='probable', verifiable=True,
-                            verification_target={'url': target, 'params': injected,
+                            verification_target={'url': base_url, 'params': injected,
                                                   'payload': payload, 'marker': marker},
                         ))
                         return findings
@@ -422,12 +592,13 @@ def test_path_traversal(session: requests.Session, target: str, domain: str) -> 
 
         # Also try file= / path= params
         base_params = _get_params(target)
+        base_url = _strip_query(target)
         for param in [p for p in base_params if any(
                 k in p.lower() for k in ('file', 'path', 'page', 'doc', 'view'))]:
             injected = dict(base_params)
             injected[param] = '../../../../etc/passwd'
             try:
-                resp = session.get(target, params=injected, **_SESSION_KWARGS)
+                resp = session.get(base_url, params=injected, **_SESSION_KWARGS)
                 if any(ind in resp.text for ind in indicators):
                     findings.append(normalize_finding(
                         module=MODULE, tool='owasp', type_='path_traversal',
@@ -436,7 +607,7 @@ def test_path_traversal(session: requests.Session, target: str, domain: str) -> 
                                  f'returned /etc/passwd content',
                         severity='Critical', target=domain,
                         confidence='probable', verifiable=True,
-                        verification_target={'url': target, 'param': param,
+                        verification_target={'url': base_url, 'param': param,
                                               'payload': injected[param]},
                     ))
                     return findings
@@ -458,12 +629,13 @@ def test_open_redirect(session: requests.Session, target: str, domain: str) -> L
     redirect_params = ['next', 'redirect', 'url', 'return', 'returnUrl',
                        'redirect_uri', 'continue', 'goto', 'dest', 'destination']
     external_url = 'https://evil-vapt-test.example.com'
+    base_url = _strip_query(target)
 
     try:
         for param in redirect_params:
             try:
                 resp = session.get(
-                    target,
+                    base_url,
                     params={param: external_url},
                     timeout=_TIMEOUT,
                     verify=False,
@@ -483,7 +655,7 @@ def test_open_redirect(session: requests.Session, target: str, domain: str) -> L
                     # paths) and require its netloc to genuinely be the
                     # injected external host.
                     resolved_netloc = urllib.parse.urlsplit(
-                        urllib.parse.urljoin(target, location)).netloc
+                        urllib.parse.urljoin(base_url, location)).netloc
                     external_netloc = urllib.parse.urlsplit(external_url).netloc
                     if resolved_netloc == external_netloc:
                         findings.append(normalize_finding(
@@ -493,7 +665,7 @@ def test_open_redirect(session: requests.Session, target: str, domain: str) -> L
                                      f'injected URL: {location}',
                             severity='Medium', target=domain,
                             confidence='probable', verifiable=True,
-                            verification_target={'url': target, 'param': param,
+                            verification_target={'url': base_url, 'param': param,
                                                   'payload': external_url},
                         ))
                         return findings
@@ -521,10 +693,11 @@ def test_error_disclosure(session: requests.Session, target: str, domain: str) -
         {'id': '\x00\x01\x02', 'Submit': 'Submit'},
     ]
 
+    base_url = _strip_query(target)
     try:
         for params in probes:
             try:
-                resp = session.get(target, params=params,
+                resp = session.get(base_url, params=params,
                                     timeout=_TIMEOUT, verify=False,
                                     allow_redirects=True)
                 # Real bug found live: requiring status_code==500 excludes
@@ -654,6 +827,43 @@ def test_idor(session: requests.Session, target: str, domain: str) -> List[dict]
     return findings
 
 
+# outcome -> (type, severity). 'confirmed'/'probable' are informational (the
+# scan proceeded as intended); 'failed'/'error' are Medium - an authenticated
+# scan that silently ran unauthenticated is a materially incomplete result,
+# not just a footnote, and deserves the same visibility a failed module gets.
+_LOGIN_OUTCOME_FINDING = {
+    'confirmed': ('auth_login_confirmed', 'Informational'),
+    'probable': ('auth_login_probable', 'Informational'),
+    'failed': ('auth_login_failed', 'Medium'),
+    'error': ('auth_login_failed', 'Medium'),
+}
+
+
+def _login_result_finding(login_result: dict, domain: str) -> Optional[dict]:
+    """
+    Turns _make_session's session.login_result into a normal finding, so
+    "did the authenticated scan actually authenticate" is visible in the
+    dashboard/PDF report like everything else, instead of only ever showing
+    up as a log line on the worker's own disk. Returns None when auth
+    wasn't configured for this scan at all (nothing to report).
+    """
+    if not login_result.get('attempted'):
+        return None
+    outcome = login_result.get('outcome') or 'failed'
+    type_, severity = _LOGIN_OUTCOME_FINDING.get(outcome, _LOGIN_OUTCOME_FINDING['failed'])
+    title = {
+        'auth_login_confirmed': 'Authenticated scan: login confirmed',
+        'auth_login_probable': 'Authenticated scan: login probably succeeded (unverified)',
+        'auth_login_failed': 'Authenticated scan: login failed - tests ran unauthenticated',
+    }[type_]
+    return normalize_finding(
+        module=MODULE, tool='owasp', type_=type_, title=title,
+        evidence=login_result.get('detail') or 'No further detail available.',
+        severity=severity, target=domain,
+        confidence='confirmed' if outcome == 'confirmed' else 'probable',
+    )
+
+
 @app.task(base=BaseTask, name='tasks.owasp.run_owasp',
           soft_time_limit=scaled_timeout(360), time_limit=scaled_timeout(420))
 def run_owasp(scan_id: str, domain: str) -> dict:
@@ -698,6 +908,9 @@ def run_owasp(scan_id: str, domain: str) -> dict:
     from tasks.auth_store import get_scan_auth
     auth = get_scan_auth(scan_id)
     session = _make_session(auth)
+    login_finding = _login_result_finding(session.login_result, domain)
+    if login_finding:
+        findings.append(login_finding)
 
     # test_idor is only meaningful with an authenticated session (its own
     # docstring says so) - real false-positive found live (Opus review): run

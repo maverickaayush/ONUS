@@ -110,7 +110,16 @@ _BAND_VECTOR = {
     'Low':           'AV:N/AC:H/PR:N/UI:R/S:U/C:L/I:N/A:N',
     'Informational': 'AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N',
 }
-_TRUST_SOURCE_TYPES = {'whois_expiry'}  # real domain-specific logic already computed upstream
+_TRUST_SOURCE_TYPES = {
+    'whois_expiry',
+    # owasp.py's _make_session/_login_result_finding already determined the
+    # right severity from its own login-outcome detection (indicator match,
+    # form-still-present heuristic, or a request exception) - the same
+    # "real domain-specific logic already computed upstream" reasoning as
+    # whois_expiry, not a technical CVSS characteristic this scorer could
+    # re-derive from the type string alone.
+    'auth_login_confirmed', 'auth_login_probable', 'auth_login_failed',
+}
 # zap_*: ZAP's own alert `risk` field, per-alert (webscan.py _ZAP_RISK_MAP).
 # testssl_*: testssl.sh's own per-item `severity` field (ssl_tls.py
 # _TESTSSL_SEVERITY_MAP). Both are genuine per-finding external signals.
