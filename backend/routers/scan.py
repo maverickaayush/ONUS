@@ -133,6 +133,18 @@ def create_scan(request: ScanRequest, db: Session = Depends(get_db)):
     if not request.authorized:
         raise HTTPException(status_code=403, detail="Scan requires explicit authorization")
 
+    # Domain-ownership gate (routers/verify.py). Default OFF - a no-op for local/
+    # single-operator deployments. When ON (hosted/multi-tenant), the caller must
+    # present a claim key proving they verified control of this exact domain.
+    if settings.REQUIRE_DOMAIN_VERIFICATION:
+        from routers.verify import domain_has_valid_claim
+        if not domain_has_valid_claim(db, request.domain, request.claim_key):
+            raise HTTPException(
+                status_code=403,
+                detail="Domain ownership not verified. Verify control of this domain "
+                       "(POST /api/verify/domain) and pass the returned claim_key.",
+            )
+
     # Duplicate detection - same domain, active scan in last 10 minutes.
     # Checked before the concurrency cap below since this path never creates
     # a new scan (returns the existing job_id), so it shouldn't be rejected

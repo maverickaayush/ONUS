@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     # security boundary. Raise via env for deployments with more worker
     # capacity; this was previously documented but never enforced in code.
     MAX_CONCURRENT_SCANS: int = 5
+    # Domain-ownership verification (routers/verify.py). Default OFF: a local,
+    # single-operator, air-gapped deployment trusts its operator, so forcing
+    # DCV there is pure friction. Turn ON for a shared/hosted instance where
+    # strangers could otherwise scan domains they don't control - it then
+    # requires a per-domain claim key (issued after a meta-tag/file challenge)
+    # on every scan request. See routers/verify.py.
+    REQUIRE_DOMAIN_VERIFICATION: bool = False
+    # How long a verified domain stays verified before the claim must be
+    # re-proved (days).
+    DOMAIN_VERIFICATION_TTL_DAYS: int = 30
 
 
 settings = Settings()

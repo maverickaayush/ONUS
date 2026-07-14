@@ -54,3 +54,32 @@ class Report(Base):
     generated_at = Column(DateTime, default=datetime.utcnow)
 
     scan = relationship("Scan", back_populates="report")
+
+
+class DomainVerification(Base):
+    """Domain-ownership (Domain Control Validation) record - routers/verify.py.
+
+    Two-step, claim-key model (deployment-scoped, no user accounts):
+      1. issue  -> a `pending` row with a random `token` the owner must place
+                   (meta tag on the homepage, or a file under /.well-known/).
+      2. check  -> if the token is found, status flips to `verified`, a secret
+                   claim key is minted and only its SHA-256 hash is stored here
+                   (`key_hash`). The plaintext key is returned to the caller
+                   exactly once and never persisted.
+
+    A scan for this domain is then gated on presenting that claim key (its hash
+    must match a non-expired verified row). This closes the "A verifies, B rides
+    it" bypass a domain-only cache would have, without needing login/accounts.
+    Only enforced when config.REQUIRE_DOMAIN_VERIFICATION is True.
+    """
+    __tablename__ = "domain_verifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    domain = Column(String(255), nullable=False, index=True)
+    method = Column(String(16), nullable=False)          # 'meta_tag' | 'http_file'
+    token = Column(String(96), nullable=False)           # challenge value to place
+    key_hash = Column(String(64), nullable=True)         # sha256(claim_key), set on verify
+    status = Column(String(16), nullable=False, default="pending")  # 'pending' | 'verified'
+    created_at = Column(DateTime, default=datetime.utcnow)
+    verified_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)         # verified_at + TTL
