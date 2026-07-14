@@ -34,6 +34,24 @@ _TESTSSL_SEVERITY_MAP = {
 # Values that represent passing checks - do NOT emit as findings
 _TESTSSL_SKIP = {'INFO', 'OK', 'HINT', 'DEBUG', 'NOT_TESTED', 'NOT applicable'}
 
+# testssl item ids that are scan mechanics / meta, never a target vulnerability.
+_TESTSSL_NOISE_IDS = {
+    'overall_grade', 'grade_cap_reason_1', 'grade_cap_reason_2', 'grade_cap_reason_3',
+    'grade_cap_reason_4', 'grade_cap_reason_5', 'scanProblem', 'engine_problem',
+    'HTTP_status_code', 'HTTP_headerTime', 'service', 'clientsimulation',
+}
+# testssl WARN-level lines whose text is a diagnostic about the SCAN (a failed
+# probe, an unreachable check, an engine limitation), not a weakness of the
+# target. testssl grades these WARN -> our map turns WARN into "Low", so without
+# this they surface as bogus Low findings with useless remediation.
+_TESTSSL_NOISE_PHRASES = (
+    'check failed', "couldn't connect", 'could not connect', 'connect problem',
+    'not tested', 'could not determine', 'pls report', 'please report',
+    "didn't succeed", 'did not succeed', 'repeatedly zero', 'header reply empty',
+    'no http status', 'no server certificate could be retrieved',
+    'scan interrupted', 'handshake failed',
+)
+
 
 # ---------------------------------------------------------------------------
 # HTTPS reachability pre-check
@@ -178,6 +196,19 @@ def _parse_testssl_json(path: str, domain: str, scan_id: str) -> List[dict]:
             if not isinstance(item, dict):
                 continue
             item_id = item.get('id', 'ssl_finding')
+            finding_text = item.get('finding', '') or item_id
+            # testssl emits its own scan-mechanics/diagnostic lines at WARN (which
+            # maps to "Low" below) - "check failed", "couldn't connect", "not
+            # tested", engine errors, the overall letter grade. These are NOT
+            # vulnerabilities about the target, but they were rendering as real
+            # Low/Medium findings with scary CVSS bands and useless "no tailored
+            # guidance" text (user-reported, clinkl.in report). Drop them by id
+            # and by diagnostic phrasing, regardless of the severity testssl set.
+            if item_id in _TESTSSL_NOISE_IDS:
+                continue
+            _ft_low = finding_text.lower()
+            if any(p in _ft_low for p in _TESTSSL_NOISE_PHRASES):
+                continue
             if item_id == 'scanTime':
                 # testssl.sh's own "did my scan finish" signal, not a graded
                 # vulnerability about the target - real bug found live
@@ -193,11 +224,15 @@ def _parse_testssl_json(path: str, domain: str, scan_id: str) -> List[dict]:
                 if raw_sev in _TESTSSL_SKIP or raw_sev not in _TESTSSL_SEVERITY_MAP:
                     continue
                 severity = _TESTSSL_SEVERITY_MAP[raw_sev]
-            finding_text = item.get('finding', '') or item_id
+            # Human title: testssl's `finding` text is usually a readable
+            # sentence ("No ciphers supporting Forward Secrecy offered"); use it
+            # alone and drop the raw scanner id prefix. Only fall back to the
+            # id-prefixed form when the text is too terse to stand on its own.
+            title = finding_text if len(finding_text) >= 18 else f'{item_id}: {finding_text}'
             findings.append(normalize_finding(
                 module=MODULE, tool='testssl',
                 type_=f'testssl_{item_id}',
-                title=f'{item_id}: {finding_text}'[:120],
+                title=title[:120],
                 evidence=f'{item_id}: {finding_text}',
                 severity=severity, target=domain,
             ))

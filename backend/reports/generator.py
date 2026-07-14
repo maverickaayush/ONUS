@@ -100,7 +100,6 @@ def generate_pdf(scan, analysis: dict, store_in_db: bool = True) -> bytes:
     }
 
     context = {
-        'iitk_logo_text': 'IIT Kanpur Computer Centre',
         'domain':          scan.domain,
         'scan_date':       scan_date.strftime('%-d %B %Y, %H:%M IST'),
         'risk_score':      risk_score,

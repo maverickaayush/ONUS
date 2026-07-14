@@ -118,10 +118,10 @@ vapt-tool/
 │   │   └── templates/report.html # Jinja2 PDF template
 │   ├── subfinder-config/         # provider-config.yaml (gitignored) + .example
 │   └── requirements.txt
-├── frontend/                     # Next.js 16 App Router
+├── frontend/                     # Next.js 16 App Router ("Command Center" UI)
 │   ├── app/                      # layout.tsx, page.tsx, globals.css
-│   ├── components/vapt/          # home-form, scan-status, decision-modal, report-dashboard, navbar, shared, background
-│   └── lib/                      # api.ts (typed fetch helpers), utils.ts
+│   ├── components/               # app-shell, new-scan, scan-status, decision-modal, report-dashboard, scans-list, command-palette, ambient-background, ui
+│   └── lib/                      # api.ts (typed fetch helpers), format.ts
 ├── migrations/                   # Alembic - repo-root sibling of backend/, not inside it
 ├── docker-compose.yml
 ├── alembic.ini
@@ -352,10 +352,11 @@ config, verification evidence, tool versions, module execution status).
 
 ### Frontend (`frontend/`)
 
-Next.js 16 App Router, communicates with the FastAPI backend via
-`lib/api.ts` (native `fetch`). Three main pages: New Scan (domain entry,
-authorization checkbox), Scan Status (live module progress, decision
-modal), Scans discovery dashboard (tracking many scans at once).
+Next.js 16 App Router, a dark "Command Center" interface communicating with
+the FastAPI backend via `lib/api.ts` (native `fetch`). Four views: New Scan
+(domain entry, authorization checkbox), Scan Status (live module progress,
+decision modal), Report (risk gauge, severity chart, findings catalogue, PDF
+download), and the Scans discovery dashboard (tracking many scans at once).
 
 ---
 

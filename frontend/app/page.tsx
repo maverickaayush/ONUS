@@ -1,11 +1,5 @@
-import { Navbar } from "@/components/vapt/navbar"
-import { HomeForm } from "@/components/vapt/home-form"
+import { NewScan } from '@/components/new-scan'
 
-export default function HomePage() {
-  return (
-    <>
-      <Navbar />
-      <HomeForm />
-    </>
-  )
+export default function Page() {
+  return <NewScan />
 }

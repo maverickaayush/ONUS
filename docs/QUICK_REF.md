@@ -80,7 +80,7 @@ alembic revision --autogenerate -m "description"
 | `backend/routers/` | FastAPI HTTP endpoints (`scan.py`, `report.py`) — validation + DB only, no scanning logic |
 | `backend/models.py` / `schemas.py` | SQLAlchemy ORM (`Scan`, `Report`) / Pydantic request-response schemas |
 | `migrations/` | Alembic migrations — lives at **repo root**, sibling of `backend/` (not inside it) |
-| `frontend/` | Next.js 16 App Router — `components/vapt/` has the 3 main pages, `lib/api.ts` has typed fetch helpers |
+| `frontend/` | Next.js 16 App Router ("Command Center" UI) — `components/` has the page components, `lib/api.ts` has typed fetch helpers |
 
 ---
 
@@ -114,5 +114,5 @@ finding. Missing it breaks dedup silently.
 | Change the retry/continue/cancel decision flow or its retry limit | `backend/tasks/scan_orchestrator.py` (`MAX_RETRIES_PER_MODULE`, `_pause_for_decision`, `retry_failed_modules`, `continue_after_decision`) — ARCHITECTURE.md §4.3b |
 | Change the stuck-scan (hard-SIGKILL) reaper deadline | `backend/routers/scan.py`'s `STUCK_SCAN_DEADLINE` |
 | Add a DB column | `backend/models.py` + new Alembic migration |
-| Change frontend page behavior | `frontend/components/vapt/*.tsx` |
+| Change frontend page behavior | `frontend/components/*.tsx` |
 | Change Docker service config | `docker-compose.yml` (root) |
