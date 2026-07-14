@@ -1,0 +1,8 @@
+node_modules
+.next
+.vite
+.git
+.mcp.json
+Dockerfile
+.dockerignore
+npm-debug.log*
