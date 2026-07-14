@@ -58,6 +58,49 @@ class AuthConfig(BaseModel):
     token_header_prefix: str = "Bearer "        # value prefix (note trailing space)
 
 
+def normalize_domain(v: str) -> str:
+    """Normalize + validate a target host string (shared by ScanRequest and the
+    domain-verification endpoints so a scan and its ownership check agree on
+    exactly what 'the domain' is). Strips scheme/path/port, rejects
+    localhost/private/loopback/link-local, requires a valid public domain or IP."""
+    import validators
+    import ipaddress
+
+    host = v.strip().lower()
+
+    # Accept full-URL input (the frontend submits a URL) by stripping the
+    # scheme, any path, and a trailing :port.
+    if "://" in host:
+        host = host.split("://", 1)[1]
+    host = host.split("/", 1)[0]
+    if host.count(":") == 1:  # host:port - but not an IPv6 literal
+        host = host.split(":", 1)[0]
+
+    if not host:
+        raise ValueError("Domain cannot be empty")
+
+    # Reject localhost variations
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("Scanning localhost is not permitted")
+
+    # Reject private / loopback / link-local IP literals (RFC 1918 etc.)
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            raise ValueError("Scanning private/internal IP addresses is not permitted")
+        # Public IP literal - allow it through.
+        return host
+
+    # Otherwise it must be a syntactically valid domain name.
+    if not validators.domain(host):
+        raise ValueError(f"Invalid domain format: {v}")
+
+    return host
+
+
 class ScanRequest(BaseModel):
     domain: str
     # NOTE: authorization is enforced in routers/scan.py so an unauthorized
@@ -65,52 +108,62 @@ class ScanRequest(BaseModel):
     authorized: bool
     notes: Optional[str] = None
     auth: Optional[AuthConfig] = None
+    # Domain-ownership claim key (routers/verify.py). Only consulted when
+    # config.REQUIRE_DOMAIN_VERIFICATION is True; the secret the caller received
+    # after proving control of `domain`. Ignored when verification is disabled.
+    claim_key: Optional[str] = None
 
     @field_validator("domain")
     @classmethod
     def validate_domain(cls, v: str) -> str:
-        import validators
-        import ipaddress
-
-        host = v.strip().lower()
-
-        # Accept full-URL input (the frontend submits a URL) by stripping the
-        # scheme, any path, and a trailing :port.
-        if "://" in host:
-            host = host.split("://", 1)[1]
-        host = host.split("/", 1)[0]
-        if host.count(":") == 1:  # host:port - but not an IPv6 literal
-            host = host.split(":", 1)[0]
-
-        if not host:
-            raise ValueError("Domain cannot be empty")
-
-        # Reject localhost variations
-        if host == "localhost" or host.endswith(".localhost"):
-            raise ValueError("Scanning localhost is not permitted")
-
-        # Reject private / loopback / link-local IP literals (RFC 1918 etc.)
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
-            ip = None
-        if ip is not None:
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
-                raise ValueError("Scanning private/internal IP addresses is not permitted")
-            # Public IP literal - allow it through.
-            return host
-
-        # Otherwise it must be a syntactically valid domain name.
-        if not validators.domain(host):
-            raise ValueError(f"Invalid domain format: {v}")
-
-        return host
+        return normalize_domain(v)
 
 
 class ScanResponse(BaseModel):
     job_id: UUID
     status: str
     domain: str
+
+
+# --- Domain-ownership verification (routers/verify.py) ---
+
+class DomainVerifyRequest(BaseModel):
+    domain: str
+    method: str = "meta_tag"   # 'meta_tag' | 'http_file'
+
+    @field_validator("domain")
+    @classmethod
+    def _validate_domain(cls, v: str) -> str:
+        return normalize_domain(v)
+
+    @field_validator("method")
+    @classmethod
+    def _validate_method(cls, v: str) -> str:
+        if v not in ("meta_tag", "http_file"):
+            raise ValueError("method must be 'meta_tag' or 'http_file'")
+        return v
+
+
+class DomainVerifyIssueResponse(BaseModel):
+    verification_id: UUID
+    domain: str
+    method: str
+    token: str
+    # Ready-to-paste instructions for whichever method was requested.
+    meta_tag: str          # <meta name="onus-verify" content="TOKEN">
+    file_path: str         # /.well-known/onus-verify/TOKEN
+    file_contents: str     # what the file must contain (the token)
+    instructions: str
+
+
+class DomainVerifyCheckResponse(BaseModel):
+    verified: bool
+    domain: str
+    # Present ONLY on the transition to verified - shown once, never stored in
+    # plaintext. The caller must keep it to start scans for this domain.
+    claim_key: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    detail: Optional[str] = None   # why it failed, when verified is False
 
 
 class ScanStatusResponse(BaseModel):
