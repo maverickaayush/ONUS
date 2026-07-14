@@ -14,8 +14,32 @@ jobs:
       - name: Validate docker-compose.yml
         run: docker compose config
 
+      - name: Free runner disk space
+        # backend + worker images are ~2.9GB each (Playwright + Nuclei
+        # templates); the default runner's ~14GB free on / can be tight when
+        # building all three at once. Reclaim the large preinstalled SDKs we
+        # don't use so the build never fails late on "no space left on device".
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/share/boost /usr/local/.ghcup || true
+          df -h /
+
       - name: Build core services
-        run: docker compose build backend worker frontend
+        # Retry the build: the base-image pulls (docker.io python/node) hit
+        # anonymous Docker Hub rate limits on shared runner IPs, which surface
+        # as an immediate (~25s) `docker compose build` exit 1 before any layer
+        # is built. A short backoff clears transient limits; a persistent limit
+        # needs DOCKERHUB_USERNAME/DOCKERHUB_TOKEN repo secrets + a docker/login
+        # step (not added here since no secrets are configured).
+        run: |
+          n=0
+          until [ "$n" -ge 3 ]; do
+            docker compose build backend worker frontend && exit 0
+            n=$((n + 1))
+            echo "::warning::compose build attempt $n failed (likely a transient image pull); retrying in 20s"
+            sleep 20
+          done
+          exit 1
 
   backend-tests:
     runs-on: ubuntu-latest
