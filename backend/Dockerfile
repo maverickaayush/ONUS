@@ -1,4 +1,8 @@
-FROM python:3.11-slim-bookworm AS base
+# Base image pulled from AWS's public ECR mirror of Docker Hub's official images
+# (public.ecr.aws/docker/library/*) rather than docker.io directly: identical
+# image, but not subject to Docker Hub's anonymous pull rate limit, which was
+# failing CI's `docker compose build` at pull time on shared runner IPs.
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm AS base
 
 # System tools the scanner modules need (ZAP runs as a separate sidecar
 # container — see docker-compose.yml — not installed here).

@@ -1,7 +1,9 @@
 # NOTE: this project's lockfile is package-lock.json (npm), not
 # pnpm-lock.yaml — verified by inspection, not assumed. A pnpm build with
 # --frozen-lockfile would fail immediately since no pnpm lockfile exists.
-FROM node:20-alpine AS builder
+# Pulled from AWS's public ECR mirror of Docker Hub official images to avoid
+# Docker Hub's anonymous pull rate limit failing CI builds (identical image).
+FROM public.ecr.aws/docker/library/node:20-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -17,7 +19,7 @@ ARG NEXT_INTERNAL_API_URL=http://backend:8000
 ENV NEXT_INTERNAL_API_URL=$NEXT_INTERNAL_API_URL
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM public.ecr.aws/docker/library/node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
