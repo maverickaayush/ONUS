@@ -24,22 +24,26 @@ jobs:
                       /usr/local/share/boost /usr/local/.ghcup || true
           df -h /
 
-      - name: Build core services
-        # Retry the build: the base-image pulls (docker.io python/node) hit
-        # anonymous Docker Hub rate limits on shared runner IPs, which surface
-        # as an immediate (~25s) `docker compose build` exit 1 before any layer
-        # is built. A short backoff clears transient limits; a persistent limit
-        # needs DOCKERHUB_USERNAME/DOCKERHUB_TOKEN repo secrets + a docker/login
-        # step (not added here since no secrets are configured).
+      - name: Pre-pull base images via ECR mirror (dodge Docker Hub pull limits)
+        # The compose build was failing at ~25-30s - before any layer builds -
+        # on the base-image pulls, identically on unrelated dependabot runs, and
+        # a retry-with-backoff didn't clear it: a persistent anonymous Docker Hub
+        # pull limit on the shared runner IP, not a Dockerfile issue (builds fine
+        # locally). public.ecr.aws mirrors the same official images with no such
+        # limit; pulling + retagging them here means `docker compose build` finds
+        # both tags locally and never touches Docker Hub. Dockerfiles and local
+        # dev are unchanged (they still reference the plain docker.io tags).
         run: |
-          n=0
-          until [ "$n" -ge 3 ]; do
-            docker compose build backend worker frontend && exit 0
-            n=$((n + 1))
-            echo "::warning::compose build attempt $n failed (likely a transient image pull); retrying in 20s"
-            sleep 20
-          done
-          exit 1
+          set -e
+          pull_retag() {
+            for i in 1 2 3; do docker pull "$1" && break || sleep 10; done
+            docker tag "$1" "$2"
+          }
+          pull_retag public.ecr.aws/docker/library/python:3.11-slim-bookworm python:3.11-slim-bookworm
+          pull_retag public.ecr.aws/docker/library/node:20-alpine node:20-alpine
+
+      - name: Build core services
+        run: docker compose build backend worker frontend
 
   backend-tests:
     runs-on: ubuntu-latest
