@@ -24,25 +24,10 @@ jobs:
                       /usr/local/share/boost /usr/local/.ghcup || true
           df -h /
 
-      - name: Pre-pull base images via ECR mirror (dodge Docker Hub pull limits)
-        # The compose build was failing at ~25-30s - before any layer builds -
-        # on the base-image pulls, identically on unrelated dependabot runs, and
-        # a retry-with-backoff didn't clear it: a persistent anonymous Docker Hub
-        # pull limit on the shared runner IP, not a Dockerfile issue (builds fine
-        # locally). public.ecr.aws mirrors the same official images with no such
-        # limit; pulling + retagging them here means `docker compose build` finds
-        # both tags locally and never touches Docker Hub. Dockerfiles and local
-        # dev are unchanged (they still reference the plain docker.io tags).
-        run: |
-          set -e
-          pull_retag() {
-            for i in 1 2 3; do docker pull "$1" && break || sleep 10; done
-            docker tag "$1" "$2"
-          }
-          pull_retag public.ecr.aws/docker/library/python:3.11-slim-bookworm python:3.11-slim-bookworm
-          pull_retag public.ecr.aws/docker/library/node:20-alpine node:20-alpine
-
       - name: Build core services
+        # Base images come from public.ecr.aws (see the Dockerfiles) to avoid
+        # Docker Hub's anonymous pull rate limit, which was failing this step at
+        # pull time on shared runner IPs.
         run: docker compose build backend worker frontend
 
   backend-tests:
