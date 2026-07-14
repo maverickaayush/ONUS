@@ -1315,10 +1315,17 @@ def _call_ollama(shaped: List[dict], overflow: int, domain: str,
         ],
     }
 
+    # Bearer auth only when talking to a protected endpoint (the Modal-hosted
+    # Ollama - config.OLLAMA_AUTH_TOKEN). Empty for a local/native Ollama.
+    headers = {}
+    if settings.OLLAMA_AUTH_TOKEN:
+        headers['Authorization'] = f'Bearer {settings.OLLAMA_AUTH_TOKEN}'
+
     resp = requests.post(
         f'{settings.OLLAMA_URL}/api/chat',
         json=payload,
         timeout=_OLLAMA_TIMEOUT,
+        headers=headers,
     )
     resp.raise_for_status()
 

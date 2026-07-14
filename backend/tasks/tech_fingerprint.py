@@ -236,21 +236,14 @@ def _run_wafw00f(scan_id: str, target: str, domain: str) -> List[dict]:
 # Celery task
 # ---------------------------------------------------------------------------
 
-@app.task(
-    base=BaseTask,
-    name='tasks.tech_fingerprint.run_tech_fingerprint',
-    soft_time_limit=_SOFT_LIMIT,
-    time_limit=_HARD_LIMIT,
-)
-def run_tech_fingerprint(scan_id: str, domain: str) -> dict:
+def scan_tech_fingerprint(scan_id: str, domain: str, auth: dict = None) -> dict:
     """
-    Technology fingerprinting: WhatWeb (passive) + WAFW00F. Partial results ok.
-    Returns a build_module_result() envelope (Section 4.3 schema note). This
-    is the one module where 'partial' is legitimate rather than invented -
-    whatweb_ok/wafw00f_ok already distinguish "one of two sub-tools failed"
-    from a clean run, an existing signal, not new detection logic.
+    Pure half (runs locally or on Modal via tasks.dispatch): technology
+    fingerprinting - WhatWeb (passive) + WAFW00F. Partial results ok (the one
+    module where 'partial' is legitimate - whatweb_ok/wafw00f_ok already
+    distinguish "one of two sub-tools failed" from a clean run). No DB/Redis;
+    returns a build_module_result() envelope (Section 4.3). `auth` unused.
     """
-    update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
     target = resolve_target_url(domain)
     findings: List[dict] = []
@@ -296,17 +289,31 @@ def run_tech_fingerprint(scan_id: str, domain: str) -> dict:
             status = 'failed'
             error = f'whatweb: {whatweb_error} | wafw00f: {wafw00f_error}'
 
-        update_module_status(scan_id, MODULE, 'complete' if status != 'failed' else 'failed')
         return build_module_result(MODULE, findings, tool_versions, status=status,
                                     error=error, duration_seconds=time.monotonic() - start)
     except SoftTimeLimitExceeded:
         logger.warning("tech_fingerprint hit its soft time limit for scan %s", scan_id)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='timeout',
                                     error='Module exceeded its soft time limit',
                                     duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("tech_fingerprint unexpected error scan=%s: %s", scan_id, e)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='failed',
                                     error=str(e), duration_seconds=time.monotonic() - start)
+
+
+@app.task(
+    base=BaseTask,
+    name='tasks.tech_fingerprint.run_tech_fingerprint',
+    soft_time_limit=_SOFT_LIMIT,
+    time_limit=_HARD_LIMIT,
+)
+def run_tech_fingerprint(scan_id: str, domain: str) -> dict:
+    """Dispatcher: owns the DB status writes (module namespace); tasks.dispatch
+    picks where the pure half runs (local subprocess vs Modal)."""
+    update_module_status(scan_id, MODULE, 'running')
+    from tasks.dispatch import dispatch_scan
+    envelope = dispatch_scan(MODULE, scan_id, domain)
+    update_module_status(scan_id, MODULE,
+                         'complete' if envelope.get('status') in ('success', 'partial') else 'failed')
+    return envelope

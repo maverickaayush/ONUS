@@ -15,20 +15,30 @@ jobs:
         run: docker compose config
 
       - name: Free runner disk space
-        # backend + worker images are ~2.9GB each (Playwright + Nuclei
-        # templates); the default runner's ~14GB free on / can be tight when
-        # building all three at once. Reclaim the large preinstalled SDKs we
-        # don't use so the build never fails late on "no space left on device".
+        # Playwright/Chromium + the scanner-tool layers make these images multi-GB;
+        # the default runner's ~14GB free on / can be tight. Reclaim the large
+        # preinstalled SDKs we don't use.
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
                       /usr/local/share/boost /usr/local/.ghcup || true
           df -h /
 
-      - name: Build core services
-        # Base images come from public.ecr.aws (see the Dockerfiles) to avoid
-        # Docker Hub's anonymous pull rate limit, which was failing this step at
-        # pull time on shared runner IPs.
-        run: docker compose build backend worker frontend
+      # Split into separate, named steps so a failure points at the exact image
+      # (the previous single "Build core services" step hid which one broke).
+      # Base images come from public.ecr.aws (see the Dockerfiles) to avoid Docker
+      # Hub's anonymous pull rate limit failing the build at pull time.
+      - name: Build backend image (slim arm64 Oracle deploy target)
+        run: docker build --target backend -t onus-backend:ci -f backend/Dockerfile .
+
+      - name: Build frontend image
+        run: docker compose build frontend
+
+      - name: Build full scanner image (local SCANNER_BACKEND=local)
+        # Heaviest image (all scanner binaries); dev-only. Best-effort so a
+        # transient tool-download hiccup here doesn't fail the whole check - the
+        # slim backend above is what actually deploys.
+        continue-on-error: true
+        run: docker build --target full -t onus-full:ci -f backend/Dockerfile .
 
   backend-tests:
     runs-on: ubuntu-latest

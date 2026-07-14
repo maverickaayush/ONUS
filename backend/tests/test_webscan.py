@@ -188,10 +188,11 @@ class TestWebscanRemoteZap:
              patch('tasks.webscan.ZAPv2', return_value=mock_zap), \
              patch('tasks.webscan._kill_zap'), \
              patch('tasks.webscan.time.sleep'), \
-             patch('tasks.auth_store.get_scan_auth', return_value=json_auth), \
              patch('tasks.auth_login.fetch_json_auth_token', return_value='JWT'):
             mock_settings.ZAP_URL = 'http://zap:8090'
-            _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}')
+            # auth is now passed in by scan_webscan/dispatch (post Modal-split),
+            # not fetched inside _run_zap - pass it directly.
+            _run_zap(TEST_SCAN_ID, TEST_DOMAIN, f'https://{TEST_DOMAIN}', json_auth)
 
         mock_zap.replacer.add_rule.assert_called_once()
         _, kwargs = mock_zap.replacer.add_rule.call_args

@@ -34,10 +34,28 @@ class Settings(BaseSettings):
     # env for known-slow targets, or drop to 1.0 to reproduce the original
     # lab-tuned timings.
     SCAN_TIMEOUT_MULTIPLIER: float = 1.5
-    # Concurrent-scan cap (Section 8) - a resource-exhaustion guard, not a
-    # security boundary. Raise via env for deployments with more worker
-    # capacity; this was previously documented but never enforced in code.
-    MAX_CONCURRENT_SCANS: int = 5
+    # Concurrent-scan cap (Section 8). Historically a 12 GB-RAM guard (ZAP +
+    # every scanner ran on the one box). Post-migration, scanners run on Modal
+    # (isolated, autoscaling) - so this is now a Modal-budget + target-politeness
+    # rate guard on the shared credit, not a memory limit. Default lowered 5 -> 3.
+    MAX_CONCURRENT_SCANS: int = 3
+    # Where the 8 scanner modules actually execute (tasks/dispatch.py):
+    #   'local'  - in-process subprocess tools (local Docker dev; needs the
+    #              'full' Dockerfile target with all scanner binaries installed).
+    #   'modal'  - dispatched to per-module Modal functions (production); the
+    #              Oracle backend image then needs none of the amd64 scanner
+    #              binaries (arm64-clean 'backend' target).
+    SCANNER_BACKEND: str = "local"
+    # Deployed Modal app name that tasks/dispatch.py looks scanner functions up
+    # in (modal.Function.from_name). Only used when SCANNER_BACKEND='modal'.
+    MODAL_APP_NAME: str = "onus-scanners"
+    # Bearer token for the Modal-hosted Ollama endpoint (analysis/ollama_client.py
+    # sends it as Authorization only when non-empty). Empty for a local/native
+    # Ollama that needs no auth.
+    OLLAMA_AUTH_TOKEN: str = ""
+    # Comma-separated CORS allow-origins (main.py). Env-driven so a hosted
+    # frontend origin can be added without a code change; defaults to local dev.
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
     # Domain-ownership verification (routers/verify.py). Default OFF: a local,
     # single-operator, air-gapped deployment trusts its operator, so forcing
     # DCV there is pure friction. Turn ON for a shared/hosted instance where
