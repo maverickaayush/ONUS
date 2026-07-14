@@ -197,18 +197,6 @@ def _parse_testssl_json(path: str, domain: str, scan_id: str) -> List[dict]:
                 continue
             item_id = item.get('id', 'ssl_finding')
             finding_text = item.get('finding', '') or item_id
-            # testssl emits its own scan-mechanics/diagnostic lines at WARN (which
-            # maps to "Low" below) - "check failed", "couldn't connect", "not
-            # tested", engine errors, the overall letter grade. These are NOT
-            # vulnerabilities about the target, but they were rendering as real
-            # Low/Medium findings with scary CVSS bands and useless "no tailored
-            # guidance" text (user-reported, clinkl.in report). Drop them by id
-            # and by diagnostic phrasing, regardless of the severity testssl set.
-            if item_id in _TESTSSL_NOISE_IDS:
-                continue
-            _ft_low = finding_text.lower()
-            if any(p in _ft_low for p in _TESTSSL_NOISE_PHRASES):
-                continue
             if item_id == 'scanTime':
                 # testssl.sh's own "did my scan finish" signal, not a graded
                 # vulnerability about the target - real bug found live
@@ -218,8 +206,24 @@ def _parse_testssl_json(path: str, domain: str, scan_id: str) -> List[dict]:
                 # it became the sole input to the AI executive summary,
                 # which then described the whole 38-finding scan as "a
                 # single low-severity issue" about an "interruption".
+                # Deliberately EXEMPT from the noise filters below: scanTime is
+                # metadata we always keep as Informational, even when testssl
+                # phrases it as an interruption/warning (which would otherwise
+                # match a _TESTSSL_NOISE_PHRASES entry and be dropped).
                 severity = 'Informational'
             else:
+                # testssl emits its own scan-mechanics/diagnostic lines at WARN
+                # (which maps to "Low" below) - "check failed", "couldn't
+                # connect", "not tested", engine errors, the overall letter
+                # grade. These are NOT vulnerabilities about the target, but
+                # they rendered as real Low/Medium findings with scary CVSS
+                # bands and useless "no tailored guidance" text (user-reported,
+                # clinkl.in report). Drop them by id and by diagnostic phrasing,
+                # regardless of the severity testssl set.
+                if item_id in _TESTSSL_NOISE_IDS:
+                    continue
+                if any(p in finding_text.lower() for p in _TESTSSL_NOISE_PHRASES):
+                    continue
                 raw_sev = str(item.get('severity', '')).upper().strip()
                 if raw_sev in _TESTSSL_SKIP or raw_sev not in _TESTSSL_SEVERITY_MAP:
                     continue
