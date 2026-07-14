@@ -154,6 +154,31 @@ def _run_nuclei(scan_id: str, target: str, domain: str) -> List[dict]:
     return findings
 
 
+def scan_nuclei(scan_id: str, domain: str, auth: dict = None) -> dict:
+    """
+    Pure half (runs locally or on Modal via tasks.dispatch): CVE/vulnerability
+    template scanning via Nuclei (curated template subset). No DB/Redis; returns
+    a build_module_result() envelope (Section 4.3). `auth` unused.
+    """
+    start = time.monotonic()
+    findings = []
+    target = resolve_target_url(domain)
+    try:
+        findings = _run_nuclei(scan_id, target, domain)
+        tool_versions = {'nuclei': get_tool_version('nuclei', '-version')}
+        return build_module_result(MODULE, findings, tool_versions, status='success',
+                                    duration_seconds=time.monotonic() - start)
+    except SoftTimeLimitExceeded:
+        logger.warning("nuclei hit its soft time limit for scan %s", scan_id)
+        return build_module_result(MODULE, findings, {}, status='timeout',
+                                    error='Module exceeded its soft time limit',
+                                    duration_seconds=time.monotonic() - start)
+    except Exception as e:
+        logger.exception("nuclei unexpected error scan=%s: %s", scan_id, e)
+        return build_module_result(MODULE, findings, {}, status='failed',
+                                    error=str(e), duration_seconds=time.monotonic() - start)
+
+
 @app.task(
     base=BaseTask,
     name='tasks.nuclei_scan.run_nuclei',
@@ -161,28 +186,11 @@ def _run_nuclei(scan_id: str, target: str, domain: str) -> List[dict]:
     time_limit=_HARD_LIMIT,
 )
 def run_nuclei(scan_id: str, domain: str) -> dict:
-    """
-    CVE/vulnerability template scanning via Nuclei (curated template subset).
-    Returns a build_module_result() envelope (Section 4.3 schema note).
-    """
+    """Dispatcher: owns the DB status writes (module namespace); tasks.dispatch
+    picks where the pure half runs (local subprocess vs Modal)."""
     update_module_status(scan_id, MODULE, 'running')
-    start = time.monotonic()
-    findings = []
-    target = resolve_target_url(domain)
-    try:
-        findings = _run_nuclei(scan_id, target, domain)
-        tool_versions = {'nuclei': get_tool_version('nuclei', '-version')}
-        update_module_status(scan_id, MODULE, 'complete')
-        return build_module_result(MODULE, findings, tool_versions, status='success',
-                                    duration_seconds=time.monotonic() - start)
-    except SoftTimeLimitExceeded:
-        logger.warning("nuclei hit its soft time limit for scan %s", scan_id)
-        update_module_status(scan_id, MODULE, 'failed')
-        return build_module_result(MODULE, findings, {}, status='timeout',
-                                    error='Module exceeded its soft time limit',
-                                    duration_seconds=time.monotonic() - start)
-    except Exception as e:
-        logger.exception("nuclei unexpected error scan=%s: %s", scan_id, e)
-        update_module_status(scan_id, MODULE, 'failed')
-        return build_module_result(MODULE, findings, {}, status='failed',
-                                    error=str(e), duration_seconds=time.monotonic() - start)
+    from tasks.dispatch import dispatch_scan
+    envelope = dispatch_scan(MODULE, scan_id, domain)
+    update_module_status(scan_id, MODULE,
+                         'complete' if envelope.get('status') in ('success', 'partial') else 'failed')
+    return envelope

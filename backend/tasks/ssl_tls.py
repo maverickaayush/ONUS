@@ -473,14 +473,13 @@ def _dedup(findings: List[dict]) -> List[dict]:
 # Main task
 # ---------------------------------------------------------------------------
 
-@app.task(base=BaseTask, name='tasks.ssl_tls.run_ssl_tls')
-def run_ssl_tls(scan_id: str, domain: str) -> dict:
+def scan_ssl_tls(scan_id: str, domain: str, auth: dict = None) -> dict:
     """
-    SSL/TLS module: testssl.sh + sslscan + pure-Python cert expiry check.
-    Either tool can be missing - the module degrades gracefully.
-    Returns a build_module_result() envelope (Section 4.3 schema note).
+    Pure half (runs locally or on Modal via tasks.dispatch): SSL/TLS module -
+    testssl.sh + sslscan + pure-Python cert expiry check. Either tool can be
+    missing - degrades gracefully. No DB/Redis; returns a build_module_result()
+    envelope (Section 4.3). `auth` unused.
     """
-    update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
     findings = []
 
@@ -496,7 +495,6 @@ def run_ssl_tls(scan_id: str, domain: str) -> dict:
                 evidence=f'TCP connection to {domain}:443 refused or timed out',
                 severity='Informational', target=domain,
             ))
-            update_module_status(scan_id, MODULE, 'complete')
             return build_module_result(MODULE, findings, {}, status='success',
                                         duration_seconds=time.monotonic() - start)
 
@@ -506,7 +504,6 @@ def run_ssl_tls(scan_id: str, domain: str) -> dict:
                 "ssl_tls scan %s: both testssl.sh and sslscan missing - "
                 "install them in the Docker image", scan_id,
             )
-            update_module_status(scan_id, MODULE, 'failed')
             return build_module_result(
                 MODULE, findings, {}, status='failed',
                 error='testssl.sh and sslscan are both missing from the image',
@@ -530,18 +527,27 @@ def run_ssl_tls(scan_id: str, domain: str) -> dict:
             'testssl': get_tool_version('testssl.sh', '--version'),
             'sslscan': get_tool_version('sslscan', '--version'),
         }
-        update_module_status(scan_id, MODULE, 'complete')
         return build_module_result(MODULE, findings, tool_versions, status='success',
                                     duration_seconds=time.monotonic() - start)
 
     except SoftTimeLimitExceeded:
         logger.warning("ssl_tls hit its soft time limit for scan %s", scan_id)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='timeout',
                                     error='Module exceeded its soft time limit',
                                     duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("ssl_tls unexpected error scan=%s: %s", scan_id, e)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='failed',
                                     error=str(e), duration_seconds=time.monotonic() - start)
+
+
+@app.task(base=BaseTask, name='tasks.ssl_tls.run_ssl_tls')
+def run_ssl_tls(scan_id: str, domain: str) -> dict:
+    """Dispatcher: owns the DB status writes (module namespace); tasks.dispatch
+    picks where the pure half runs (local subprocess vs Modal)."""
+    update_module_status(scan_id, MODULE, 'running')
+    from tasks.dispatch import dispatch_scan
+    envelope = dispatch_scan(MODULE, scan_id, domain)
+    update_module_status(scan_id, MODULE,
+                         'complete' if envelope.get('status') in ('success', 'partial') else 'failed')
+    return envelope

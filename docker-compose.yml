@@ -49,6 +49,9 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      # 'full' = base backend + all scanner binaries, for local SCANNER_BACKEND=
+      # local. Production Oracle builds the slim arm64 'backend' target instead.
+      target: full
     restart: unless-stopped
     depends_on:
       postgres:
@@ -78,6 +81,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      target: full
     restart: unless-stopped
     depends_on:
       backend:

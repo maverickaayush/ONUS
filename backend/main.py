@@ -1,19 +1,20 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from config import settings
 from routers.scan import router as scan_router
 from routers.report import router as report_router
 from routers.verify import router as verify_router
 
 app = FastAPI(
-    title="VAPT Tool API",
-    description="Automated Vulnerability Assessment and Penetration Testing - IIT Kanpur Computer Centre",
+    title="ONUS VAPT API",
+    description="ONUS - Automated Vulnerability Assessment and Penetration Testing",
     version="1.0.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

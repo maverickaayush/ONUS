@@ -710,16 +710,14 @@ def _run_dns(scan_id: str, domain: str) -> List[dict]:
 # anymore, but recon runs in
 # parallel with it either way and is never on the pipeline's critical path
 # for aggregation to start).
-@app.task(base=BaseTask, name='tasks.recon.run_recon',
-          soft_time_limit=_RECON_SOFT_LIMIT, time_limit=_RECON_HARD_LIMIT)
-def run_recon(scan_id: str, domain: str) -> dict:
+def scan_recon(scan_id: str, domain: str, auth: dict = None) -> dict:
     """
-    Recon module: nmap port scan, subfinder + Amass subdomain enumeration,
-    httpx liveness/tech probing, Naabu port pre-scan on live subdomains,
-    WHOIS lookup, DNS record checks (SPF/DMARC/DKIM).
-    Returns a build_module_result() envelope (Section 4.3 schema note).
+    Pure half (runs locally or on Modal via tasks.dispatch): recon module -
+    nmap port scan, subfinder + Amass subdomain enumeration, httpx liveness/tech
+    probing, Naabu port pre-scan on live subdomains, WHOIS, DNS (SPF/DMARC/DKIM).
+    No DB/Redis; returns a build_module_result() envelope (Section 4.3). `auth`
+    unused.
     """
-    update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
     findings = []
     try:
@@ -747,17 +745,27 @@ def run_recon(scan_id: str, domain: str) -> dict:
             'naabu':     get_tool_version('naabu', '-version'),
             'whois':     get_tool_version('whois', '--version'),
         }
-        update_module_status(scan_id, MODULE, 'complete')
         return build_module_result(MODULE, findings, tool_versions, status='success',
                                     duration_seconds=time.monotonic() - start)
     except SoftTimeLimitExceeded:
         logger.warning("recon hit its soft time limit (%ds) for scan %s", _RECON_SOFT_LIMIT, scan_id)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='timeout',
                                     error=f'Module exceeded its soft time limit ({_RECON_SOFT_LIMIT}s)',
                                     duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("recon unexpected error scan=%s: %s", scan_id, e)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='failed',
                                     error=str(e), duration_seconds=time.monotonic() - start)
+
+
+@app.task(base=BaseTask, name='tasks.recon.run_recon',
+          soft_time_limit=_RECON_SOFT_LIMIT, time_limit=_RECON_HARD_LIMIT)
+def run_recon(scan_id: str, domain: str) -> dict:
+    """Dispatcher: owns the DB status writes (module namespace); tasks.dispatch
+    picks where the pure half runs (local subprocess vs Modal)."""
+    update_module_status(scan_id, MODULE, 'running')
+    from tasks.dispatch import dispatch_scan
+    envelope = dispatch_scan(MODULE, scan_id, domain)
+    update_module_status(scan_id, MODULE,
+                         'complete' if envelope.get('status') in ('success', 'partial') else 'failed')
+    return envelope

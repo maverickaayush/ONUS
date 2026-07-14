@@ -251,7 +251,7 @@ def _poll_zap_scan(status_fn, scan_deadline: float, interval: int,
 # ZAP scanning
 # ---------------------------------------------------------------------------
 
-def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Optional[str], bool]:
+def _run_zap(scan_id: str, domain: str, target_url: str, auth: Optional[dict] = None) -> Tuple[List[dict], Optional[str], bool]:
     """
     Run OWASP ZAP: spider + active scan + collect alerts.
     Returns (normalized findings, zap_version, disconnected_mid_scan).
@@ -374,8 +374,9 @@ def _run_zap(scan_id: str, domain: str, target_url: str) -> Tuple[List[dict], Op
         # concurrency tuning was tried first and looked like a fix in
         # isolated tests, but the real culprit was this indicator check, not
         # load - concurrency wasn't touched in the end.
-        from tasks.auth_store import get_scan_auth
-        auth = get_scan_auth(scan_id)
+        # auth is passed in by scan_webscan (the dispatcher fetched it from
+        # Redis on Oracle) - never read here, so this runs unchanged on a
+        # stateless Modal container.
         # login_type defaults to auto-detection (form vs JSON sniffed from the
         # login URL) unless the operator forced 'form'/'json'.
         from tasks.auth_login import resolve_login_type
@@ -740,14 +741,14 @@ def _run_nikto(scan_id: str, domain: str, target_url: str) -> List[dict]:
 # Main task
 # ---------------------------------------------------------------------------
 
-@app.task(
-    base=BaseTask,
-    name='tasks.webscan.run_webscan',
-    soft_time_limit=_WEBSCAN_SOFT_LIMIT,
-    time_limit=_WEBSCAN_HARD_LIMIT,
-)
-def run_webscan(scan_id: str, domain: str) -> dict:
+def scan_webscan(scan_id: str, domain: str, auth: dict = None) -> dict:
     """
+    Pure half (runs locally or on Modal via tasks.dispatch). On Modal, ZAP runs
+    in-container (config.ZAP_URL empty -> _run_zap's local-daemon spawn/kill
+    branch). `auth` is passed in by the dispatcher (fetched from Redis on
+    Oracle); the pure half never reads Redis, so it runs on a stateless Modal
+    container.
+
     Web scan module: OWASP ZAP (spider + active scan) + Katana (parallel,
     JS-aware supplemental crawl) + Nikto.
 
@@ -767,14 +768,13 @@ def run_webscan(scan_id: str, domain: str) -> dict:
     this distinction matters: silently reporting 'success' here previously
     made a lost ZAP scan indistinguishable from "ZAP genuinely found nothing".
     """
-    update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
     findings = []
     target_url = resolve_target_url(domain)
 
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            zap_future = executor.submit(_run_zap, scan_id, domain, target_url)
+            zap_future = executor.submit(_run_zap, scan_id, domain, target_url, auth)
             katana_future = executor.submit(_run_katana, scan_id, domain, target_url)
             zap_findings, zap_version, zap_disconnected = zap_future.result()
             katana_findings = katana_future.result()
@@ -792,7 +792,6 @@ def run_webscan(scan_id: str, domain: str) -> dict:
             'katana': get_tool_version('katana', '-version'),
             'nikto':  get_tool_version('nikto', '-Version'),
         }
-        update_module_status(scan_id, MODULE, 'complete')
         if zap_disconnected:
             return build_module_result(
                 MODULE, findings, tool_versions, status='partial',
@@ -806,13 +805,28 @@ def run_webscan(scan_id: str, domain: str) -> dict:
     except SoftTimeLimitExceeded:
         logger.warning("webscan hit its soft time limit (%ds) for scan %s",
                         _WEBSCAN_SOFT_LIMIT, scan_id)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(
             MODULE, findings, {}, status='timeout',
             error=f'Module exceeded its soft time limit ({_WEBSCAN_SOFT_LIMIT}s)',
             duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("webscan unexpected error scan=%s: %s", scan_id, e)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='failed',
                                     error=str(e), duration_seconds=time.monotonic() - start)
+
+
+@app.task(
+    base=BaseTask,
+    name='tasks.webscan.run_webscan',
+    soft_time_limit=_WEBSCAN_SOFT_LIMIT,
+    time_limit=_WEBSCAN_HARD_LIMIT,
+)
+def run_webscan(scan_id: str, domain: str) -> dict:
+    """Dispatcher: owns the DB status writes (module namespace); tasks.dispatch
+    picks where the pure half runs (local subprocess vs Modal)."""
+    update_module_status(scan_id, MODULE, 'running')
+    from tasks.dispatch import dispatch_scan
+    envelope = dispatch_scan(MODULE, scan_id, domain)
+    update_module_status(scan_id, MODULE,
+                         'complete' if envelope.get('status') in ('success', 'partial') else 'failed')
+    return envelope

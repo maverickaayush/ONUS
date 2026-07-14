@@ -342,29 +342,37 @@ def _run_headers(scan_id: str, domain: str) -> List[dict]:
 # Celery task
 # ---------------------------------------------------------------------------
 
-@app.task(base=BaseTask, name='tasks.headers.run_headers')
-def run_headers(scan_id: str, domain: str) -> dict:
+def scan_headers(scan_id: str, domain: str, auth: dict = None) -> dict:
     """
-    HTTP security headers analysis - single GET request, pure Python, no
-    external tool (tool_versions is always empty for this module).
-    Returns a build_module_result() envelope (Section 4.3 schema note).
+    Pure half (runs locally or on Modal via tasks.dispatch.dispatch_scan): HTTP
+    security headers analysis - single GET request, pure Python, no external
+    tool (tool_versions always empty). No DB/Redis; returns a
+    build_module_result() envelope (Section 4.3). `auth` is unused here.
     """
-    update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
     findings = []
     try:
         findings = _run_headers(scan_id, domain)
-        update_module_status(scan_id, MODULE, 'complete')
         return build_module_result(MODULE, findings, {}, status='success',
                                     duration_seconds=time.monotonic() - start)
     except SoftTimeLimitExceeded:
         logger.warning("headers hit its soft time limit for scan %s", scan_id)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='timeout',
                                     error='Module exceeded its soft time limit',
                                     duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("headers unexpected error scan=%s: %s", scan_id, e)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='failed',
                                     error=str(e), duration_seconds=time.monotonic() - start)
+
+
+@app.task(base=BaseTask, name='tasks.headers.run_headers')
+def run_headers(scan_id: str, domain: str) -> dict:
+    """Dispatcher: owns the DB status writes (module namespace); tasks.dispatch
+    picks where the pure half runs (local subprocess vs Modal)."""
+    update_module_status(scan_id, MODULE, 'running')
+    from tasks.dispatch import dispatch_scan
+    envelope = dispatch_scan(MODULE, scan_id, domain)
+    update_module_status(scan_id, MODULE,
+                         'complete' if envelope.get('status') in ('success', 'partial') else 'failed')
+    return envelope

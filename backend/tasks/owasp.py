@@ -864,10 +864,12 @@ def _login_result_finding(login_result: dict, domain: str) -> Optional[dict]:
     )
 
 
-@app.task(base=BaseTask, name='tasks.owasp.run_owasp',
-          soft_time_limit=scaled_timeout(360), time_limit=scaled_timeout(420))
-def run_owasp(scan_id: str, domain: str) -> dict:
+def scan_owasp(scan_id: str, domain: str, auth: dict = None) -> dict:
     """
+    Pure half (runs locally or on Modal via tasks.dispatch). `auth` is passed in
+    by the dispatcher (fetched from Redis on Oracle) - the pure half never reads
+    Redis itself, so it can run on a stateless Modal container.
+
     OWASP Top 10 module: 6 non-destructive active tests (SQLi, XSS, path
     traversal, open redirect, error disclosure, IDOR), run against a
     same-origin crawl of up to _MAX_CRAWL_PAGES pages rather than just the
@@ -901,12 +903,9 @@ def run_owasp(scan_id: str, domain: str) -> dict:
     instead of vanishing under a SIGKILL the scan orchestrator has to wait
     out via the coarse stuck-scan reaper.
     """
-    update_module_status(scan_id, MODULE, 'running')
     start = time.monotonic()
     findings = []
     target = resolve_target_url(domain)
-    from tasks.auth_store import get_scan_auth
-    auth = get_scan_auth(scan_id)
     session = _make_session(auth)
     login_finding = _login_result_finding(session.login_result, domain)
     if login_finding:
@@ -936,17 +935,27 @@ def run_owasp(scan_id: str, domain: str) -> dict:
                     logger.error("owasp %s failed for scan %s (url=%s): %s",
                                  test_fn.__name__, scan_id, url, e)
 
-        update_module_status(scan_id, MODULE, 'complete')
         return build_module_result(MODULE, findings, {}, status='success',
                                     duration_seconds=time.monotonic() - start)
     except SoftTimeLimitExceeded:
         logger.warning("owasp hit its soft time limit for scan %s", scan_id)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='timeout',
                                     error='Module exceeded its soft time limit',
                                     duration_seconds=time.monotonic() - start)
     except Exception as e:
         logger.exception("owasp unexpected error scan=%s: %s", scan_id, e)
-        update_module_status(scan_id, MODULE, 'failed')
         return build_module_result(MODULE, findings, {}, status='failed',
                                     error=str(e), duration_seconds=time.monotonic() - start)
+
+
+@app.task(base=BaseTask, name='tasks.owasp.run_owasp',
+          soft_time_limit=scaled_timeout(360), time_limit=scaled_timeout(420))
+def run_owasp(scan_id: str, domain: str) -> dict:
+    """Dispatcher: owns the DB status writes (module namespace); tasks.dispatch
+    picks where the pure half runs (local subprocess vs Modal)."""
+    update_module_status(scan_id, MODULE, 'running')
+    from tasks.dispatch import dispatch_scan
+    envelope = dispatch_scan(MODULE, scan_id, domain)
+    update_module_status(scan_id, MODULE,
+                         'complete' if envelope.get('status') in ('success', 'partial') else 'failed')
+    return envelope
