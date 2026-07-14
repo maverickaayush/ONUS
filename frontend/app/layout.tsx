@@ -1,38 +1,46 @@
-import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
+import { Inter, JetBrains_Mono, Orbitron } from 'next/font/google'
+import { AppShell } from '@/components/app-shell'
 import './globals.css'
 
-const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] })
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
+// DIRECTION B typographic thesis - dramatic duality, command-console register:
+//   Orbitron       → extended geometric all-caps SIGNAGE (headers, major labels)
+//   JetBrains Mono → dense crisp DATA (scores, IPs, timestamps, evidence)
+//   Inter          → readable PROSE (AI narrative, descriptions)
+const orbitron = Orbitron({
+  variable: '--font-orbitron',
   subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800'],
+})
+const jbMono = JetBrains_Mono({
+  variable: '--font-jbmono',
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+})
+const inter = Inter({
+  variable: '--font-inter',
+  subsets: ['latin'],
+  weight: ['400', '500', '600'],
 })
 
 export const metadata: Metadata = {
-  title: 'VAPT Tool — IIT Kanpur Computer Centre',
+  title: 'ONUS // COMMAND CENTER',
   description:
-    'Automated Vulnerability Assessment & Penetration Testing platform for IIT Kanpur Computer Centre.',
-  generator: 'v0.app',
+    'ONUS runs deterministic, verifiable vulnerability assessments. Evidence decides; AI only explains.',
 }
 
 export const viewport: Viewport = {
   colorScheme: 'dark',
-  themeColor: '#0a0e1a',
+  themeColor: '#030304',
   width: 'device-width',
   initialScale: 1,
 }
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} bg-[#0a0e1a]`}>
-      <body className="font-sans antialiased bg-[#0a0e1a] text-slate-100">
-        {children}
-        {process.env.NODE_ENV === 'production' && <Analytics />}
+    <html lang="en" className={`${orbitron.variable} ${jbMono.variable} ${inter.variable}`}>
+      <body className="min-h-screen font-sans antialiased">
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   )

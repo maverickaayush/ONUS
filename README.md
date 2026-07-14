@@ -1,7 +1,9 @@
-# VAPT Tool - Automated Vulnerability Assessment & Penetration Testing
+# ONUS - Automated Vulnerability Assessment & Penetration Testing
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/maverickaayush/Autonomous-AI-Powered-Vulnerability-Assessment-Platform/actions/workflows/ci.yml/badge.svg)](https://github.com/maverickaayush/Autonomous-AI-Powered-Vulnerability-Assessment-Platform/actions/workflows/ci.yml)
+[![CI](https://github.com/maverickaayush/ONUS/actions/workflows/ci.yml/badge.svg)](https://github.com/maverickaayush/ONUS/actions/workflows/ci.yml)
+
+Built by [maverickaayush](https://github.com/maverickaayush).
 
 A locally-hosted, air-gapped VAPT tool: point it at an authorized target
 domain and it runs 8 scanning modules in parallel, deterministically scores

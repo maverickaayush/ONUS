@@ -275,39 +275,48 @@ def _shift_priority_by_confidence(priority: int, confidence: str) -> int:
 # Rule resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_vector(ftype: str, finding: dict) -> Tuple[str, Optional[float]]:
+def _resolve_vector(ftype: str, finding: dict) -> Tuple[str, Optional[float], bool]:
     """
-    Return (vector, trusted_score_or_None). trusted_score is only set for
-    nuclei_* findings, where the template's own pre-computed cvss is kept
-    verbatim instead of being re-derived from a band vector.
+    Return (vector, trusted_score_or_None, authoritative). trusted_score is
+    only set for nuclei_* findings, where the template's own pre-computed cvss
+    is kept verbatim instead of being re-derived from a band vector.
+
+    `authoritative` is True only when the vector came from a per-type _RULES
+    entry reasoned metric-by-metric. For band-derived findings (nuclei/trust-
+    source/unknown) the vector is a representative placeholder whose individual
+    metrics (AV/AC/UI/...) are NOT meaningful for the specific finding - e.g. a
+    testssl TLS issue borrowing the Medium band's UI:R/AC:L, which is wrong for
+    a network MITM. Those are used to derive a defensible score band, but
+    score_finding() suppresses their cvss_vector so the report never presents a
+    fabricated per-metric breakdown as if it were real. See ARCHITECTURE 4.5.
     """
     # Nikto genuinely reports "Directory indexing found"-style messages -
     # reuse that real signal instead of inventing detection.
     if ftype == 'nikto_finding':
         text = f"{finding.get('title', '')} {finding.get('evidence', '')}"
         if _DIRECTORY_LISTING_RE.search(text):
-            return _RULES['directory_listing_enabled'], None
+            return _RULES['directory_listing_enabled'], None, True
 
     if ftype in _RULES:
         rule = _RULES[ftype]
         vector = rule(finding) if callable(rule) else rule
-        return vector, None
+        return vector, None, True
 
     if ftype.startswith(_NUCLEI_PREFIX):
         severity = finding.get('severity', 'Informational')
         band_vector = _BAND_VECTOR.get(severity, _BAND_VECTOR['Informational'])
         trusted_score = float(finding.get('cvss', 0.0) or 0.0)
-        return band_vector, trusted_score
+        return band_vector, trusted_score, False
 
     if ftype.startswith(_TRUST_SOURCE_PREFIXES) or ftype in _TRUST_SOURCE_TYPES:
         severity = finding.get('severity', 'Informational')
-        return _BAND_VECTOR.get(severity, _BAND_VECTOR['Informational']), None
+        return _BAND_VECTOR.get(severity, _BAND_VECTOR['Informational']), None, False
 
     # Unknown type - safety net. Use whatever severity the scanning module
     # already assigned as the band selector, so every finding still gets a
     # deterministic, formula-derived score rather than an error.
     severity = finding.get('severity', 'Informational')
-    return _BAND_VECTOR.get(severity, _BAND_VECTOR['Informational']), None
+    return _BAND_VECTOR.get(severity, _BAND_VECTOR['Informational']), None, False
 
 
 def score_finding(finding: dict, target_context: Optional[dict] = None) -> dict:
@@ -320,7 +329,7 @@ def score_finding(finding: dict, target_context: Optional[dict] = None) -> dict:
     reliable signal exists yet to act on it.
     """
     ftype = finding.get('type', '')
-    vector, trusted_score = _resolve_vector(ftype, finding)
+    vector, trusted_score, authoritative = _resolve_vector(ftype, finding)
     metrics = parse_vector(vector)
 
     score = trusted_score if trusted_score is not None else base_score(vector)
@@ -331,7 +340,10 @@ def score_finding(finding: dict, target_context: Optional[dict] = None) -> dict:
 
     return {
         'cvss_score': round(score, 1),
-        'cvss_vector': vector,
+        # Only publish a vector reasoned per-type; band-derived placeholders are
+        # suppressed (None) so the report never shows a fabricated, identical
+        # per-metric breakdown across every trust-source finding.
+        'cvss_vector': vector if authoritative else None,
         'severity': severity,
         'priority': priority,
         'owasp_category': owasp,

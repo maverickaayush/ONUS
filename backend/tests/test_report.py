@@ -206,27 +206,28 @@ class TestRiskBadge:
 
     def test_risk_70_plus_is_red(self):
         html = self._get_html(70)
-        assert '#C0392B' in html
+        assert '#ff2d4a' in html
 
     def test_risk_40_to_69_is_amber(self):
         html = self._get_html(40)
-        assert '#D4870A' in html
+        assert '#f5a623' in html
 
     def test_risk_below_40_is_green(self):
         html = self._get_html(39)
-        assert '#27AE60' in html
+        assert '#26e0f5' in html
 
     def test_risk_exactly_40_is_amber_not_green(self):
         html = self._get_html(40)
-        assert '#D4870A' in html
-        # The badge inline style must use amber, not green
-        # Extract the risk-badge element's style attribute to check precisely
+        assert '#f5a623' in html
+        # The risk ring inline style must use amber, not the low-risk cyan.
         import re
-        badge_style = re.search(
-            r'class="risk-badge"\s+style="background:([^"]+)"', html)
-        assert badge_style, "risk-badge style attribute not found"
-        assert badge_style.group(1).strip() == '#D4870A', \
-            f"Expected amber #D4870A at risk=40, got {badge_style.group(1)}"
+        ring_style = re.search(
+            r'class="risk-ring"\s+style="([^"]+)"', html)
+        assert ring_style, "risk-ring style attribute not found"
+        assert '#f5a623' in ring_style.group(1), \
+            f"Expected amber #f5a623 at risk=40, got {ring_style.group(1)}"
+        assert '#26e0f5' not in ring_style.group(1), \
+            "Low-risk cyan must not appear on an elevated-risk ring"
 
 
 class TestSeverityBadge:
@@ -256,28 +257,28 @@ class TestSeverityBadge:
         )
 
     def test_critical_uppercase(self):
-        assert '#C0392B' in self._badge_html('CRITICAL')
+        assert 'b-critical' in self._badge_html('CRITICAL')
 
     def test_critical_lowercase(self):
-        assert '#C0392B' in self._badge_html('critical')
+        assert 'b-critical' in self._badge_html('critical')
 
     def test_critical_titlecase(self):
-        assert '#C0392B' in self._badge_html('Critical')
+        assert 'b-critical' in self._badge_html('Critical')
 
     def test_high_color(self):
-        assert '#E67E22' in self._badge_html('High')
+        assert 'b-high' in self._badge_html('High')
 
     def test_medium_color(self):
-        assert '#F39C12' in self._badge_html('Medium')
+        assert 'b-medium' in self._badge_html('Medium')
 
     def test_low_color(self):
-        assert '#2980B9' in self._badge_html('Low')
+        assert 'b-low' in self._badge_html('Low')
 
     def test_info_color(self):
-        assert '#7F8C8D' in self._badge_html('Informational')
+        assert 'b-info' in self._badge_html('Informational')
 
     def test_unknown_severity_fallback_gray(self):
-        assert '#7F8C8D' in self._badge_html('Unknown')
+        assert 'b-info' in self._badge_html('Unknown')
 
 
 class TestConfidenceDisplay:

@@ -140,6 +140,30 @@ _DEFAULT_REMEDIATION = (
     "clearly sensitive (credentials, source code, internal paths).",
 )
 
+# testssl.sh emits hundreds of distinct, open-ended TLS check ids, so they go to
+# the AI pass rather than a per-id template (see _TYPE_REMEDIATION's note). When
+# the AI is unavailable, or a testssl finding falls beyond the AI cutoff, this
+# is what it lands on instead of the generic default above - genuinely useful,
+# plain-language TLS guidance a normal operator can follow, not a "search for a
+# WordPress fix" placeholder (the exact gap in a real clinkl.in report).
+_TLS_DEFAULT_REMEDIATION = (
+    "Your site's HTTPS/TLS configuration has a weakness flagged by the SSL/TLS "
+    "scanner - the evidence line above names the exact protocol, cipher, "
+    "certificate, or extension involved. Individually most of these are low-to-"
+    "medium risk, but together they weaken how safely browsers negotiate a "
+    "secure connection to your site.",
+    "1) Don't hand-pick individual ciphers - regenerate a known-good config with "
+    "the free Mozilla SSL Configuration Generator (ssl-config.mozilla.org): "
+    "choose your web server (nginx, Apache, etc.) and the \"Intermediate\" "
+    "profile, which disables outdated protocols and weak ciphers and turns on "
+    "Forward Secrecy and HSTS for you. 2) Apply the generated config and reload "
+    "the server (for example `nginx -t && systemctl reload nginx`). 3) Confirm "
+    "your certificate is current and issued by a trusted CA - renew it through "
+    "your Let's Encrypt/ACME client if it is close to expiry. 4) Re-test for "
+    "free at ssllabs.com/ssltest and aim for grade A; it re-lists anything still "
+    "outstanding in plain language with the specific fix.",
+)
+
 # Real bug found live (user-reported, against an approved real target -
 # clinkl.in): the aggregator's response-fingerprint collapse (>5 paths
 # sharing an identical HTTP status+size - typically a WAF/catch-all deny
@@ -1106,6 +1130,10 @@ def _generic_remediation(finding: dict) -> Tuple[str, str]:
     type_template = _TYPE_REMEDIATION.get(finding.get('type', ''))
     if type_template:
         return type_template
+    # TLS/SSL findings (testssl.sh, open-ended ids) get a security-appropriate
+    # default rather than the generic "search for a WordPress fix" one.
+    if str(finding.get('type', '')).startswith('testssl_') or finding.get('module') == 'ssl_tls':
+        return _TLS_DEFAULT_REMEDIATION
     category = finding.get('owasp_category', '')
     return _GENERIC_REMEDIATION.get(category, _DEFAULT_REMEDIATION)
 

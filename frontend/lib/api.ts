@@ -1,16 +1,51 @@
-export type ScanStatus =
-  | 'queued' | 'running' | 'analysing' | 'awaiting_user_decision' | 'complete' | 'failed' | 'cancelled'
+// Typed client for the VAPT backend. Every field name, endpoint, status code
+// and query-param below is the exact wire contract from FRONTEND_INTEGRATION_SPEC
+// Sections 3–4. All requests are same-origin (/api/*) and proxied server-side
+// by next.config.mjs — the browser never calls the backend cross-origin.
 
-export type ModuleStatus =
-  | 'queued' | 'running' | 'complete' | 'failed'
+// ── Enums ───────────────────────────────────────────────────────────────────
+export type ScanStatus =
+  | 'queued'
+  | 'running'
+  | 'analysing'
+  | 'awaiting_user_decision'
+  | 'complete'
+  | 'failed'
+  | 'cancelled'
+
+export type ModuleStatus = 'queued' | 'running' | 'complete' | 'failed'
 
 export type ScanDecisionAction = 'retry' | 'continue' | 'cancel'
 
+export type Severity = 'Critical' | 'High' | 'Medium' | 'Low' | 'Informational'
+
+// ── Module metadata ─────────────────────────────────────────────────────────
 export interface ScanModuleInfo {
   id: string
   label: string
   icon_hint: string
   description: string
+}
+
+// ── Scan creation ───────────────────────────────────────────────────────────
+export interface AuthConfigWire {
+  login_url: string
+  username: string
+  password: string
+  username_field?: string
+  password_field?: string
+  logged_in_indicator?: string | null
+  login_type?: 'auto' | 'form' | 'json'
+  token_json_path?: string | null
+  token_header?: string
+  token_header_prefix?: string
+}
+
+export interface ScanRequestBody {
+  domain: string
+  authorized: boolean
+  notes?: string
+  auth?: AuthConfigWire
 }
 
 export interface ScanResponse {
@@ -19,6 +54,7 @@ export interface ScanResponse {
   domain: string
 }
 
+// ── Status ──────────────────────────────────────────────────────────────────
 export interface ScanStatusResponse {
   job_id: string
   domain: string
@@ -26,28 +62,26 @@ export interface ScanStatusResponse {
   progress: number
   started_at: string | null
   modules: Record<string, ModuleStatus>
-  // Only populated while status === 'awaiting_user_decision'.
   module_errors?: Record<string, string> | null
   can_retry?: boolean | null
 }
 
-export interface Finding {
-  type: string
+// ── Findings ────────────────────────────────────────────────────────────────
+export interface ApiFinding {
   title: string
   description?: string
-  severity: 'Critical' | 'High' | 'Medium' | 'Low' | 'Informational'
+  severity: Severity
   cvss_score: number
   cvss_vector?: string
   owasp_category?: string | null
   cve_reference?: string | null
   evidence: string
-  remediation?: string | string[]
+  remediation?: string
   priority?: number
   module: string
-  found_by: string[]
-  target: string
-  confidence?: string | null
-  verification_note?: string | null
+  // Optional confidence-verification fields — genuinely optional, may be absent.
+  confidence?: 'confirmed' | 'probable' | 'unverified'
+  verification_note?: string
 }
 
 export interface FindingsResponse {
@@ -58,107 +92,10 @@ export interface FindingsResponse {
   total_medium: number
   total_low: number
   total_informational: number
-  findings: Finding[]
+  findings: ApiFinding[]
 }
 
-export class ApiError extends Error {
-  constructor(public status: number, message: string) {
-    super(message)
-    this.name = 'ApiError'
-  }
-}
-
-async function handle<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({}))
-    const message =
-      typeof detail.detail === 'string'
-        ? detail.detail
-        : detail.detail?.message || `HTTP ${res.status}`
-    throw new ApiError(res.status, message)
-  }
-  return res.json() as Promise<T>
-}
-
-export interface AuthConfig {
-  loginUrl: string
-  username: string
-  password: string
-  usernameField?: string
-  passwordField?: string
-  loggedInIndicator?: string
-  loginType?: 'auto' | 'form' | 'json'
-  tokenJsonPath?: string   // JSON login only, e.g. 'authentication.token'
-  tokenHeader?: string
-  tokenHeaderPrefix?: string
-}
-
-export async function submitScan(
-  domain: string,
-  authorized: boolean,
-  auth?: AuthConfig,
-): Promise<ScanResponse> {
-  const res = await fetch('/api/scan', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      domain,
-      authorized,
-      // Omitted entirely (not `auth: null`) when not set, so the no-auth
-      // request body is byte-identical to before this feature existed.
-      ...(auth && {
-        auth: {
-          login_url: auth.loginUrl,
-          username: auth.username,
-          password: auth.password,
-          ...(auth.usernameField && { username_field: auth.usernameField }),
-          ...(auth.passwordField && { password_field: auth.passwordField }),
-          ...(auth.loggedInIndicator && { logged_in_indicator: auth.loggedInIndicator }),
-          ...(auth.loginType && { login_type: auth.loginType }),
-          ...(auth.tokenJsonPath && { token_json_path: auth.tokenJsonPath }),
-          ...(auth.tokenHeader && { token_header: auth.tokenHeader }),
-          ...(auth.tokenHeaderPrefix && { token_header_prefix: auth.tokenHeaderPrefix }),
-        },
-      }),
-    }),
-  })
-  return handle<ScanResponse>(res)
-}
-
-export async function getScanStatus(jobId: string): Promise<ScanStatusResponse> {
-  const res = await fetch(`/api/scan/${jobId}/status`, { cache: 'no-store' })
-  return handle<ScanStatusResponse>(res)
-}
-
-export async function postScanDecision(
-  jobId: string,
-  action: ScanDecisionAction,
-): Promise<ScanStatusResponse> {
-  const res = await fetch(`/api/scan/${jobId}/decision`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action }),
-  })
-  return handle<ScanStatusResponse>(res)
-}
-
-export async function getFindings(jobId: string): Promise<FindingsResponse> {
-  const res = await fetch(`/api/scan/${jobId}/findings`, { cache: 'no-store' })
-  return handle<FindingsResponse>(res)
-}
-
-export function reportPdfUrl(jobId: string): string {
-  return `/api/scan/${jobId}/report`
-}
-
-export async function getScanModules(): Promise<ScanModuleInfo[]> {
-  const res = await fetch('/api/scan/modules', { cache: 'no-store' })
-  const data = await handle<{ modules: ScanModuleInfo[] }>(res)
-  return data.modules
-}
-
-// ─── Scans discovery/listing page ───────────────────────────────────────────
-
+// ── Scans discovery list ────────────────────────────────────────────────────
 export interface ScanListItem {
   job_id: string
   target: string
@@ -172,15 +109,6 @@ export interface ScanListItem {
   module_errors?: string[] | null
   modules_completed: number
   modules_total: number
-}
-
-export interface ScanListParams {
-  status?: string
-  search?: string
-  sort?: 'created_at' | 'updated_at' | 'status' | 'target'
-  order?: 'asc' | 'desc'
-  page?: number
-  page_size?: number
 }
 
 export interface ScanListCounts {
@@ -200,12 +128,120 @@ export interface ScanListResponse {
   total_pages: number
 }
 
+export interface ScanListParams {
+  status?: string
+  search?: string
+  sort?: 'created_at' | 'updated_at' | 'status' | 'target'
+  order?: 'asc' | 'desc'
+  page?: number
+  page_size?: number
+}
+
+// ── Error type ──────────────────────────────────────────────────────────────
+export class ApiError extends Error {
+  status: number
+  body: unknown
+  constructor(status: number, message: string, body?: unknown) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.body = body
+  }
+}
+
+async function handle<T>(res: Response): Promise<T> {
+  if (res.ok) {
+    // 202 bodies (findings/report "still processing") are treated as errors by
+    // callers that need a completed resource; here we only reach handle() for
+    // endpoints where 2xx means a usable JSON body.
+    if (res.status === 202) {
+      const body = await res.json().catch(() => ({}))
+      throw new ApiError(202, (body as { detail?: string }).detail || 'Not ready', body)
+    }
+    return (await res.json()) as T
+  }
+  let body: unknown = {}
+  try {
+    body = await res.json()
+  } catch {
+    body = {}
+  }
+  const detail =
+    (body as { detail?: unknown }).detail ??
+    (body as { message?: unknown }).message
+  const message =
+    typeof detail === 'string' && detail.length > 0 ? detail : `HTTP ${res.status}`
+  throw new ApiError(res.status, message, body)
+}
+
+const jsonHeaders = { 'Content-Type': 'application/json' }
+
+// ── Endpoints ───────────────────────────────────────────────────────────────
+export async function submitScan(body: ScanRequestBody): Promise<ScanResponse> {
+  const res = await fetch('/api/scan', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(body),
+  })
+  // POST /api/scan returns 202 Accepted on success (the scan was created and
+  // enqueued, or an existing duplicate is returned) — 202 here is NOT the
+  // "resource not ready yet" meaning it has on /findings and /report, so it must
+  // NOT go through handle()'s 202-throws path. Any 2xx carries a usable
+  // ScanResponse body; only a non-2xx is a real error.
+  if (res.ok) return (await res.json()) as ScanResponse
+  let errBody: unknown = {}
+  try {
+    errBody = await res.json()
+  } catch {
+    errBody = {}
+  }
+  const detail =
+    (errBody as { detail?: unknown }).detail ?? (errBody as { message?: unknown }).message
+  const message =
+    typeof detail === 'string' && detail.length > 0 ? detail : `HTTP ${res.status}`
+  throw new ApiError(res.status, message, errBody)
+}
+
+export async function getScanModules(): Promise<ScanModuleInfo[]> {
+  const res = await fetch('/api/scan/modules', { cache: 'no-store' })
+  const data = await handle<{ modules: ScanModuleInfo[] }>(res)
+  return data.modules ?? []
+}
+
 export async function getScans(params: ScanListParams = {}): Promise<ScanListResponse> {
   const qs = new URLSearchParams()
-  Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== '') qs.set(k, String(v))
-  })
-  const suffix = qs.toString() ? `?${qs}` : ''
-  const res = await fetch(`/api/scans${suffix}`, { cache: 'no-store' })
+  if (params.status) qs.set('status', params.status)
+  if (params.search) qs.set('search', params.search)
+  if (params.sort) qs.set('sort', params.sort)
+  if (params.order) qs.set('order', params.order)
+  if (params.page) qs.set('page', String(params.page))
+  if (params.page_size) qs.set('page_size', String(params.page_size))
+  const res = await fetch(`/api/scans?${qs.toString()}`, { cache: 'no-store' })
   return handle<ScanListResponse>(res)
+}
+
+export async function getScanStatus(id: string): Promise<ScanStatusResponse> {
+  const res = await fetch(`/api/scan/${id}/status`, { cache: 'no-store' })
+  return handle<ScanStatusResponse>(res)
+}
+
+export async function postScanDecision(
+  id: string,
+  action: ScanDecisionAction,
+): Promise<ScanStatusResponse> {
+  const res = await fetch(`/api/scan/${id}/decision`, {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify({ action }),
+  })
+  return handle<ScanStatusResponse>(res)
+}
+
+export async function getFindings(id: string): Promise<FindingsResponse> {
+  const res = await fetch(`/api/scan/${id}/findings`, { cache: 'no-store' })
+  return handle<FindingsResponse>(res)
+}
+
+export function reportPdfUrl(id: string): string {
+  return `/api/scan/${id}/report`
 }
