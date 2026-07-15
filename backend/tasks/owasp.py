@@ -111,10 +111,13 @@ _CRAWL_BUDGET_SECONDS = scaled_timeout(60)
 # testing until this budget is spent, then returns everything it found so far as
 # 'partial'. 'partial' is NOT a decision-flow pause trigger (Section 4.3b), so
 # the scan finalises automatically with owasp's real findings included. This is
-# strictly more coverage than before (the ceiling is raised, and no findings are
-# ever discarded), not less. Ordered below run_owasp's Celery soft limit and the
-# module's Modal function timeout so this budget is always the one that fires.
-_OWASP_TIME_BUDGET_SECONDS = scaled_timeout(480)
+# strictly more graceful than before (no findings are ever discarded), not less.
+# Checked BEFORE EVERY test (not just every URL), and set well below run_owasp's
+# Celery soft limit (scaled_timeout(540)) and the module's Modal timeout
+# (scaled_timeout(540)+60) so it reliably fires first even when one URL's test
+# set is slow (the earlier per-URL-only check let owasp run straight into the
+# Modal timeout mid-URL and fail empty).
+_OWASP_TIME_BUDGET_SECONDS = scaled_timeout(360)
 
 
 _META_REFRESH_URL_RE = re.compile(r'url\s*=\s*[\'"]?([^\'";]+)', re.IGNORECASE)
@@ -940,17 +943,13 @@ def scan_owasp(scan_id: str, domain: str, auth: dict = None) -> dict:
         tested = 0
         budget_hit = False
         for url in discovered:
-            # Full per-URL testing until the time budget is spent, then stop and
-            # return what we have as 'partial' (never dump findings by running
-            # into the hard timeout). Checked per-URL, not per-test, so a URL's
-            # test set always runs to completion once started.
-            if time.monotonic() - start > _OWASP_TIME_BUDGET_SECONDS:
-                budget_hit = True
-                logger.warning("owasp: %ds time budget reached for scan %s after %d/%d URLs "
-                               "- returning partial with findings so far",
-                               _OWASP_TIME_BUDGET_SECONDS, scan_id, tested, len(discovered))
-                break
             for test_fn in active_tests:
+                # Checked before EVERY test so a slow URL's test set can't run
+                # straight into the hard timeout - the moment the budget is spent
+                # we stop and return what we've found so far as 'partial'.
+                if time.monotonic() - start > _OWASP_TIME_BUDGET_SECONDS:
+                    budget_hit = True
+                    break
                 try:
                     findings.extend(test_fn(session, url, domain))
                 except SoftTimeLimitExceeded:
@@ -958,6 +957,11 @@ def scan_owasp(scan_id: str, domain: str, auth: dict = None) -> dict:
                 except Exception as e:
                     logger.error("owasp %s failed for scan %s (url=%s): %s",
                                  test_fn.__name__, scan_id, url, e)
+            if budget_hit:
+                logger.warning("owasp: %ds time budget reached for scan %s after %d/%d URLs "
+                               "- returning partial with findings so far",
+                               _OWASP_TIME_BUDGET_SECONDS, scan_id, tested, len(discovered))
+                break
             tested += 1
 
         if budget_hit:
