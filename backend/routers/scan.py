@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 from datetime import datetime, timedelta
@@ -129,13 +129,33 @@ def _current_module(scan: Scan) -> Optional[str]:
 
 
 @router.post("/scan", response_model=ScanResponse, status_code=202)
-def create_scan(request: ScanRequest, db: Session = Depends(get_db)):
+def create_scan(request: ScanRequest, http_request: Request, db: Session = Depends(get_db)):
     if not request.authorized:
         raise HTTPException(status_code=403, detail="Scan requires explicit authorization")
 
-    # Domain-ownership gate (routers/verify.py). Default OFF - a no-op for local/
-    # single-operator deployments. When ON (hosted/multi-tenant), the caller must
-    # present a claim key proving they verified control of this exact domain.
+    # Hosted-tier gate (routers/auth.py). Default OFF - a no-op for local/
+    # single-operator deployments. When ON, the caller must be an authenticated,
+    # email-verified user who has proven ownership of the target domain (or an
+    # authorized subdomain of it). This is the exact enforcement point before
+    # any Celery/Modal scanner workload is dispatched.
+    if settings.REQUIRE_AUTH:
+        import security
+        from routers.verify import user_owns_domain
+        user = security.get_current_user(http_request, db)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        if not user.email_verified:
+            raise HTTPException(status_code=403, detail="Email address not verified.")
+        if not user_owns_domain(db, user.id, request.domain):
+            raise HTTPException(
+                status_code=403,
+                detail="You have not verified ownership of this domain. Verify it "
+                       "(POST /api/verify/domain) before scanning.",
+            )
+
+    # Account-less domain-ownership gate (routers/verify.py). Independent of the
+    # hosted-auth gate above; the claim-key model for a shared-but-account-less
+    # instance. When ON, the caller presents a claim key proving verified control.
     if settings.REQUIRE_DOMAIN_VERIFICATION:
         from routers.verify import domain_has_valid_claim
         if not domain_has_valid_claim(db, request.domain, request.claim_key):
