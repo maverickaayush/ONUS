@@ -34,9 +34,11 @@ export default function SignInPage() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  function route(nextStep: string) {
-    if (nextStep === 'ready') router.replace('/')
-    else router.replace('/sign-up') // resumes at domain validation via getMe
+  function route(_nextStep: string) {
+    // Domain ownership is no longer part of onboarding, so a verified login
+    // always lands on the dashboard; an unverified email is handled by the
+    // 'otp' phase before this is reached.
+    router.replace('/')
   }
 
   async function onLogin(e: React.FormEvent) {

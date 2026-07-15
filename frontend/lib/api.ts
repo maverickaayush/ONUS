@@ -41,11 +41,37 @@ export interface AuthConfigWire {
   token_header_prefix?: string
 }
 
+export type ScanMode = 'quick' | 'full'
+
 export interface ScanRequestBody {
   domain: string
   authorized: boolean
+  // 'quick' = passive-only assessment (no ownership needed); 'full' = active
+  // VAPT (requires verified ownership in hosted mode). Omitted => backend
+  // defaults to 'full' (open-source/local unchanged).
+  mode?: ScanMode
   notes?: string
   auth?: AuthConfigWire
+}
+
+// Backend's structured 403 when a FULL scan targets an unverified domain.
+export interface TargetAuthorizationRequired {
+  code: 'TARGET_AUTHORIZATION_REQUIRED'
+  target: string
+  methods: ('meta_tag' | 'http_file')[]
+  message: string
+}
+
+export function targetAuthorizationRequired(
+  e: unknown,
+): TargetAuthorizationRequired | null {
+  if (e instanceof ApiError && e.status === 403) {
+    const d = (e.body as { detail?: unknown })?.detail
+    if (d && typeof d === 'object' && (d as { code?: string }).code === 'TARGET_AUTHORIZATION_REQUIRED') {
+      return d as TargetAuthorizationRequired
+    }
+  }
+  return null
 }
 
 export interface ScanResponse {
@@ -262,6 +288,8 @@ export interface AuthUser {
   email_verified: boolean
   has_verified_domain: boolean
   next_step: AuthNextStep
+  scans_this_month: number
+  scan_limit: number
 }
 
 export interface DomainChallenge {

@@ -15,11 +15,14 @@ import {
   ApiError,
   getScanModules,
   submitScan,
+  targetAuthorizationRequired,
   type AuthConfigWire,
+  type ScanMode,
   type ScanModuleInfo,
 } from '@/lib/api'
 import { cn } from '@/lib/format'
 import { MagneticButton, ModuleIcon, Panel, Spinner } from './ui'
+import { TargetClearance } from './target-clearance'
 
 const DOMAIN_RE =
   /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/
@@ -53,6 +56,10 @@ export function NewScan() {
   const [authorized, setAuthorized] = useState(false)
   const [loading, setLoading] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // Scan mode + pending target-authorization overlay (hosted). Default 'full'
+  // preserves the classic behavior; the backend gates active scans regardless.
+  const [scanMode, setScanMode] = useState<ScanMode>('full')
+  const [clearanceTarget, setClearanceTarget] = useState<string | null>(null)
 
   const [authOpen, setAuthOpen] = useState(false)
   const [loginType, setLoginType] = useState<LoginType>('auto')
@@ -102,11 +109,19 @@ export function NewScan() {
       const res = await submitScan({
         domain: domain.trim(),
         authorized: true,
+        mode: scanMode,
         ...(auth ? { auth } : {}),
       })
       router.push(`/scan/${res.job_id}/status`)
     } catch (err) {
       setLoading(false)
+      // FULL scan on an unverified target: open target authorization; the scan
+      // is retried (and re-checked by the backend) after ownership is proven.
+      const authReq = targetAuthorizationRequired(err)
+      if (authReq) {
+        setClearanceTarget(authReq.target)
+        return
+      }
       if (err instanceof ApiError) {
         // Defensive: backend returns 202 (not 409) for duplicates today, but
         // preserve the branch that redirects on a 409 carrying a job_id.
@@ -191,6 +206,31 @@ export function NewScan() {
               ? 'Enter a domain (example.com) or a public IPv4 address.'
               : 'Enter the exact host you are authorized to scan.'}
           </p>
+
+          {/* Scan mode */}
+          <div className="mb-4 mt-1 grid grid-cols-2 gap-2.5">
+            {([
+              ['quick', 'Quick Assessment', 'Fast passive security assessment. No target verification required.'],
+              ['full', 'Full VAPT Scan', 'Complete active security assessment. Target authorization required.'],
+            ] as const).map(([m, title, desc]) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setScanMode(m)}
+                className={cn(
+                  'rounded-md border px-3.5 py-3 text-left transition-colors',
+                  scanMode === m
+                    ? 'border-accent/60 bg-accent/[0.06]'
+                    : 'border-line hover:border-line-strong',
+                )}
+              >
+                <div className={cn('text-[12px] font-semibold', scanMode === m ? 'text-accent' : 'text-ink')}>
+                  {title}
+                </div>
+                <div className="mt-1 text-[10.5px] leading-snug text-ink-faint">{desc}</div>
+              </button>
+            ))}
+          </div>
 
           {/* Authorization - the one amber (legal/policy) affordance */}
           <label
@@ -409,6 +449,28 @@ export function NewScan() {
             )}
           </div>
         </div>
+      )}
+
+      {clearanceTarget && (
+        <TargetClearance
+          target={clearanceTarget}
+          onClose={() => setClearanceTarget(null)}
+          onVerified={async () => {
+            const t = clearanceTarget
+            setClearanceTarget(null)
+            if (!t) return
+            setSubmitError(null)
+            setLoading(true)
+            try {
+              // Backend re-checks ownership; the frontend belief isn't trusted.
+              const res = await submitScan({ domain: t, authorized: true, mode: 'full' })
+              router.push(`/scan/${res.job_id}/status`)
+            } catch (err) {
+              setLoading(false)
+              setSubmitError(err instanceof ApiError ? err.message : 'Scan failed to start.')
+            }
+          }}
+        />
       )}
     </div>
   )
