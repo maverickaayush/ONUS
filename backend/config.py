@@ -75,5 +75,48 @@ class Settings(BaseSettings):
     # re-proved (days).
     DOMAIN_VERIFICATION_TTL_DAYS: int = 30
 
+    # ── Hosted multi-tenant auth (routers/auth.py). Default OFF, same spirit as
+    # REQUIRE_DOMAIN_VERIFICATION above: local/self-hosted ONUS is single-
+    # operator and trusts its operator, so it stays tick-and-go — no signup, no
+    # login, no email. Turn ON only for the hosted (Vercel frontend +
+    # DigitalOcean backend) deployment, where create_scan then additionally
+    # requires an authenticated, email-verified user who has proven ownership of
+    # the target domain (or an authorized subdomain of it). A public-repo
+    # clone with defaults never hits any of this.
+    REQUIRE_AUTH: bool = False
+    # Server-side password policy (the frontend meter is cosmetic only).
+    PASSWORD_MIN_LENGTH: int = 10
+
+    # Browser session: opaque token in an HttpOnly cookie, mapped to a user in
+    # Redis (session:<token> -> user_id, with TTL). No JWT, no localStorage.
+    SESSION_TTL_HOURS: int = 72
+    SESSION_COOKIE_NAME: str = "onus_session"
+    # Cookie flags for the real Vercel<->DigitalOcean cross-site topology are set
+    # via env; defaults suit same-origin local dev. SameSite='none' REQUIRES
+    # Secure=True (enforced in routers/auth.py) — don't set 'none' without TLS.
+    SESSION_COOKIE_SECURE: bool = False
+    SESSION_COOKIE_SAMESITE: str = "lax"        # 'lax' | 'strict' | 'none'
+    SESSION_COOKIE_DOMAIN: str = ""             # e.g. '.onus.app'; empty = host-only
+
+    # Email OTP (signup email verification). Codes are hashed in Redis, never
+    # stored/logged in plaintext outside the dev console backend below.
+    OTP_TTL_SECONDS: int = 300
+    OTP_LENGTH: int = 6
+    OTP_MAX_ATTEMPTS: int = 5
+    OTP_RESEND_COOLDOWN_SECONDS: int = 60
+
+    # Email delivery (email_service.py). 'console' just logs the OTP and is
+    # DEV-ONLY. It is refused whenever REQUIRE_AUTH is on unless
+    # EMAIL_DEV_CONSOLE_OK is *also* explicitly set — so a hosted deployment can
+    # never silently fall back to printing OTPs to its logs.
+    EMAIL_BACKEND: str = "console"              # 'console' | 'smtp'
+    EMAIL_DEV_CONSOLE_OK: bool = False
+    EMAIL_FROM: str = "ONUS <no-reply@onus.local>"
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_STARTTLS: bool = True
+
 
 settings = Settings()

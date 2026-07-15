@@ -9,3 +9,6 @@ pytest>=8.0
 # 8 TestGeneratePdf/TestHtmlEscaping/TestConfidenceDisplay tests error out at
 # `import pdfplumber` instead of actually validating report generation.
 pdfplumber>=0.11
+# Auth tests inject a fake Redis into the OTP/session helpers (security.py) so
+# CI needs no live Redis.
+fakeredis>=2.20

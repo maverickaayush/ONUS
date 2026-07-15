@@ -166,6 +166,74 @@ class DomainVerifyCheckResponse(BaseModel):
     detail: Optional[str] = None   # why it failed, when verified is False
 
 
+# --- Hosted-tier auth (routers/auth.py; only active when REQUIRE_AUTH) ---
+
+def _normalize_email(v: str) -> str:
+    import validators
+    e = v.strip().lower()
+    if not validators.email(e):
+        raise ValueError("Invalid email address")
+    return e
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def _v_email(cls, v: str) -> str:
+        return _normalize_email(v)
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def _v_email(cls, v: str) -> str:
+        return _normalize_email(v)
+
+
+class OTPVerifyRequest(BaseModel):
+    email: str
+    code: str
+
+    @field_validator("email")
+    @classmethod
+    def _v_email(cls, v: str) -> str:
+        return _normalize_email(v)
+
+
+class ResendOTPRequest(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def _v_email(cls, v: str) -> str:
+        return _normalize_email(v)
+
+
+class OTPChallengeResponse(BaseModel):
+    """Returned by signup / resend so the frontend countdown reflects real
+    server expiry rather than a hardcoded 5:00."""
+    email: str
+    expires_in: int          # seconds until the current OTP expires
+    resend_in: int           # seconds until a resend is permitted (cooldown)
+
+
+class AuthUserResponse(BaseModel):
+    """Current auth state; drives the frontend's step routing."""
+    id: UUID
+    email: str
+    email_verified: bool
+    has_verified_domain: bool
+    # 'verify_email' | 'verify_domain' | 'ready' — where the frontend should send
+    # this user next.
+    next_step: Literal["verify_email", "verify_domain", "ready"]
+
+
 class ScanStatusResponse(BaseModel):
     job_id: UUID
     domain: str

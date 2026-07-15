@@ -20,6 +20,24 @@ class ScanStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class User(Base):
+    """Hosted-tier user account (routers/auth.py). Only used when
+    config.REQUIRE_AUTH is True — local/self-hosted ONUS has no users.
+
+    Passwords are Argon2id hashes (security.py); the plaintext is never stored
+    or logged. OTP codes and browser sessions live in Redis, not here, so this
+    table only carries durable identity + email-verification state.
+    """
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), nullable=False, unique=True, index=True)  # normalized
+    password_hash = Column(String(255), nullable=False)
+    email_verified = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
+
+
 class Scan(Base):
     __tablename__ = "scans"
 
@@ -75,6 +93,9 @@ class DomainVerification(Base):
     __tablename__ = "domain_verifications"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Owner in hosted (REQUIRE_AUTH) mode; NULL for the account-less claim-key
+    # flow (REQUIRE_DOMAIN_VERIFICATION) so that path keeps working unchanged.
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
     domain = Column(String(255), nullable=False, index=True)
     method = Column(String(16), nullable=False)          # 'meta_tag' | 'http_file'
     token = Column(String(96), nullable=False)           # challenge value to place

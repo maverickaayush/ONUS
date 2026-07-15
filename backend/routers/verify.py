@@ -38,6 +38,7 @@ from config import settings
 from database import get_db
 from models import DomainVerification
 from schemas import DomainVerifyRequest, DomainVerifyIssueResponse, DomainVerifyCheckResponse
+from security import domain_covers, get_current_user
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
@@ -137,15 +138,58 @@ def domain_has_valid_claim(db: Session, domain: str, claim_key: str | None) -> b
     return row is not None
 
 
+def user_has_verified_domain(db: Session, user_id) -> bool:
+    """Does this user hold at least one live verified-domain row? Drives the
+    frontend's 'verify_domain' vs 'ready' routing."""
+    return db.query(DomainVerification).filter(
+        and_(
+            DomainVerification.user_id == user_id,
+            DomainVerification.status == "verified",
+            DomainVerification.expires_at > datetime.utcnow(),
+        )
+    ).first() is not None
+
+
+def user_owns_domain(db: Session, user_id, target: str) -> bool:
+    """Scan-authorization gate for REQUIRE_AUTH mode: does this user own a live
+    verified domain that covers `target` (exact host or an authorized
+    subdomain)? Uses label-boundary matching (security.domain_covers)."""
+    rows = db.query(DomainVerification).filter(
+        and_(
+            DomainVerification.user_id == user_id,
+            DomainVerification.status == "verified",
+            DomainVerification.expires_at > datetime.utcnow(),
+        )
+    ).all()
+    return any(domain_covers(r.domain, target) for r in rows)
+
+
+def _require_hosted_user(user):
+    """When REQUIRE_AUTH is on, domain challenges are per-user: caller must be
+    authenticated with a verified email. Returns the user's id (or None in the
+    account-less claim-key mode). Raises 401/403 otherwise."""
+    if not settings.REQUIRE_AUTH:
+        return None
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    if not user.email_verified:
+        raise HTTPException(status_code=403, detail="Email address not verified.")
+    return user.id
+
+
 @router.post("/verify/domain", response_model=DomainVerifyIssueResponse)
-def issue_challenge(request: DomainVerifyRequest, db: Session = Depends(get_db)):
+def issue_challenge(request: DomainVerifyRequest, db: Session = Depends(get_db),
+                    user=Depends(get_current_user)):
     """Issue (or re-use) a pending challenge for the domain. Re-using the latest
-    pending row keeps the token stable if the caller re-requests instructions."""
+    pending row keeps the token stable if the caller re-requests instructions.
+    In REQUIRE_AUTH mode the row is bound to the authenticated user."""
+    uid = _require_hosted_user(user)
     existing = db.query(DomainVerification).filter(
         and_(
             DomainVerification.domain == request.domain,
             DomainVerification.method == request.method,
             DomainVerification.status == "pending",
+            DomainVerification.user_id == uid,
         )
     ).order_by(DomainVerification.created_at.desc()).first()
 
@@ -154,7 +198,7 @@ def issue_challenge(request: DomainVerifyRequest, db: Session = Depends(get_db))
     else:
         token = f"{_TOKEN_PREFIX}-{secrets.token_hex(16)}"
         row = DomainVerification(domain=request.domain, method=request.method,
-                                 token=token, status="pending")
+                                 token=token, status="pending", user_id=uid)
         db.add(row)
         db.commit()
         db.refresh(row)
@@ -176,9 +220,12 @@ def issue_challenge(request: DomainVerifyRequest, db: Session = Depends(get_db))
 
 
 @router.post("/verify/domain/{verification_id}/check", response_model=DomainVerifyCheckResponse)
-def check_challenge(verification_id: str, db: Session = Depends(get_db)):
+def check_challenge(verification_id: str, db: Session = Depends(get_db),
+                    user=Depends(get_current_user)):
+    uid = _require_hosted_user(user)
     row = db.query(DomainVerification).filter(DomainVerification.id == verification_id).first()
-    if row is None:
+    if row is None or (settings.REQUIRE_AUTH and row.user_id != uid):
+        # In hosted mode, don't reveal challenges that aren't the caller's.
         raise HTTPException(status_code=404, detail="Verification challenge not found")
 
     if row.status == "verified" and row.expires_at and row.expires_at > datetime.utcnow():
