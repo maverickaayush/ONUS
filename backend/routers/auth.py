@@ -10,6 +10,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
 from config import settings
 from database import get_db
 from email_service import EmailConfigError, send_otp_email
@@ -55,16 +59,21 @@ def _clear_session_cookie(response: Response) -> None:
 
 
 def _auth_state(user: User, db: Session) -> AuthUserResponse:
+    # Product decision: domain ownership is NOT part of onboarding. A verified
+    # user goes straight to the dashboard regardless of whether they own any
+    # verified domain - target authorization happens later, only when they
+    # request a FULL VAPT scan. So next_step is only 'verify_email' or 'ready';
+    # has_verified_domain is informational (dashboard display), never routing.
     has_domain = user_has_verified_domain(db, user.id)
-    if not user.email_verified:
-        step = "verify_email"
-    elif not has_domain:
-        step = "verify_domain"
-    else:
-        step = "ready"
+    step = "ready" if user.email_verified else "verify_email"
+    from datetime import datetime
+    from models import Scan
+    month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    used = db.query(Scan).filter(Scan.user_id == user.id, Scan.created_at >= month_start).count()
     return AuthUserResponse(
         id=user.id, email=user.email, email_verified=user.email_verified,
         has_verified_domain=has_domain, next_step=step,
+        scans_this_month=used, scan_limit=settings.MAX_SCANS_PER_MONTH,
     )
 
 
@@ -87,7 +96,9 @@ def _challenge_response(email: str) -> OTPChallengeResponse:
 
 # ── endpoints ────────────────────────────────────────────────────────────────
 @router.post("/signup", response_model=OTPChallengeResponse, status_code=201)
-def signup(request: SignupRequest, db: Session = Depends(get_db)):
+def signup(request: SignupRequest, http_request: Request, db: Session = Depends(get_db)):
+    security.enforce_rate_limit(f"signup:{_client_ip(http_request)}",
+                                settings.RATE_LIMIT_SIGNUP, settings.RATE_LIMIT_SIGNUP_WINDOW)
     policy_error = security.password_policy_error(request.password)
     if policy_error:
         raise HTTPException(status_code=400, detail=policy_error)
@@ -134,6 +145,8 @@ def verify_otp(request: OTPVerifyRequest, response: Response, db: Session = Depe
 
 @router.post("/resend-otp", response_model=OTPChallengeResponse)
 def resend_otp(request: ResendOTPRequest, db: Session = Depends(get_db)):
+    security.enforce_rate_limit(f"otp_resend:{request.email}",
+                                settings.RATE_LIMIT_OTP_RESEND, settings.RATE_LIMIT_OTP_RESEND_WINDOW)
     user = db.query(User).filter(User.email == request.email).first()
     if user is None:
         raise HTTPException(status_code=400, detail="Incorrect or expired code.")
@@ -149,7 +162,10 @@ def resend_otp(request: ResendOTPRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=AuthUserResponse)
-def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(request: LoginRequest, response: Response, http_request: Request,
+          db: Session = Depends(get_db)):
+    security.enforce_rate_limit(f"login:{_client_ip(http_request)}",
+                                settings.RATE_LIMIT_LOGIN, settings.RATE_LIMIT_LOGIN_WINDOW)
     user = db.query(User).filter(User.email == request.email).first()
     if user is None or not security.verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password.")

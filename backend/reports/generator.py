@@ -99,10 +99,23 @@ def generate_pdf(scan, analysis: dict, store_in_db: bool = True) -> bytes:
         for tier in ('confirmed', 'probable', 'unverified')
     }
 
+    is_quick = getattr(scan, 'scan_type', 'full') == 'quick'
     context = {
         'domain':          scan.domain,
         'scan_date':       scan_date.strftime('%-d %B %Y, %H:%M IST'),
         'risk_score':      risk_score,
+        # Assessment type + scope disclaimer. A Quick Assessment must never read
+        # as a complete VAPT, and absence of passive findings is not proof the
+        # target is secure.
+        # Quick-only label (kept None for full so full-scan reports render
+        # byte-identically to pre-scan-mode behavior — backward compatibility).
+        'assessment_type': 'Quick Assessment' if is_quick else None,
+        'is_quick':        is_quick,
+        'scope_statement': (
+            'This assessment is based on passive and low-impact public security '
+            'checks. Active scanning and deeper attack-surface testing were not '
+            'performed.' if is_quick else None
+        ),
         'executive_summary': (
             analysis.get('executive_summary') or
             'Automated VAPT analysis complete.'

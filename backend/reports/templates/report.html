@@ -503,7 +503,7 @@ h3 {
 
   <div class="cover-target-label">Target</div>
   <div class="cover-domain">{{ domain }}</div>
-  <div class="cover-date">{{ scan_date }}</div>
+  <div class="cover-date">{{ scan_date }}{% if assessment_type %} &middot; {{ assessment_type }}{% endif %}</div>
 
   {# Risk score - color computed in template per spec requirement #}
   {% if risk_score >= 70 %}
@@ -529,6 +529,12 @@ h3 {
 {% if incomplete_modules_warning %}
 <div class="banner">
   <span class="badge b-critical">Incomplete Scan</span>{{ incomplete_modules_warning }}
+</div>
+{% endif %}
+
+{% if scope_statement %}
+<div class="banner" style="border-color:var(--cyan);border-left-color:var(--cyan);background:rgba(38,224,245,0.06);">
+  <span class="badge" style="background:rgba(38,224,245,0.15);color:var(--cyan);">Quick Assessment</span>{{ scope_statement }}
 </div>
 {% endif %}
 

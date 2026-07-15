@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     # How long a verified domain stays verified before the claim must be
     # re-proved (days).
     DOMAIN_VERIFICATION_TTL_DAYS: int = 30
+    # How long a PENDING ownership challenge stays valid before it must be
+    # re-issued (seconds). Prevents a stale token lingering forever.
+    DOMAIN_CHALLENGE_TTL_SECONDS: int = 3600
 
     # ── Hosted multi-tenant auth (routers/auth.py). Default OFF, same spirit as
     # REQUIRE_DOMAIN_VERIFICATION above: local/self-hosted ONUS is single-
@@ -117,6 +120,25 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_STARTTLS: bool = True
+
+    # Usage + abuse controls (hosted mode). Enforced server-side via Redis
+    # counters (security.py) / a DB monthly count; the dashboard only displays
+    # them. All windows in seconds.
+    MAX_SCANS_PER_MONTH: int = 100            # per user, across quick + full
+    RATE_LIMIT_SIGNUP: int = 10               # per IP
+    RATE_LIMIT_SIGNUP_WINDOW: int = 3600
+    RATE_LIMIT_LOGIN: int = 10                # per IP
+    RATE_LIMIT_LOGIN_WINDOW: int = 900
+    RATE_LIMIT_OTP_RESEND: int = 5            # per email (in addition to cooldown)
+    RATE_LIMIT_OTP_RESEND_WINDOW: int = 3600
+    RATE_LIMIT_CHALLENGE: int = 20            # ownership challenge creation, per user
+    RATE_LIMIT_CHALLENGE_WINDOW: int = 3600
+    RATE_LIMIT_VERIFY: int = 30              # ownership verification attempts, per user
+    RATE_LIMIT_VERIFY_WINDOW: int = 3600
+    RATE_LIMIT_QUICK_SCAN: int = 20          # quick assessments per user
+    RATE_LIMIT_QUICK_SCAN_WINDOW: int = 3600
+    RATE_LIMIT_FULL_SCAN: int = 20           # full scans per user
+    RATE_LIMIT_FULL_SCAN_WINDOW: int = 86400
 
 
 settings = Settings()

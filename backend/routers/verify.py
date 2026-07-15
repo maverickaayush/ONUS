@@ -23,12 +23,13 @@ schemas.normalize_domain). Cross-host redirects are NOT followed, so an open
 redirect on the target can never be used to fake ownership.
 """
 import hashlib
+import ipaddress
 import logging
-import re
 import secrets
+import socket
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 
-import requests
 import urllib3
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_
@@ -38,17 +39,18 @@ from config import settings
 from database import get_db
 from models import DomainVerification
 from schemas import DomainVerifyRequest, DomainVerifyIssueResponse, DomainVerifyCheckResponse
-from security import domain_covers, get_current_user
+from security import domain_covers, get_current_user, enforce_rate_limit
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["verify"])
 
-_TOKEN_PREFIX = "onus-verify"
-_WELL_KNOWN = ".well-known/onus-verify"
-_FETCH_TIMEOUT = 10        # seconds per HTTP GET (inline endpoint - keep short)
+_META_NAME = "onus-verification"
+_CHALLENGE_FILE = ".well-known/onus-challenge.txt"
+_FETCH_TIMEOUT = 8             # seconds connect/read per GET
 _MAX_HTML_BYTES = 512 * 1024   # only the homepage <head> matters; cap the read
+_MAX_FILE_BYTES = 1024         # the challenge file is tiny; cap it hard
 
 
 def _hash_key(key: str) -> str:
@@ -56,68 +58,132 @@ def _hash_key(key: str) -> str:
 
 
 def _meta_tag(token: str) -> str:
-    return f'<meta name="onus-verify" content="{token}">'
+    return f'<meta name="{_META_NAME}" content="{token}">'
 
 
-def _file_path(token: str) -> str:
-    return f"/{_WELL_KNOWN}/{token}"
+def _file_path(_token: str = "") -> str:
+    # Fixed public path (not token-based); the token lives in the file contents.
+    return f"/{_CHALLENGE_FILE}"
 
 
-# Match the meta tag regardless of attribute order / quoting style, but require
-# our exact token in content.
-def _meta_present(html: str, token: str) -> bool:
-    esc = re.escape(token)
-    patterns = (
-        rf'<meta[^>]+name=["\']onus-verify["\'][^>]+content=["\']{esc}["\']',
-        rf'<meta[^>]+content=["\']{esc}["\'][^>]+name=["\']onus-verify["\']',
-    )
-    return any(re.search(p, html, re.IGNORECASE) for p in patterns)
+def _file_contents(token: str) -> str:
+    return f"onus-verification={token}"
 
 
-def _get(url: str) -> requests.Response:
-    """Single read-only GET. allow_redirects=False so a redirect to another host
-    (or an open redirect on the target) can never satisfy the challenge - only a
-    direct 2xx from the domain itself counts."""
-    return requests.get(
-        url, timeout=_FETCH_TIMEOUT, verify=False, allow_redirects=False,
-        headers={"User-Agent": "ONUS-DomainVerify/1.0"}, stream=True,
-    )
+class _MetaFinder(HTMLParser):
+    """Collects the `content` of every <meta name="onus-verification"> — a real
+    HTML parse, not a substring/regex match, so attribute order/quoting/comments
+    can't fool it."""
+    def __init__(self, name: str):
+        super().__init__()
+        self._name = name.lower()
+        self.contents: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs):
+        if tag.lower() != "meta":
+            return
+        d = {(k or "").lower(): (v or "") for k, v in attrs}
+        if d.get("name", "").lower() == self._name:
+            self.contents.append(d.get("content", ""))
+
+
+def _meta_content_matches(html: str, token: str) -> bool:
+    p = _MetaFinder(_META_NAME)
+    try:
+        p.feed(html)
+    except Exception:  # noqa: BLE001 - malformed HTML must not raise
+        pass
+    return any(c.strip() == token for c in p.contents)
+
+
+def _validate_resolved_host(host: str) -> str:
+    """Resolve `host` and reject if ANY resolved address is internal/reserved
+    (SSRF guard). Returns a single validated IP to pin the connection to
+    (DNS-rebinding safe: we connect to THIS address, not re-resolve). Raises
+    ValueError on resolution failure or a disallowed address."""
+    # An IP literal that slipped past normalize_domain: validate directly.
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        raise ValueError("could not resolve host")
+    ips = {info[4][0] for info in infos}
+    if not ips:
+        raise ValueError("host did not resolve to any address")
+    for ip in ips:
+        a = ipaddress.ip_address(ip.split("%")[0])  # strip zone id
+        if (a.is_private or a.is_loopback or a.is_link_local or a.is_multicast
+                or a.is_reserved or a.is_unspecified):
+            # Covers loopback v4/v6, RFC1918, link-local incl. 169.254.169.254
+            # (cloud metadata), multicast, reserved, 0.0.0.0/::.
+            raise ValueError(f"host resolves to a disallowed address ({ip})")
+    v4 = [ip for ip in ips if ipaddress.ip_address(ip.split('%')[0]).version == 4]
+    return (v4 or sorted(ips))[0]
+
+
+def _safe_get(scheme: str, host: str, path: str, max_bytes: int) -> tuple[int, str]:
+    """SSRF-safe GET: resolves + validates the host, pins the connection to the
+    validated IP (rebinding-safe), sends the real Host header, never follows
+    redirects, and reads at most `max_bytes`. Returns (status, body_text).
+    Raises ValueError if the host is disallowed."""
+    ip = _validate_resolved_host(host)
+    port = 443 if scheme == "https" else 80
+    timeout = urllib3.Timeout(connect=_FETCH_TIMEOUT, read=_FETCH_TIMEOUT, total=_FETCH_TIMEOUT + 4)
+    headers = {"Host": host, "User-Agent": "ONUS-DomainVerify/1.0"}
+    if scheme == "https":
+        pool = urllib3.HTTPSConnectionPool(
+            ip, port=port, cert_reqs="CERT_NONE", assert_hostname=False,
+            server_hostname=host, timeout=timeout, retries=False)
+    else:
+        pool = urllib3.HTTPConnectionPool(ip, port=port, timeout=timeout, retries=False)
+    try:
+        r = pool.request("GET", path, headers=headers, redirect=False, preload_content=False)
+        body = r.read(max_bytes)
+        r.release_conn()
+        return r.status, body.decode("utf-8", "ignore")
+    finally:
+        pool.close()
 
 
 def verify_domain_control(domain: str, method: str, token: str) -> tuple[bool, str]:
-    """Re-observe `domain` for `token` via `method`. Returns (ok, reason).
-    Tries HTTPS then HTTP. Never raises - network errors become (False, reason)."""
+    """Re-observe `domain` for `token` via `method`. Returns (ok, reason). Tries
+    HTTPS then HTTP. Never raises - resolution/SSRF/network problems become
+    (False, reason). Redirects are never followed (an open redirect on the
+    target can't satisfy the challenge)."""
     if method == "http_file":
-        target_suffix = f"{_WELL_KNOWN}/{token}"
+        expected = _file_contents(token)
+        last = "no response"
         for scheme in ("https", "http"):
             try:
-                r = _get(f"{scheme}://{domain}/{target_suffix}")
-            except requests.RequestException as e:
-                last = f"{scheme} request failed: {e.__class__.__name__}"
+                status, body = _safe_get(scheme, domain, f"/{_CHALLENGE_FILE}", _MAX_FILE_BYTES)
+            except ValueError as e:
+                return False, str(e)  # SSRF/resolution: same for both schemes
+            except Exception as e:  # noqa: BLE001
+                last = f"{scheme} request failed: {type(e).__name__}"
                 continue
-            if r.status_code == 200:
-                body = r.raw.read(len(token) + 16, decode_content=True).decode("utf-8", "ignore")
-                if body.strip() == token:
+            if status == 200:
+                if body.strip() == expected:
                     return True, "file present"
                 last = f"{scheme}: file found but contents did not match"
             else:
-                last = f"{scheme}: HTTP {r.status_code} (expected 200, redirects not followed)"
+                last = f"{scheme}: HTTP {status} (expected 200, redirects not followed)"
         return False, last
 
     # method == 'meta_tag'
+    last = "no response"
     for scheme in ("https", "http"):
         try:
-            r = _get(f"{scheme}://{domain}/")
-        except requests.RequestException as e:
-            last = f"{scheme} request failed: {e.__class__.__name__}"
+            status, body = _safe_get(scheme, domain, "/", _MAX_HTML_BYTES)
+        except ValueError as e:
+            return False, str(e)
+        except Exception as e:  # noqa: BLE001
+            last = f"{scheme} request failed: {type(e).__name__}"
             continue
-        if r.status_code != 200:
-            last = f"{scheme}: HTTP {r.status_code} (expected 200, redirects not followed)"
+        if status != 200:
+            last = f"{scheme}: HTTP {status} (expected 200, redirects not followed)"
             continue
-        html = r.raw.read(_MAX_HTML_BYTES, decode_content=True).decode("utf-8", "ignore")
-        if _meta_present(html, token):
+        if _meta_content_matches(body, token):
             return True, "meta tag present"
-        last = f"{scheme}: homepage loaded but the onus-verify meta tag was not found"
+        last = f"{scheme}: homepage loaded but the {_META_NAME} meta tag was not found"
     return False, last
 
 
@@ -184,6 +250,8 @@ def issue_challenge(request: DomainVerifyRequest, db: Session = Depends(get_db),
     pending row keeps the token stable if the caller re-requests instructions.
     In REQUIRE_AUTH mode the row is bound to the authenticated user."""
     uid = _require_hosted_user(user)
+    enforce_rate_limit(f"challenge:{uid or request.domain}",
+                       settings.RATE_LIMIT_CHALLENGE, settings.RATE_LIMIT_CHALLENGE_WINDOW)
     existing = db.query(DomainVerification).filter(
         and_(
             DomainVerification.domain == request.domain,
@@ -196,7 +264,7 @@ def issue_challenge(request: DomainVerifyRequest, db: Session = Depends(get_db),
     if existing:
         row = existing
     else:
-        token = f"{_TOKEN_PREFIX}-{secrets.token_hex(16)}"
+        token = secrets.token_hex(24)   # the SECURE_TOKEN; backend-generated only
         row = DomainVerification(domain=request.domain, method=request.method,
                                  token=token, status="pending", user_id=uid)
         db.add(row)
@@ -209,12 +277,13 @@ def issue_challenge(request: DomainVerifyRequest, db: Session = Depends(get_db),
         method=row.method,
         token=row.token,
         meta_tag=_meta_tag(row.token),
-        file_path=_file_path(row.token),
-        file_contents=row.token,
+        file_path=_file_path(),
+        file_contents=_file_contents(row.token),
         instructions=(
             f'Add this exact tag inside your homepage <head>: {_meta_tag(row.token)}'
             if row.method == "meta_tag" else
-            f'Serve a file at {_file_path(row.token)} whose entire contents are: {row.token}'
+            f'Serve a file at {_file_path()} whose entire contents are exactly: '
+            f'{_file_contents(row.token)}'
         ) + '  Then POST to /api/verify/domain/{id}/check to complete verification.',
     )
 
@@ -223,6 +292,8 @@ def issue_challenge(request: DomainVerifyRequest, db: Session = Depends(get_db),
 def check_challenge(verification_id: str, db: Session = Depends(get_db),
                     user=Depends(get_current_user)):
     uid = _require_hosted_user(user)
+    enforce_rate_limit(f"verify:{uid or verification_id}",
+                       settings.RATE_LIMIT_VERIFY, settings.RATE_LIMIT_VERIFY_WINDOW)
     row = db.query(DomainVerification).filter(DomainVerification.id == verification_id).first()
     if row is None or (settings.REQUIRE_AUTH and row.user_id != uid):
         # In hosted mode, don't reveal challenges that aren't the caller's.
@@ -234,6 +305,16 @@ def check_challenge(verification_id: str, db: Session = Depends(get_db),
         return DomainVerifyCheckResponse(
             verified=True, domain=row.domain, expires_at=row.expires_at,
             detail="Already verified; claim key was issued once and is not shown again.",
+        )
+
+    # Pending challenges expire; a stale token can't be verified. Re-issue to
+    # get a fresh one.
+    if row.status == "pending" and row.created_at and (
+        datetime.utcnow() - row.created_at
+    ).total_seconds() > settings.DOMAIN_CHALLENGE_TTL_SECONDS:
+        return DomainVerifyCheckResponse(
+            verified=False, domain=row.domain,
+            detail="Challenge expired. Request a new challenge and try again.",
         )
 
     ok, reason = verify_domain_control(row.domain, row.method, row.token)

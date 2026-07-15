@@ -58,14 +58,23 @@ def _can_retry(failed_modules: List[str], retry_counts: Dict[str, int]) -> bool:
 
 
 @app.task(bind=True, name='tasks.scan_orchestrator.scan_orchestrator')
-def scan_orchestrator(self, scan_id: str, domain: str) -> None:
+def scan_orchestrator(self, scan_id: str, domain: str, mode: str = 'full') -> None:
     """
-    Main Celery task: sets scan status to running, dispatches the five
-    scanning subtasks as a parallel group, then fires aggregate_and_analyse
-    as a chord callback once all five complete.
+    Main Celery task: sets scan status to running, dispatches the scanning
+    subtasks as a parallel group, then fires aggregate_and_analyse as a chord
+    callback once all complete.
+
+    `mode` selects the module set (base_task.module_ids_for_mode):
+      'full'  -> all 8 active modules (the existing pipeline).
+      'quick' -> passive-only profile (headers, ssl_tls, tech_fingerprint in
+                 WhatWeb-only submode). NEVER dispatches nmap/naabu/ZAP/Nikto/
+                 owasp-payloads/active-nuclei/ffuf.
     """
     from database import SessionLocal
     from models import Scan, ScanStatus
+    from tasks.base_task import module_ids_for_mode
+
+    module_ids = module_ids_for_mode(mode)
 
     db = SessionLocal()
     try:
@@ -75,9 +84,9 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
             return
         scan.status = ScanStatus.running
         scan.started_at = datetime.utcnow()
-        scan.module_statuses = {module_id: 'queued' for module_id in SCAN_MODULE_IDS}
+        scan.module_statuses = {module_id: 'queued' for module_id in module_ids}
         db.commit()
-        logger.info("scan_orchestrator: scan %s started for %s", scan_id, domain)
+        logger.info("scan_orchestrator: scan %s started for %s (mode=%s)", scan_id, domain, mode)
     finally:
         db.close()
 
@@ -91,16 +100,20 @@ def scan_orchestrator(self, scan_id: str, domain: str) -> None:
     from tasks.nuclei_scan import run_nuclei
     from tasks.enumeration import run_enumeration
 
-    scanning_group = group(
-        run_recon.s(scan_id, domain),
-        run_webscan.s(scan_id, domain),
-        run_ssl_tls.s(scan_id, domain),
-        run_headers.s(scan_id, domain),
-        run_owasp.s(scan_id, domain),
-        run_tech_fingerprint.s(scan_id, domain),
-        run_nuclei.s(scan_id, domain),
-        run_enumeration.s(scan_id, domain),
-    )
+    # Map module id -> its dispatch signature. Quick mode selects a strict
+    # subset; tech_fingerprint runs WhatWeb-only (quick=True skips WAFW00F).
+    quick = mode == 'quick'
+    all_sigs = {
+        'recon': run_recon.s(scan_id, domain),
+        'webscan': run_webscan.s(scan_id, domain),
+        'ssl_tls': run_ssl_tls.s(scan_id, domain),
+        'headers': run_headers.s(scan_id, domain),
+        'owasp': run_owasp.s(scan_id, domain),
+        'tech_fingerprint': run_tech_fingerprint.s(scan_id, domain, quick),
+        'nuclei': run_nuclei.s(scan_id, domain),
+        'enumeration': run_enumeration.s(scan_id, domain),
+    }
+    scanning_group = group(*(all_sigs[m] for m in module_ids))
 
     try:
         chord(scanning_group)(aggregate_and_analyse.s(scan_id, domain))

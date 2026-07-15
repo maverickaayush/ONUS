@@ -45,6 +45,12 @@ class Scan(Base):
     domain = Column(String(255), nullable=False)
     status = Column(SAEnum(ScanStatus), nullable=False, default=ScanStatus.queued)
     authorized = Column(Boolean, nullable=False, default=False)
+    # 'quick' (passive-only profile) | 'full' (all 8 active modules). Default
+    # 'full' preserves prior behavior for local/self-hosted callers that don't
+    # send a mode.
+    scan_type = Column(String(8), nullable=False, default='full')
+    # Owner in hosted (REQUIRE_AUTH) mode; NULL for local/self-hosted scans.
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     module_statuses = Column(JSONB, nullable=True, default=dict)

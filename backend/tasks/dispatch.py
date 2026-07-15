@@ -58,25 +58,38 @@ def _get_auth(module: str, scan_id: str):
         return None
 
 
-def _run_modal(module: str, scan_id: str, domain: str, auth) -> dict:
+def _run_modal(module: str, scan_id: str, domain: str, auth, quick: bool = False) -> dict:
     """Invoke the module's Modal function and return its envelope. Modal
     transport/timeout failures are turned into a failed/timeout envelope by the
-    caller, so the existing decision-flow (retry/continue/cancel) still fires."""
+    caller, so the existing decision-flow (retry/continue/cancel) still fires.
+
+    quick only affects tech_fingerprint (WhatWeb-only). We pass the extra arg
+    ONLY in that one quick case, so full scans keep calling the currently-
+    deployed Modal functions with their existing 3-arg signature (no redeploy
+    needed for full mode; a Modal redeploy is only required for hosted quick
+    tech_fingerprint)."""
     import modal
     fn = modal.Function.from_name(settings.MODAL_APP_NAME, f'scan_{module}')
+    if module == 'tech_fingerprint' and quick:
+        return fn.remote(scan_id, domain, auth, True)
     return fn.remote(scan_id, domain, auth)
 
 
-def dispatch_scan(module: str, scan_id: str, domain: str) -> dict:
+def dispatch_scan(module: str, scan_id: str, domain: str, quick: bool = False) -> dict:
     """Run a module's pure half locally or on Modal and return its
     build_module_result envelope. Pure routing - DB status writes stay in the
     run_<module> Celery task (module namespace). Never raises: a Modal
     transport/timeout failure becomes a failed/timeout envelope so the existing
-    decision-flow (retry/continue/cancel) still fires."""
+    decision-flow (retry/continue/cancel) still fires.
+
+    quick (tech_fingerprint only) selects WhatWeb-only, skipping WAFW00F's
+    active WAF probes — the Quick Assessment profile."""
     auth = _get_auth(module, scan_id)
     try:
         if settings.SCANNER_BACKEND == 'modal':
-            return _run_modal(module, scan_id, domain, auth)
+            return _run_modal(module, scan_id, domain, auth, quick)
+        if module == 'tech_fingerprint':
+            return _pure_fn(module)(scan_id, domain, auth, quick)
         return _pure_fn(module)(scan_id, domain, auth)
     except Exception as e:
         # A Modal timeout (container hit its function timeout) reports as
