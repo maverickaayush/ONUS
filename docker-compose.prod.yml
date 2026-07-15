@@ -45,6 +45,10 @@ services:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
     environment:
+      # Celery (esp. the threads pool) doesn't add cwd to sys.path the way
+      # uvicorn does - set it explicitly so the worker resolves `database`,
+      # `config`, `tasks.*`, etc.
+      PYTHONPATH: /app/backend
       SCANNER_BACKEND: modal
       MODAL_APP_NAME: onus-scanners
       OLLAMA_URL: ${OLLAMA_URL}
@@ -71,6 +75,10 @@ services:
     depends_on:
       backend: { condition: service_started }
     environment:
+      # Celery (esp. the threads pool) doesn't add cwd to sys.path the way
+      # uvicorn does - set it explicitly so the worker resolves `database`,
+      # `config`, `tasks.*`, etc.
+      PYTHONPATH: /app/backend
       SCANNER_BACKEND: modal
       MODAL_APP_NAME: onus-scanners
       OLLAMA_URL: ${OLLAMA_URL}
