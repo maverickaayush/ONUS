@@ -252,3 +252,27 @@ body::before {
 @keyframes onus-blink {
   50% { opacity: 0; }
 }
+
+/* ═══ ONUS Authentication Terminal (HUD, private frontend) ═════════════════ */
+/* Scoped cursor-none: only the terminal page hides the native cursor, so the
+   rest of the app is unaffected. */
+.onus-cursor-none, .onus-cursor-none * { cursor: none !important; }
+
+.onus-ibeam {
+  width: 2px;
+  height: 18px;
+  border-radius: 1px;
+  animation: onus-ibeam-pulse 1s ease-in-out infinite;
+}
+@keyframes onus-ibeam-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.onus-auth-btn {
+  background: linear-gradient(180deg, rgba(0, 240, 255, 0.14), rgba(0, 240, 255, 0.06));
+  border: 1px solid rgba(0, 240, 255, 0.5);
+  color: #00f0ff;
+}
+.onus-auth-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(0, 240, 255, 0.24), rgba(0, 240, 255, 0.1));
+  box-shadow: 0 0 20px -4px rgba(0, 240, 255, 0.5), inset 0 0 12px -6px rgba(0, 240, 255, 0.6);
+}
+.onus-auth-btn:active:not(:disabled) { transform: scale(0.985); }
