@@ -40,7 +40,6 @@ services:
       context: .
       dockerfile: backend/Dockerfile
       target: backend          # slim arm64 image, no scanner binaries
-    platform: linux/arm64
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -68,7 +67,6 @@ services:
       context: .
       dockerfile: backend/Dockerfile
       target: backend
-    platform: linux/arm64
     restart: unless-stopped
     depends_on:
       backend: { condition: service_started }
