@@ -6,7 +6,7 @@
  * to reveal the interface. Calls onComplete once the reveal finishes. Respects
  * prefers-reduced-motion (skips near-instantly).
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 
 const LOGS = [
@@ -20,16 +20,21 @@ const LOGS = [
 export function BootSequence({ onComplete }: { onComplete: () => void }) {
   const [shown, setShown] = useState(0)
   const [phase, setPhase] = useState<'logs' | 'reveal' | 'done'>('logs')
+  // Hold onComplete in a ref so the boot effect can run EXACTLY ONCE ([] deps)
+  // without re-running when the parent re-renders and passes a fresh callback —
+  // that re-run was replaying the scanline reveal a second time.
+  const onCompleteRef = useRef(onComplete)
+  onCompleteRef.current = onComplete
 
   useEffect(() => {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduced) { onComplete(); setPhase('done'); return }
+    if (reduced) { onCompleteRef.current(); setPhase('done'); return }
     const timers: number[] = []
     LOGS.forEach((_, i) => timers.push(window.setTimeout(() => setShown(i + 1), 120 + i * 240)))
     timers.push(window.setTimeout(() => setPhase('reveal'), 120 + LOGS.length * 240))
-    timers.push(window.setTimeout(() => { setPhase('done'); onComplete() }, 120 + LOGS.length * 240 + 650))
+    timers.push(window.setTimeout(() => { setPhase('done'); onCompleteRef.current() }, 120 + LOGS.length * 240 + 650))
     return () => timers.forEach(clearTimeout)
-  }, [onComplete])
+  }, [])
 
   return (
     <AnimatePresence>
