@@ -1,176 +1,116 @@
 'use client'
 
 /**
- * Hosted onboarding: INITIALIZE PROTOCOL (register) -> SIGNATURE HANDSHAKE
- * (email OTP) -> DASHBOARD. Domain ownership is NOT part of onboarding — a
- * verified user reaches the dashboard immediately and only proves target
- * ownership later, when they request a FULL VAPT scan (see TargetClearance).
+ * ONUS INITIALIZATION TERMINAL — HUD sign-up (shared TerminalShell), matching
+ * the sign-in terminal. Flow: register -> email OTP -> dashboard. Domain
+ * ownership is NOT part of onboarding. On verify, the emblem enters its
+ * "verified" state before routing.
  */
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import {
-  ApiError,
-  getMe,
-  resendOtp,
-  signup,
-  verifyOtp,
-} from '@/lib/api'
-import {
-  AuthCard,
-  AuthShell,
-  CardHeader,
-  CtaButton,
-  ErrorText,
-  Field,
-  LinkRow,
-  OtpInput,
-  PasswordField,
-  ScrambleText,
-  StepTransition,
-  TextLink,
-} from '@/components/auth-ui'
+import { ApiError, getMe, resendOtp, signup, verifyOtp } from '@/lib/api'
+import { ScrambleButton, TerminalError, TerminalShell } from '@/components/hud/terminal-shell'
+import { KineticField, KineticPassword } from '@/components/hud/hud-input'
+import { OtpInput, passwordScore } from '@/components/auth-ui'
 
-type Step = 'register' | 'otp'
+const CYAN = '#00F0FF'
+const msg = (e: unknown) => (e instanceof ApiError ? e.message : 'LINK FAILURE — backend unreachable.')
 
-function msg(e: unknown): string {
-  return e instanceof ApiError ? e.message : 'Service unavailable. Please try again.'
+function SecurityMeter({ value }: { value: string }) {
+  const score = passwordScore(value)
+  return (
+    <div className="mb-5 mt-[-8px] flex gap-1.5" aria-hidden="true">
+      {[0, 1, 2, 3, 4].map((i) => (
+        <span key={i} className="h-[3px] flex-1 rounded-none transition-colors duration-200"
+          style={{ background: i < score ? CYAN : 'rgba(255,255,255,0.08)', boxShadow: i < score ? `0 0 6px ${CYAN}` : 'none' }} />
+      ))}
+    </div>
+  )
 }
 
-export default function SignUpPage() {
+export default function SignUpTerminal() {
   const router = useRouter()
-  const [step, setStep] = useState<Step>('register')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-
+  const [phase, setPhase] = useState<'register' | 'otp' | 'verified'>('register')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const [expiresIn, setExpiresIn] = useState(0)
   const [resendIn, setResendIn] = useState(0)
 
-  // Already signed in? Skip straight to the dashboard.
   useEffect(() => {
     getMe().then((u) => { if (u?.next_step === 'ready') router.replace('/') }).catch(() => {})
   }, [router])
 
   useEffect(() => {
-    if (step !== 'otp') return
+    if (phase !== 'otp') return
     const id = window.setInterval(() => {
       setExpiresIn((s) => Math.max(0, s - 1))
       setResendIn((s) => Math.max(0, s - 1))
     }, 1000)
     return () => window.clearInterval(id)
-  }, [step])
+  }, [phase])
 
-  const mmss = (s: number) =>
-    `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+  const mmss = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 
   async function onRegister(e: React.FormEvent) {
     e.preventDefault()
-    setError('')
-    setBusy(true)
+    setError(''); setBusy(true)
     try {
       const c = await signup(email, password)
-      setExpiresIn(c.expires_in)
-      setResendIn(c.resend_in)
-      setStep('otp')
-    } catch (err) {
-      setError(msg(err))
-    } finally {
-      setBusy(false)
-    }
+      setExpiresIn(c.expires_in); setResendIn(c.resend_in)
+      setPhase('otp')
+    } catch (err) { setError(msg(err)) } finally { setBusy(false) }
   }
 
-  async function onVerifyOtp(code: string) {
-    setError('')
-    setBusy(true)
+  async function onOtp(code: string) {
+    setError(''); setBusy(true)
     try {
-      await verifyOtp(email, code)   // establishes the session
-      router.replace('/')            // straight to the dashboard
-    } catch (err) {
-      setError(msg(err))
-    } finally {
-      setBusy(false)
-    }
+      await verifyOtp(email, code)
+      setPhase('verified')
+      window.setTimeout(() => router.replace('/'), 1600)
+    } catch (err) { setError(msg(err)) } finally { setBusy(false) }
   }
 
   async function onResend() {
     setError('')
-    try {
-      const c = await resendOtp(email)
-      setExpiresIn(c.expires_in)
-      setResendIn(c.resend_in)
-    } catch (err) {
-      setError(msg(err))
-    }
+    try { const c = await resendOtp(email); setExpiresIn(c.expires_in); setResendIn(c.resend_in) }
+    catch (err) { setError(msg(err)) }
   }
 
   return (
-    <AuthShell>
-      <AuthCard>
-        {step === 'register' ? (
-          <StepTransition stepKey="register">
-            <CardHeader title="Initialize Protocol" subtitle="Create your ONUS operator account." />
-            <ErrorText>{error}</ErrorText>
-            <form onSubmit={onRegister}>
-              <Field
-                label="Email"
-                id="email"
-                type="email"
-                required
-                autoComplete="email"
-                placeholder="operator@domain.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
-              <PasswordField
-                label="Password"
-                id="password"
-                required
-                autoComplete="new-password"
-                placeholder="••••••••••"
-                meter
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-              <CtaButton type="submit" disabled={busy}>
-                {busy ? 'Initializing…' : 'Initialize Protocol'}
-              </CtaButton>
-            </form>
-            <LinkRow>
-              Existing operator? <TextLink href="/sign-in">Authenticate</TextLink>
-            </LinkRow>
-          </StepTransition>
-        ) : (
-          <StepTransition stepKey="otp">
-            <CardHeader
-              title="Signature Handshake"
-              subtitle={`A six-digit code was sent to ${email}.`}
-            />
-            <ErrorText>{error}</ErrorText>
-            {busy ? (
-              <div className="mb-4 py-2">
-                <ScrambleText text="RESOLVING SIGNATURE..." active={busy} />
-              </div>
-            ) : (
-              <OtpInput onComplete={onVerifyOtp} disabled={busy} />
-            )}
-            <div className="flex items-center justify-between font-mono text-[11px] text-white/40">
-              <span>
-                SECURE_HANDSHAKE_WINDOW:{' '}
-                <span style={{ color: expiresIn > 0 ? '#00F0FF' : '#FF0055' }}>{mmss(expiresIn)}</span>
-              </span>
-              <button
-                type="button"
-                onClick={onResend}
-                disabled={resendIn > 0}
-                className="uppercase tracking-wider transition-colors enabled:hover:text-white/80 disabled:opacity-40"
-              >
-                {resendIn > 0 ? `Resend ${resendIn}s` : 'Resend'}
-              </button>
-            </div>
-          </StepTransition>
-        )}
-      </AuthCard>
-    </AuthShell>
+    <TerminalShell subtitle="Initialization Terminal" verified={phase === 'verified'}>
+      <TerminalError>{error}</TerminalError>
+      {phase === 'verified' ? (
+        <div className="py-6 text-center">
+          <p className="font-mono text-[12px] uppercase tracking-[0.3em]" style={{ color: CYAN }}>Clearance Granted</p>
+          <p className="mt-2 font-mono text-[10px] text-white/40">Routing to command center…</p>
+        </div>
+      ) : phase === 'otp' ? (
+        <form onSubmit={(e) => e.preventDefault()}>
+          <p className="mb-4 font-mono text-[11px] leading-relaxed text-white/45">
+            SIGNATURE HANDSHAKE · six-digit code dispatched to {email}.
+          </p>
+          <OtpInput onComplete={onOtp} disabled={busy} />
+          <div className="flex items-center justify-between font-mono text-[10px] text-white/40">
+            <span>WINDOW: <span style={{ color: expiresIn > 0 ? CYAN : '#FF0055' }}>{mmss(expiresIn)}</span></span>
+            <button type="button" onClick={onResend} disabled={resendIn > 0}
+              className="uppercase tracking-wider transition-colors enabled:hover:text-white/80 disabled:opacity-40">
+              {resendIn > 0 ? `Resend ${resendIn}s` : 'Resend'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <form onSubmit={onRegister}>
+          <KineticField label="Operator ID" id="email" type="email" required autoComplete="email" placeholder="operator@domain.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <KineticPassword label="Passphrase" id="password" required placeholder="••••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <SecurityMeter value={password} />
+          <ScrambleButton type="submit" label={busy ? 'INITIALIZING' : 'INITIALIZE PROTOCOL'} disabled={busy} />
+          <p className="mt-5 text-center font-mono text-[11px] text-white/35">
+            EXISTING OPERATOR? <a href="/sign-in" style={{ color: CYAN }}>AUTHENTICATE</a>
+          </p>
+        </form>
+      )}
+    </TerminalShell>
   )
 }
