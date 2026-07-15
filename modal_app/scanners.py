@@ -80,7 +80,7 @@ _PROFILES = {
     "nuclei":           dict(cpu=2.0, memory=2048, base=720),
     "enumeration":      dict(cpu=1.0, memory=2048, base=280),
     "tech_fingerprint": dict(cpu=1.0, memory=1024, base=150),
-    "owasp":            dict(cpu=1.0, memory=1024, base=420),
+    "owasp":            dict(cpu=1.0, memory=1024, base=540),  # >owasp's internal 480s budget + margin
     "ssl_tls":          dict(cpu=1.0, memory=1024, base=360),
     "headers":          dict(cpu=0.5, memory=512,  base=360),
 }

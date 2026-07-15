@@ -104,6 +104,18 @@ _MAX_CRAWL_PAGES = 20
 _CRAWL_PAGE_TIMEOUT = scaled_timeout(10)
 _CRAWL_BUDGET_SECONDS = scaled_timeout(60)
 
+# Internal soft budget for the whole active-testing phase. Against a sprawling
+# real-internet target (e.g. testphp.vulnweb.com, ~800 requests at real RTT)
+# owasp can genuinely run for many minutes; rather than run until the hard
+# Celery/Modal timeout kills it and returns NOTHING, it does full per-URL
+# testing until this budget is spent, then returns everything it found so far as
+# 'partial'. 'partial' is NOT a decision-flow pause trigger (Section 4.3b), so
+# the scan finalises automatically with owasp's real findings included. This is
+# strictly more coverage than before (the ceiling is raised, and no findings are
+# ever discarded), not less. Ordered below run_owasp's Celery soft limit and the
+# module's Modal function timeout so this budget is always the one that fires.
+_OWASP_TIME_BUDGET_SECONDS = scaled_timeout(480)
+
 
 _META_REFRESH_URL_RE = re.compile(r'url\s*=\s*[\'"]?([^\'";]+)', re.IGNORECASE)
 
@@ -925,7 +937,19 @@ def scan_owasp(scan_id: str, domain: str, auth: dict = None) -> dict:
 
     try:
         discovered = _discover_urls(session, target, domain)
+        tested = 0
+        budget_hit = False
         for url in discovered:
+            # Full per-URL testing until the time budget is spent, then stop and
+            # return what we have as 'partial' (never dump findings by running
+            # into the hard timeout). Checked per-URL, not per-test, so a URL's
+            # test set always runs to completion once started.
+            if time.monotonic() - start > _OWASP_TIME_BUDGET_SECONDS:
+                budget_hit = True
+                logger.warning("owasp: %ds time budget reached for scan %s after %d/%d URLs "
+                               "- returning partial with findings so far",
+                               _OWASP_TIME_BUDGET_SECONDS, scan_id, tested, len(discovered))
+                break
             for test_fn in active_tests:
                 try:
                     findings.extend(test_fn(session, url, domain))
@@ -934,7 +958,15 @@ def scan_owasp(scan_id: str, domain: str, auth: dict = None) -> dict:
                 except Exception as e:
                     logger.error("owasp %s failed for scan %s (url=%s): %s",
                                  test_fn.__name__, scan_id, url, e)
+            tested += 1
 
+        if budget_hit:
+            return build_module_result(
+                MODULE, findings, {}, status='partial',
+                error=(f'owasp reached its {_OWASP_TIME_BUDGET_SECONDS}s testing budget after '
+                       f'{tested} of {len(discovered)} discovered URLs (large target / high latency); '
+                       f'findings above are complete for the URLs tested.'),
+                duration_seconds=time.monotonic() - start)
         return build_module_result(MODULE, findings, {}, status='success',
                                     duration_seconds=time.monotonic() - start)
     except SoftTimeLimitExceeded:
@@ -949,7 +981,7 @@ def scan_owasp(scan_id: str, domain: str, auth: dict = None) -> dict:
 
 
 @app.task(base=BaseTask, name='tasks.owasp.run_owasp',
-          soft_time_limit=scaled_timeout(360), time_limit=scaled_timeout(420))
+          soft_time_limit=scaled_timeout(540), time_limit=scaled_timeout(600))
 def run_owasp(scan_id: str, domain: str) -> dict:
     """Dispatcher: owns the DB status writes (module namespace); tasks.dispatch
     picks where the pure half runs (local subprocess vs Modal)."""
