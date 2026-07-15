@@ -236,7 +236,7 @@ def _run_wafw00f(scan_id: str, target: str, domain: str) -> List[dict]:
 # Celery task
 # ---------------------------------------------------------------------------
 
-def scan_tech_fingerprint(scan_id: str, domain: str, auth: dict = None) -> dict:
+def scan_tech_fingerprint(scan_id: str, domain: str, auth: dict = None, quick: bool = False) -> dict:
     """
     Pure half (runs locally or on Modal via tasks.dispatch): technology
     fingerprinting - WhatWeb (passive) + WAFW00F. Partial results ok (the one
@@ -266,21 +266,27 @@ def scan_tech_fingerprint(scan_id: str, domain: str, auth: dict = None) -> dict:
             whatweb_error = str(e)
             logger.error("tech_fingerprint whatweb failed for scan %s: %s", scan_id, e)
 
-        try:
-            findings.extend(_run_wafw00f(scan_id, target, domain))
-            wafw00f_ok = True
-        except SoftTimeLimitExceeded:
-            raise
-        except Exception as e:
-            wafw00f_error = str(e)
-            logger.error("tech_fingerprint wafw00f failed for scan %s: %s", scan_id, e)
+        # Quick Assessment (passive-only): WhatWeb sends ordinary requests, but
+        # WAFW00F sends attack-like probes to trip a WAF — excluded from quick.
+        if not quick:
+            try:
+                findings.extend(_run_wafw00f(scan_id, target, domain))
+                wafw00f_ok = True
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception as e:
+                wafw00f_error = str(e)
+                logger.error("tech_fingerprint wafw00f failed for scan %s: %s", scan_id, e)
 
-        tool_versions = {
-            'whatweb': get_tool_version('whatweb', '--version'),
-            'wafw00f': get_tool_version('wafw00f', '--version'),
-        }
+        tool_versions = {'whatweb': get_tool_version('whatweb', '--version')}
+        if not quick:
+            tool_versions['wafw00f'] = get_tool_version('wafw00f', '--version')
 
-        if whatweb_ok and wafw00f_ok:
+        if quick:
+            # WhatWeb-only: success iff WhatWeb ran; WAFW00F is intentionally absent.
+            status = 'success' if whatweb_ok else 'failed'
+            error = None if whatweb_ok else f'whatweb: {whatweb_error}'
+        elif whatweb_ok and wafw00f_ok:
             status, error = 'success', None
         elif whatweb_ok or wafw00f_ok:
             status = 'partial'
@@ -308,12 +314,13 @@ def scan_tech_fingerprint(scan_id: str, domain: str, auth: dict = None) -> dict:
     soft_time_limit=_SOFT_LIMIT,
     time_limit=_HARD_LIMIT,
 )
-def run_tech_fingerprint(scan_id: str, domain: str) -> dict:
+def run_tech_fingerprint(scan_id: str, domain: str, quick: bool = False) -> dict:
     """Dispatcher: owns the DB status writes (module namespace); tasks.dispatch
-    picks where the pure half runs (local subprocess vs Modal)."""
+    picks where the pure half runs (local subprocess vs Modal). quick=True runs
+    WhatWeb only (Quick Assessment profile)."""
     update_module_status(scan_id, MODULE, 'running')
     from tasks.dispatch import dispatch_scan
-    envelope = dispatch_scan(MODULE, scan_id, domain)
+    envelope = dispatch_scan(MODULE, scan_id, domain, quick)
     update_module_status(scan_id, MODULE,
                          'complete' if envelope.get('status') in ('success', 'partial') else 'failed')
     return envelope

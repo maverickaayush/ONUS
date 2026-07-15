@@ -87,7 +87,10 @@ def _compute_progress(scan: Scan) -> int:
     module_statuses = scan.module_statuses or {}
     if scan.status == ScanStatus.running:
         completed = sum(1 for s in module_statuses.values() if s == "complete")
-        return 20 + int((completed / len(SCAN_MODULE_IDS)) * 60)
+        # Divide by the modules THIS scan actually runs (quick = 3, full = 8),
+        # not a hardcoded 8 - otherwise a quick scan caps at ~37%.
+        divisor = len(module_statuses) or len(SCAN_MODULE_IDS)
+        return 20 + int((completed / divisor) * 60)
     return status_order.get(scan.status, 0)
 
 
@@ -133,30 +136,57 @@ def create_scan(request: ScanRequest, http_request: Request, db: Session = Depen
     if not request.authorized:
         raise HTTPException(status_code=403, detail="Scan requires explicit authorization")
 
+    mode = request.mode  # schema-validated: 'quick' | 'full'
+    current_user = None
+
     # Hosted-tier gate (routers/auth.py). Default OFF - a no-op for local/
-    # single-operator deployments. When ON, the caller must be an authenticated,
-    # email-verified user who has proven ownership of the target domain (or an
-    # authorized subdomain of it). This is the exact enforcement point before
-    # any Celery/Modal scanner workload is dispatched.
+    # single-operator deployments. When ON, BOTH modes require an authenticated,
+    # email-verified user; a FULL VAPT scan ADDITIONALLY requires proven
+    # ownership of the target (or an authorized subdomain). This block is THE
+    # enforcement point - it runs BEFORE any Celery/Modal scanner dispatch, so an
+    # unauthorized active scan never reaches nmap/naabu/ZAP/Nuclei/ffuf/Nikto.
     if settings.REQUIRE_AUTH:
         import security
         from routers.verify import user_owns_domain
-        user = security.get_current_user(http_request, db)
-        if user is None:
+        current_user = security.get_current_user(http_request, db)
+        if current_user is None:
             raise HTTPException(status_code=401, detail="Authentication required.")
-        if not user.email_verified:
+        if not current_user.email_verified:
             raise HTTPException(status_code=403, detail="Email address not verified.")
-        if not user_owns_domain(db, user.id, request.domain):
-            raise HTTPException(
-                status_code=403,
-                detail="You have not verified ownership of this domain. Verify it "
-                       "(POST /api/verify/domain) before scanning.",
-            )
 
-    # Account-less domain-ownership gate (routers/verify.py). Independent of the
-    # hosted-auth gate above; the claim-key model for a shared-but-account-less
-    # instance. When ON, the caller presents a claim key proving verified control.
-    if settings.REQUIRE_DOMAIN_VERIFICATION:
+        # Per-mode rate limit (server-side, Redis).
+        if mode == "quick":
+            security.enforce_rate_limit(f"quick:{current_user.id}",
+                                        settings.RATE_LIMIT_QUICK_SCAN,
+                                        settings.RATE_LIMIT_QUICK_SCAN_WINDOW)
+        else:
+            security.enforce_rate_limit(f"full:{current_user.id}",
+                                        settings.RATE_LIMIT_FULL_SCAN,
+                                        settings.RATE_LIMIT_FULL_SCAN_WINDOW)
+
+        # Monthly usage cap (both modes), counted from the DB.
+        month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        used = db.query(Scan).filter(
+            Scan.user_id == current_user.id, Scan.created_at >= month_start
+        ).count()
+        if used >= settings.MAX_SCANS_PER_MONTH:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Monthly scan limit ({settings.MAX_SCANS_PER_MONTH}) reached.")
+
+        # FULL requires verified target ownership. Return a STRUCTURED response
+        # the frontend uses to open target verification and resume the scan.
+        if mode == "full" and not user_owns_domain(db, current_user.id, request.domain):
+            raise HTTPException(status_code=403, detail={
+                "code": "TARGET_AUTHORIZATION_REQUIRED",
+                "target": request.domain,
+                "methods": ["meta_tag", "http_file"],
+                "message": "Active scanning requires verified ownership of this target.",
+            })
+
+    # Account-less claim-key gate (REQUIRE_DOMAIN_VERIFICATION). FULL only -
+    # a QUICK assessment is passive and never requires ownership.
+    if settings.REQUIRE_DOMAIN_VERIFICATION and mode == "full":
         from routers.verify import domain_has_valid_claim
         if not domain_has_valid_claim(db, request.domain, request.claim_key):
             raise HTTPException(
@@ -199,12 +229,15 @@ def create_scan(request: ScanRequest, http_request: Request, db: Session = Depen
             detail=f"Maximum concurrent scans ({settings.MAX_CONCURRENT_SCANS}) reached - try again shortly",
         )
 
+    from tasks.base_task import module_ids_for_mode
     scan = Scan(
         domain=request.domain,
         authorized=request.authorized,
         notes=request.notes,
         status=ScanStatus.queued,
-        module_statuses={module_id: "queued" for module_id in SCAN_MODULE_IDS},
+        scan_type=mode,
+        user_id=(current_user.id if current_user else None),
+        module_statuses={module_id: "queued" for module_id in module_ids_for_mode(mode)},
     )
     db.add(scan)
     db.commit()
@@ -222,7 +255,7 @@ def create_scan(request: ScanRequest, http_request: Request, db: Session = Depen
     # Import here to avoid circular imports at module load time
     try:
         from tasks.scan_orchestrator import scan_orchestrator
-        scan_orchestrator.delay(str(scan.id), scan.domain)
+        scan_orchestrator.delay(str(scan.id), scan.domain, mode)
     except Exception as e:
         logger.error("Failed to enqueue scan task: %s", e)
         scan.status = ScanStatus.failed

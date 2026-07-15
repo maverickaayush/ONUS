@@ -106,6 +106,11 @@ class ScanRequest(BaseModel):
     # NOTE: authorization is enforced in routers/scan.py so an unauthorized
     # request returns HTTP 403 (per Section 4.1) rather than a 422 schema error.
     authorized: bool
+    # Scan mode is part of the request contract, not inferred from which button
+    # the frontend clicked. 'quick' = passive-only profile (no target ownership
+    # required); 'full' = the active VAPT pipeline (requires verified ownership
+    # in hosted mode). Default 'full' preserves prior local/self-hosted behavior.
+    mode: Literal["quick", "full"] = "full"
     notes: Optional[str] = None
     auth: Optional[AuthConfig] = None
     # Domain-ownership claim key (routers/verify.py). Only consulted when
@@ -229,9 +234,12 @@ class AuthUserResponse(BaseModel):
     email: str
     email_verified: bool
     has_verified_domain: bool
-    # 'verify_email' | 'verify_domain' | 'ready' — where the frontend should send
-    # this user next.
+    # 'verify_email' | 'ready' — domain ownership is NOT part of onboarding, so
+    # 'verify_domain' is never emitted (kept in the union for compatibility).
     next_step: Literal["verify_email", "verify_domain", "ready"]
+    # Usage display (dashboard "SCANS THIS MONTH n / limit"). Server-authoritative.
+    scans_this_month: int = 0
+    scan_limit: int = 0
 
 
 class ScanStatusResponse(BaseModel):

@@ -44,6 +44,22 @@ SCAN_MODULES = [
 ]
 SCAN_MODULE_IDS = [m['id'] for m in SCAN_MODULES]
 
+# Quick Assessment (scan mode 'quick') runs ONLY these fully-passive / low-impact
+# modules — the backend-enforced allowed set, never decided by the frontend.
+# Classification is from each module's ACTUAL executed tools (not its name):
+#   headers          — a single passive requests.get of the homepage
+#   ssl_tls          — testssl.sh/sslscan TLS handshake + cipher/cert inspection
+#   tech_fingerprint — WhatWeb only (run_tech_fingerprint(quick=True) skips
+#                      WAFW00F, which sends attack-like probes to trip a WAF)
+# Everything else (recon=nmap/naabu, webscan=ZAP/Nikto, owasp=payloads,
+# nuclei=active templates, enumeration=ffuf) is active/intrusive and excluded.
+# Full VAPT ('full') runs all of SCAN_MODULE_IDS.
+QUICK_MODULE_IDS = ['headers', 'ssl_tls', 'tech_fingerprint']
+
+
+def module_ids_for_mode(mode: str) -> list:
+    return QUICK_MODULE_IDS if mode == 'quick' else SCAN_MODULE_IDS
+
 # Several ProjectDiscovery/CLI tools (subfinder, nuclei, sslscan, wafw00f)
 # color their --version/-version output even with stdout piped to a
 # non-tty subprocess - the raw escape bytes otherwise leak straight into

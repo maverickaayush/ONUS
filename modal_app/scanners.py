@@ -86,10 +86,12 @@ _PROFILES = {
 }
 
 
-def _run(module: str, scan_id: str, domain: str, auth):
+def _run(module: str, scan_id: str, domain: str, auth, quick: bool = False):
     if "/app/backend" not in sys.path:
         sys.path.insert(0, "/app/backend")
     from tasks.dispatch import _pure_fn
+    if module == "tech_fingerprint":
+        return _pure_fn(module)(scan_id, domain, auth, quick)
     return _pure_fn(module)(scan_id, domain, auth)
 
 
@@ -119,8 +121,8 @@ def scan_enumeration(scan_id, domain, auth=None):
 
 _p = _PROFILES["tech_fingerprint"]
 @app.function(image=scanner_image, cpu=_p["cpu"], memory=_p["memory"], timeout=_timeout(_p["base"]), name="scan_tech_fingerprint")
-def scan_tech_fingerprint(scan_id, domain, auth=None):
-    return _run("tech_fingerprint", scan_id, domain, auth)
+def scan_tech_fingerprint(scan_id, domain, auth=None, quick=False):
+    return _run("tech_fingerprint", scan_id, domain, auth, quick)
 
 
 _p = _PROFILES["owasp"]

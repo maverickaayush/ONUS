@@ -157,6 +157,36 @@ def verify_otp(email: str, code: str, r: Optional[_redis.Redis] = None) -> str:
     return OTP_INCORRECT
 
 
+# ── Rate limiting (fixed-window counters in Redis) ───────────────────────────
+def rate_limit(bucket: str, limit: int, window_seconds: int,
+               r: Optional[_redis.Redis] = None) -> tuple[bool, int]:
+    """Fixed-window limiter. Returns (allowed, retry_after_seconds). The first
+    request in a window sets the TTL; requests past `limit` are rejected until
+    the window rolls over. Fail-open on a Redis error (availability > strictness
+    for a rate guard, and other layers still apply)."""
+    r = r or get_redis()
+    key = f"rl:{bucket}"
+    try:
+        n = r.incr(key)
+        if n == 1:
+            r.expire(key, window_seconds)
+        if n > limit:
+            ttl = r.ttl(key)
+            return False, (ttl if ttl and ttl > 0 else window_seconds)
+        return True, 0
+    except Exception:  # noqa: BLE001 - fail open on limiter infra error
+        logger.warning("rate_limit: Redis unavailable for bucket %s; failing open", bucket)
+        return True, 0
+
+
+def enforce_rate_limit(bucket: str, limit: int, window_seconds: int) -> None:
+    """Raise HTTP 429 if the bucket is over limit."""
+    allowed, retry = rate_limit(bucket, limit, window_seconds)
+    if not allowed:
+        raise HTTPException(status_code=429,
+                            detail=f"Too many requests. Try again in {retry}s.")
+
+
 # ── Sessions ─────────────────────────────────────────────────────────────────
 def _session_key(token: str) -> str:
     return f"session:{token}"
