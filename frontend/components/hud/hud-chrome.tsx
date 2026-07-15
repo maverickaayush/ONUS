@@ -10,7 +10,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 
-const CYAN = '#FFB000'
+const CYAN = '#00F0FF'
 
 export function AmbientTelemetry() {
   const [t, setT] = useState({ ping: 12, mem: 47, conn: 'AES-256', sess: 'IDLE' })

@@ -13,7 +13,7 @@ import { ScrambleButton, TerminalError, TerminalShell } from '@/components/hud/t
 import { KineticField, KineticPassword } from '@/components/hud/hud-input'
 import { OtpInput, passwordScore } from '@/components/auth-ui'
 
-const CYAN = '#FFB000'
+const CYAN = '#00F0FF'
 const msg = (e: unknown) => (e instanceof ApiError ? e.message : 'LINK FAILURE — backend unreachable.')
 
 function SecurityMeter({ value }: { value: string }) {

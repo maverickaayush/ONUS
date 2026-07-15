@@ -9,13 +9,13 @@
 import { ReactNode, useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import { OnusMark } from '@/components/ui'
-import { SignalCanvas } from './signal-canvas'
+import { OnusCanvas } from './onus-canvas'
 import { TargetingReticle } from './targeting-reticle'
 import { BootSequence } from './boot-sequence'
 import { AmbientTelemetry, HexStream, TypingOscilloscope } from './hud-chrome'
 import { ONUS_EMBLEM_PATH, ONUS_EMBLEM_VIEWBOX } from './emblem'
 
-const AMBER = '#FFB000'
+const CYAN = '#00F0FF'
 
 // AUTHENTICATE / INITIALIZE button with hover text-scramble.
 const CHARS = '!<>-_\\/[]{}=+*^?#________ABCDEF0123456789'
@@ -55,7 +55,7 @@ function CornerMounts() {
   return (
     <>
       {['left-0 top-0', 'right-0 top-0', 'left-0 bottom-0', 'right-0 bottom-0'].map((p) => (
-        <span key={p} className={`absolute ${p} h-[6px] w-[6px]`} style={{ background: AMBER, boxShadow: `0 0 6px ${AMBER}` }} />
+        <span key={p} className={`absolute ${p} h-[6px] w-[6px]`} style={{ background: CYAN, boxShadow: `0 0 6px ${CYAN}` }} />
       ))}
     </>
   )
@@ -68,20 +68,20 @@ function EmblemHeader({ subtitle, verified }: { subtitle: string; verified?: boo
         {verified && (
           <motion.span
             className="absolute inset-[-8px] rounded-full border"
-            style={{ borderColor: AMBER, borderTopColor: 'transparent' }}
+            style={{ borderColor: CYAN, borderTopColor: 'transparent' }}
             initial={{ rotate: 0, opacity: 0 }}
             animate={{ rotate: 360, opacity: 1 }}
             transition={{ duration: 1.2, ease: 'linear', repeat: Infinity }}
           />
         )}
         <motion.div
-          animate={verified ? { scale: [1, 1.12, 1], filter: [`drop-shadow(0 0 0px ${AMBER})`, `drop-shadow(0 0 14px ${AMBER})`, `drop-shadow(0 0 6px ${AMBER})`] } : {}}
+          animate={verified ? { scale: [1, 1.12, 1], filter: [`drop-shadow(0 0 0px ${CYAN})`, `drop-shadow(0 0 14px ${CYAN})`, `drop-shadow(0 0 6px ${CYAN})`] } : {}}
           transition={{ duration: 1, repeat: verified ? Infinity : 0 }}
         >
-          <OnusMark className="h-11 w-11" style={{ color: AMBER }} />
+          <OnusMark className="h-11 w-11" style={{ color: CYAN }} />
         </motion.div>
       </div>
-      <h1 className="mt-4 font-display text-[20px] font-700 uppercase tracking-[0.32em] text-white" style={{ textShadow: '0 0 18px rgba(255,176,0,0.25)' }}>
+      <h1 className="mt-4 font-display text-[20px] font-700 uppercase tracking-[0.32em] text-white" style={{ textShadow: '0 0 18px rgba(0,240,255,0.25)' }}>
         ONUS
       </h1>
       <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.38em] text-white/40">{subtitle}</p>
@@ -95,7 +95,7 @@ export function TerminalShell({ subtitle, verified, children }: {
   const [booted, setBooted] = useState(false)
   return (
     <div className="onus-cursor-none relative flex min-h-screen items-center justify-center overflow-hidden px-4">
-      <SignalCanvas />
+      <OnusCanvas />
       <TargetingReticle />
       <BootSequence onComplete={() => setBooted(true)} />
       <AmbientTelemetry />
@@ -110,7 +110,7 @@ export function TerminalShell({ subtitle, verified, children }: {
         animate={{ opacity: [0.015, 0.03, 0.015] }}
         transition={{ duration: 14, repeat: Infinity, ease: 'easeInOut' }}
       >
-        <path d={ONUS_EMBLEM_PATH} fill="none" stroke={AMBER} strokeWidth={2} />
+        <path d={ONUS_EMBLEM_PATH} fill="none" stroke={CYAN} strokeWidth={2} />
       </motion.svg>
 
       <motion.div
@@ -120,7 +120,7 @@ export function TerminalShell({ subtitle, verified, children }: {
         transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
       >
         <EmblemHeader subtitle={subtitle} verified={verified} />
-        <div className="relative rounded-none border p-7 backdrop-blur-xl" style={{ background: 'rgba(0,0,0,0.2)', borderColor: '#222222' }}>
+        <div className="relative rounded-none border p-7 backdrop-blur-xl" style={{ background: 'rgba(0,0,0,0.4)', borderColor: 'rgba(255,255,255,0.1)' }}>
           <CornerMounts />
           {children}
         </div>
