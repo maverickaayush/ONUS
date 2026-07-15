@@ -31,8 +31,15 @@ const NAV = [
   { href: '/scans', label: 'Scans', icon: LayoutList, match: (p: string) => p.startsWith('/scans') },
 ]
 
+// Auth routes render full-bleed (their own TangleCanvas backdrop), without the
+// command-center rail / ambient / grain overlays.
+const AUTH_ROUTES = ['/sign-in', '/sign-up']
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  if (AUTH_ROUTES.some((r) => pathname === r || pathname.startsWith(r + '/'))) {
+    return <>{children}</>
+  }
   return (
     <>
       <AmbientBackground />

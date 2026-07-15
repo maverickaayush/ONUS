@@ -245,3 +245,80 @@ export async function getFindings(id: string): Promise<FindingsResponse> {
 export function reportPdfUrl(id: string): string {
   return `/api/scan/${id}/report`
 }
+
+// ── Hosted auth (only used by the private hosted frontend; backend gates it
+//    behind REQUIRE_AUTH) ──────────────────────────────────────────────────
+export interface OTPChallenge {
+  email: string
+  expires_in: number
+  resend_in: number
+}
+
+export type AuthNextStep = 'verify_email' | 'verify_domain' | 'ready'
+
+export interface AuthUser {
+  id: string
+  email: string
+  email_verified: boolean
+  has_verified_domain: boolean
+  next_step: AuthNextStep
+}
+
+export interface DomainChallenge {
+  verification_id: string
+  domain: string
+  method: 'meta_tag' | 'http_file'
+  token: string
+  meta_tag: string
+  file_path: string
+  file_contents: string
+  instructions: string
+}
+
+export interface DomainCheckResult {
+  verified: boolean
+  domain: string
+  claim_key?: string | null
+  expires_at?: string | null
+  detail?: string | null
+}
+
+// Cookies are same-origin (Next proxies /api/* to the backend), so credentials
+// ride along; 'include' is belt-and-suspenders for any direct-origin setup.
+const authInit: RequestInit = { credentials: 'include', cache: 'no-store' }
+
+async function postJson<T>(url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    ...authInit,
+    method: 'POST',
+    headers: jsonHeaders,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  return handle<T>(res)
+}
+
+export const signup = (email: string, password: string) =>
+  postJson<OTPChallenge>('/api/auth/signup', { email, password })
+
+export const verifyOtp = (email: string, code: string) =>
+  postJson<AuthUser>('/api/auth/verify-otp', { email, code })
+
+export const resendOtp = (email: string) =>
+  postJson<OTPChallenge>('/api/auth/resend-otp', { email })
+
+export const login = (email: string, password: string) =>
+  postJson<AuthUser>('/api/auth/login', { email, password })
+
+export const logout = () => postJson<{ ok: boolean }>('/api/auth/logout')
+
+export async function getMe(): Promise<AuthUser | null> {
+  const res = await fetch('/api/auth/me', authInit)
+  if (res.status === 401) return null
+  return handle<AuthUser>(res)
+}
+
+export const issueDomainChallenge = (domain: string, method: 'meta_tag' | 'http_file') =>
+  postJson<DomainChallenge>('/api/verify/domain', { domain, method })
+
+export const checkDomainChallenge = (verificationId: string) =>
+  postJson<DomainCheckResult>(`/api/verify/domain/${verificationId}/check`)
