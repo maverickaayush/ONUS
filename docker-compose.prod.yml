@@ -1,4 +1,4 @@
-# Oracle Cloud (Ampere A1, ARM64) production stack.
+# DigitalOcean Droplet (x86_64) production stack.
 #   docker compose -f docker-compose.prod.yml up -d --build
 #
 # Postgres + Redis are PRIVATE (no published ports). Only the backend's :8000
@@ -39,7 +39,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-      target: backend          # slim arm64 image, no scanner binaries
+      target: backend          # slim image, no scanner binaries
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }

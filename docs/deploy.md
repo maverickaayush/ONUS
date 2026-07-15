@@ -1,10 +1,10 @@
-# ONUS Deployment — Oracle (backend) · Modal (scanners + LLM)
+# ONUS Deployment — DigitalOcean (backend) · Modal (scanners + LLM)
 
 Production topology after the Modal migration:
 
 | Workload | Runs on | Notes |
 |---|---|---|
-| FastAPI + Postgres + Redis + Celery orchestrator + aggregator/verifier/CVSS/PDF | **Oracle Cloud Free Tier** — Ampere A1 (ARM64) | slim `backend` Docker target, no scanner binaries |
+| FastAPI + Postgres + Redis + Celery orchestrator + aggregator/verifier/CVSS/PDF | **DigitalOcean Droplet** (x86_64) | slim `backend` Docker target, no scanner binaries |
 | 8 scanner modules | **Modal** — one CPU function per module | `SCANNER_BACKEND=modal`; `modal_app/scanners.py` |
 | Qwen 2.5 7B | **Modal** — T4 GPU, scale-to-zero | Ollama-compatible endpoint; `modal_app/llm.py` |
 
@@ -38,23 +38,20 @@ Record for the backend env:
 
 ---
 
-## 2. Build the Oracle ARM64 backend image
+## 2. Build the backend image
 
-On the Ampere A1 instance (arm64), or cross-build with buildx:
+On the droplet, build native for the host arch (x86_64):
 
 ```bash
-# slim, arm64-clean target (no scanner binaries - those are on Modal)
-docker build --target backend --platform linux/arm64 -t onus-backend:arm64 -f backend/Dockerfile .
+# slim target (no scanner binaries - those are on Modal)
+docker build --target backend -t onus-backend -f backend/Dockerfile .
 ```
-
-All of the slim image's deps have arm64 builds (Python wheels, Playwright/Chromium
-for the XSS verifier, WeasyPrint's libpango). No scanner-binary arm64 fight.
 
 ---
 
-## 3. Oracle runtime (docker-compose override) — keep Postgres/Redis PRIVATE
+## 3. Droplet runtime (docker-compose override) — keep Postgres/Redis PRIVATE
 
-Run only Postgres + Redis + backend + a Celery worker on Oracle. **Do not publish
+Run only Postgres + Redis + backend + a Celery worker on the droplet. **Do not publish
 5432 or 6379** (Modal is stateless and never connects to them; the backend reaches
 them over the internal Docker network). Only FastAPI (8000) is public, behind a TLS
 reverse proxy (Caddy/nginx/Cloudflare Tunnel).
@@ -66,7 +63,7 @@ services:
   postgres: { image: postgres:16-alpine, volumes: [postgres_data:/var/lib/postgresql/data] }  # NO ports:
   redis:    { image: redis:7-alpine }                                                          # NO ports:
   backend:
-    image: onus-backend:arm64
+    image: onus-backend
     environment:
       SCANNER_BACKEND: modal
       MODAL_APP_NAME: onus-scanners
@@ -81,7 +78,7 @@ services:
     ports: ["8000:8000"]        # only public port; put TLS in front
     command: sh -c "cd /app && alembic upgrade head && cd /app/backend && uvicorn main:app --host 0.0.0.0 --port 8000"
   worker:
-    image: onus-backend:arm64
+    image: onus-backend
     environment: *same-as-backend
     # I/O-bound dispatch (each task waits on Modal .remote()) -> THREADS pool,
     # high concurrency. NOT gevent (gevent monkey-patches subprocess and breaks
@@ -90,7 +87,7 @@ services:
     command: celery -A tasks.celery_app worker -P threads -c 40 --loglevel=info
 ```
 
-There is **no ZAP sidecar** on Oracle anymore — webscan's ZAP runs inside its
+There is **no ZAP sidecar** on the droplet anymore — webscan's ZAP runs inside its
 Modal container.
 
 ---
