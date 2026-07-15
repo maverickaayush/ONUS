@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Boolean, Integer, Enum as SAEnum,
-    DateTime, LargeBinary, ForeignKey, Text
+    DateTime, LargeBinary, ForeignKey, Text, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -32,10 +32,39 @@ class User(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), nullable=False, unique=True, index=True)  # normalized
-    password_hash = Column(String(255), nullable=False)
+    # Nullable: OAuth-only users (Google/GitHub) have no password. Password
+    # users still set it; verify_password treats None as "no password login".
+    password_hash = Column(String(255), nullable=True)
     email_verified = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
+
+    providers = relationship("AuthProvider", back_populates="user",
+                             cascade="all, delete-orphan")
+
+
+class AuthProvider(Base):
+    """External OAuth identity linked to a User (routers/auth.py + oauth.py).
+
+    A single user may hold several providers PLUS a password — all resolving to
+    ONE user via account-linking on a verified email, so no duplicate accounts.
+    Password auth is NOT stored here (that's User.password_hash); this table is
+    OAuth identities only. Only used when config.REQUIRE_AUTH is True.
+    """
+    __tablename__ = "auth_providers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    provider = Column(String(16), nullable=False)            # 'google' | 'github'
+    provider_user_id = Column(String(255), nullable=False)   # stable id at the provider
+    provider_metadata = Column(JSONB, nullable=True)         # login/name/avatar, non-secret
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="providers")
+
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id", name="uq_provider_identity"),
+    )
 
 
 class Scan(Base):
