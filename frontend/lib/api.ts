@@ -339,6 +339,21 @@ export const login = (email: string, password: string) =>
 
 export const logout = () => postJson<{ ok: boolean }>('/api/auth/logout')
 
+export interface AuthProviders {
+  password: boolean
+  google: boolean
+  github: boolean
+}
+
+export async function getAuthProviders(): Promise<AuthProviders> {
+  try {
+    const res = await fetch('/api/auth/providers', authInit)
+    return await handle<AuthProviders>(res)
+  } catch {
+    return { password: true, google: false, github: false }
+  }
+}
+
 export async function getMe(): Promise<AuthUser | null> {
   const res = await fetch('/api/auth/me', authInit)
   if (res.status === 401) return null

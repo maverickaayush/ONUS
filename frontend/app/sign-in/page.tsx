@@ -5,11 +5,12 @@
  * Wired to the real backend: login + inline OTP for an unverified email; on
  * success the emblem enters its "verified" state before routing to the dashboard.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ApiError, login, verifyOtp } from '@/lib/api'
 import { ScrambleButton, TerminalError, TerminalShell } from '@/components/hud/terminal-shell'
 import { KineticField, KineticPassword } from '@/components/hud/hud-input'
+import { OAuthButtons } from '@/components/hud/oauth-buttons'
 import { OtpInput } from '@/components/auth-ui'
 
 const CYAN = '#00F0FF'
@@ -22,6 +23,13 @@ export default function SignInTerminal() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+
+  // OAuth callback bounced back with a failure.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('error') === 'oauth') {
+      setError('Provider sign-in failed. Try again, or use email + passphrase.')
+    }
+  }, [])
 
   function succeed() {
     setPhase('verified')
@@ -60,14 +68,17 @@ export default function SignInTerminal() {
           <OtpInput onComplete={onOtp} disabled={busy} />
         </form>
       ) : (
-        <form onSubmit={onLogin}>
-          <KineticField label="Operator ID" id="email" type="email" required autoComplete="email" placeholder="operator@domain.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <KineticPassword label="Passphrase" id="password" required placeholder="••••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <ScrambleButton type="submit" label={busy ? 'AUTHENTICATING' : 'AUTHENTICATE'} disabled={busy} />
-          <p className="mt-5 text-center font-mono text-[11px] text-white/35">
-            NO CREDENTIALS? <a href="/sign-up" style={{ color: CYAN }}>INITIALIZE ACCOUNT</a>
-          </p>
-        </form>
+        <>
+          <OAuthButtons />
+          <form onSubmit={onLogin}>
+            <KineticField label="Operator ID" id="email" type="email" required autoComplete="email" placeholder="operator@domain.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <KineticPassword label="Passphrase" id="password" required placeholder="••••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <ScrambleButton type="submit" label={busy ? 'AUTHENTICATING' : 'AUTHENTICATE'} disabled={busy} />
+            <p className="mt-5 text-center font-mono text-[11px] text-white/35">
+              NO CREDENTIALS? <a href="/sign-up" style={{ color: CYAN }}>INITIALIZE ACCOUNT</a>
+            </p>
+          </form>
+        </>
       )}
     </TerminalShell>
   )

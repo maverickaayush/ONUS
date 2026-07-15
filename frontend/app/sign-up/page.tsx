@@ -11,6 +11,7 @@ import { useRouter } from 'next/navigation'
 import { ApiError, getMe, resendOtp, signup, verifyOtp } from '@/lib/api'
 import { ScrambleButton, TerminalError, TerminalShell } from '@/components/hud/terminal-shell'
 import { KineticField, KineticPassword } from '@/components/hud/hud-input'
+import { OAuthButtons } from '@/components/hud/oauth-buttons'
 import { OtpInput, passwordScore } from '@/components/auth-ui'
 
 const CYAN = '#00F0FF'
@@ -101,15 +102,18 @@ export default function SignUpTerminal() {
           </div>
         </form>
       ) : (
-        <form onSubmit={onRegister}>
-          <KineticField label="Operator ID" id="email" type="email" required autoComplete="email" placeholder="operator@domain.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <KineticPassword label="Passphrase" id="password" required placeholder="••••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <SecurityMeter value={password} />
-          <ScrambleButton type="submit" label={busy ? 'INITIALIZING' : 'INITIALIZE PROTOCOL'} disabled={busy} />
-          <p className="mt-5 text-center font-mono text-[11px] text-white/35">
-            EXISTING OPERATOR? <a href="/sign-in" style={{ color: CYAN }}>AUTHENTICATE</a>
-          </p>
-        </form>
+        <>
+          <OAuthButtons />
+          <form onSubmit={onRegister}>
+            <KineticField label="Operator ID" id="email" type="email" required autoComplete="email" placeholder="operator@domain.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <KineticPassword label="Passphrase" id="password" required placeholder="••••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <SecurityMeter value={password} />
+            <ScrambleButton type="submit" label={busy ? 'INITIALIZING' : 'INITIALIZE PROTOCOL'} disabled={busy} />
+            <p className="mt-5 text-center font-mono text-[11px] text-white/35">
+              EXISTING OPERATOR? <a href="/sign-in" style={{ color: CYAN }}>AUTHENTICATE</a>
+            </p>
+          </form>
+        </>
       )}
     </TerminalShell>
   )
