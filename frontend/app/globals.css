@@ -234,17 +234,17 @@ body::before {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 .onus-auth-input:focus {
-  border-color: #00f0ff;
-  box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.3), 0 0 12px -2px rgba(0, 240, 255, 0.25);
+  border-color: #FFB000;
+  box-shadow: 0 0 0 1px rgba(255, 176, 0, 0.3), 0 0 12px -2px rgba(255, 176, 0, 0.25);
 }
 .onus-auth-cta {
-  background: linear-gradient(180deg, rgba(0, 240, 255, 0.16), rgba(0, 240, 255, 0.08));
-  border: 1px solid rgba(0, 240, 255, 0.4);
-  color: #00f0ff;
+  background: linear-gradient(180deg, rgba(255, 176, 0, 0.16), rgba(255, 176, 0, 0.08));
+  border: 1px solid rgba(255, 176, 0, 0.4);
+  color: #FFB000;
 }
 .onus-auth-cta:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(0, 240, 255, 0.24), rgba(0, 240, 255, 0.12));
-  box-shadow: 0 0 18px -4px rgba(0, 240, 255, 0.4);
+  background: linear-gradient(180deg, rgba(255, 176, 0, 0.24), rgba(255, 176, 0, 0.12));
+  box-shadow: 0 0 18px -4px rgba(255, 176, 0, 0.4);
 }
 .onus-caret {
   animation: onus-blink 1s step-end infinite;
@@ -267,12 +267,12 @@ body::before {
 @keyframes onus-ibeam-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 .onus-auth-btn {
-  background: linear-gradient(180deg, rgba(0, 240, 255, 0.14), rgba(0, 240, 255, 0.06));
-  border: 1px solid rgba(0, 240, 255, 0.5);
-  color: #00f0ff;
+  background: linear-gradient(180deg, rgba(255, 176, 0, 0.14), rgba(255, 176, 0, 0.06));
+  border: 1px solid rgba(255, 176, 0, 0.5);
+  color: #FFB000;
 }
 .onus-auth-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(0, 240, 255, 0.24), rgba(0, 240, 255, 0.1));
-  box-shadow: 0 0 20px -4px rgba(0, 240, 255, 0.5), inset 0 0 12px -6px rgba(0, 240, 255, 0.6);
+  background: linear-gradient(180deg, rgba(255, 176, 0, 0.24), rgba(255, 176, 0, 0.1));
+  box-shadow: 0 0 20px -4px rgba(255, 176, 0, 0.5), inset 0 0 12px -6px rgba(255, 176, 0, 0.6);
 }
 .onus-auth-btn:active:not(:disabled) { transform: scale(0.985); }

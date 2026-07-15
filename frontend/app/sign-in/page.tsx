@@ -12,7 +12,7 @@ import { ScrambleButton, TerminalError, TerminalShell } from '@/components/hud/t
 import { KineticField, KineticPassword } from '@/components/hud/hud-input'
 import { OtpInput } from '@/components/auth-ui'
 
-const CYAN = '#00F0FF'
+const CYAN = '#FFB000'
 const msg = (e: unknown) => (e instanceof ApiError ? e.message : 'LINK FAILURE — backend unreachable.')
 
 export default function SignInTerminal() {

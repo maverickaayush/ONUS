@@ -56,14 +56,14 @@ export function BootSequence({ onComplete }: { onComplete: () => void }) {
           {phase === 'reveal' && (
             <motion.div
               className="absolute inset-x-0 top-1/2 h-px"
-              style={{ background: '#00F0FF', boxShadow: '0 0 12px 1px #00F0FF' }}
+              style={{ background: '#FFB000', boxShadow: '0 0 12px 1px #FFB000' }}
               initial={{ scaleX: 0, opacity: 1 }}
               animate={{ scaleX: 1, opacity: [1, 1, 0] }}
               transition={{ duration: 0.55, ease: 'easeOut' }}
             />
           )}
           {/* boot log */}
-          <div className="absolute left-5 top-5 font-mono text-[10px] leading-relaxed" style={{ color: '#39ff88' }}>
+          <div className="absolute left-5 top-5 font-mono text-[10px] leading-relaxed" style={{ color: '#FFB000' }}>
             {LOGS.slice(0, shown).map((l, i) => (
               <div key={i} style={{ opacity: 0.85 }}>
                 {l}

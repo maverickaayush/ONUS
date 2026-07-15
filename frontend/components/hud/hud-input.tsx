@@ -11,7 +11,7 @@
 import { InputHTMLAttributes, useEffect, useRef, useState } from 'react'
 import { Eye, EyeOff } from 'lucide-react'
 
-const CYAN = '#00F0FF'
+const CYAN = '#FFB000'
 const GLYPHS = ['▓', '█', '▒', '0xA', '0xF', '0x9']
 const CYCLE_MS = 200
 

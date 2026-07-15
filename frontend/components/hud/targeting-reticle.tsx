@@ -8,7 +8,7 @@
  *
  * Modes:
  *   idle       2×2 white dot + four faint 1px brackets held off-center
- *   clickable  brackets snap inward, recolor to cyan (#00F0FF)
+ *   clickable  brackets snap inward, recolor to cyan (#FFB000)
  *   text       morphs into a thin pulsing cyan I-beam
  *
  * Writes the live position into the shared `pointer` so the canvas gravity well
@@ -69,7 +69,7 @@ export function TargetingReticle() {
     }
   }, [visible])
 
-  const cyan = '#00F0FF'
+  const cyan = '#FFB000'
   // bracket offset: further out when idle, snapped in when targeting
   const off = mode === 'idle' ? 9 : 5
   const brColor = mode === 'idle' ? 'rgba(255,255,255,0.5)' : cyan
