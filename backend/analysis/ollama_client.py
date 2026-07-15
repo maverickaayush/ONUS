@@ -1300,36 +1300,54 @@ def _call_ollama(shaped: List[dict], overflow: int, domain: str,
     if scan_stats:
         user_content += f' Full scan totals: {json.dumps(scan_stats)}.'
 
-    payload = {
-        'model': 'qwen2.5:7b',
-        'format': 'json',
-        'stream': False,
-        'options': {
-            'temperature': 0.1,
-            'num_predict': 4096,
-            'num_ctx': 8192,
-        },
-        'messages': [
-            {'role': 'system', 'content': _SYSTEM_PROMPT},
-            {'role': 'user', 'content': user_content},
-        ],
-    }
+    # The prompt is identical across providers - only the wire format, endpoint,
+    # and response parsing differ. Deterministic scoring/templates are untouched.
+    messages = [
+        {'role': 'system', 'content': _SYSTEM_PROMPT},
+        {'role': 'user', 'content': user_content},
+    ]
 
-    # Bearer auth only when talking to a protected endpoint (the Modal-hosted
-    # Ollama - config.OLLAMA_AUTH_TOKEN). Empty for a local/native Ollama.
-    headers = {}
-    if settings.OLLAMA_AUTH_TOKEN:
-        headers['Authorization'] = f'Bearer {settings.OLLAMA_AUTH_TOKEN}'
+    if settings.LLM_PROVIDER == 'github':
+        # GitHub Models (OpenAI-compatible), e.g. openai/gpt-4o-mini. Free with a
+        # GitHub token (Models: Read), far faster than the self-hosted 7B, and
+        # more reliable JSON. Note: findings text leaves to GitHub for this call
+        # (acceptable for a hosted tool scanning authorized targets).
+        resp = requests.post(
+            f'{settings.GITHUB_MODELS_URL}/chat/completions',
+            json={
+                'model': settings.GITHUB_MODELS_MODEL,
+                'response_format': {'type': 'json_object'},
+                'temperature': 0.1,
+                'max_tokens': 4096,
+                'messages': messages,
+            },
+            timeout=_OLLAMA_TIMEOUT,
+            headers={'Authorization': f'Bearer {settings.GITHUB_MODELS_TOKEN}',
+                     'Content-Type': 'application/json'},
+        )
+        resp.raise_for_status()
+        content = resp.json()['choices'][0]['message']['content']
+    else:
+        # Ollama (local or Modal-hosted). Bearer auth only when the endpoint is
+        # protected (config.OLLAMA_AUTH_TOKEN); empty for a native Ollama.
+        headers = {}
+        if settings.OLLAMA_AUTH_TOKEN:
+            headers['Authorization'] = f'Bearer {settings.OLLAMA_AUTH_TOKEN}'
+        resp = requests.post(
+            f'{settings.OLLAMA_URL}/api/chat',
+            json={
+                'model': 'qwen2.5:7b',
+                'format': 'json',
+                'stream': False,
+                'options': {'temperature': 0.1, 'num_predict': 4096, 'num_ctx': 8192},
+                'messages': messages,
+            },
+            timeout=_OLLAMA_TIMEOUT,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        content = resp.json()['message']['content']
 
-    resp = requests.post(
-        f'{settings.OLLAMA_URL}/api/chat',
-        json=payload,
-        timeout=_OLLAMA_TIMEOUT,
-        headers=headers,
-    )
-    resp.raise_for_status()
-
-    content = resp.json()['message']['content']
     result = json.loads(content)
 
     missing = _REQUIRED_KEYS - set(result.keys())

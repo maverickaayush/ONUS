@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # sends it as Authorization only when non-empty). Empty for a local/native
     # Ollama that needs no auth.
     OLLAMA_AUTH_TOKEN: str = ""
+    # AI-prose provider (analysis/ollama_client.py): 'ollama' (self-hosted Qwen,
+    # local or Modal) or 'github' (GitHub Models, OpenAI-compatible - free with a
+    # GitHub token, faster, more reliable JSON). Only the prose step is affected;
+    # deterministic CVSS scoring + templates never touch any LLM.
+    LLM_PROVIDER: str = "ollama"
+    GITHUB_MODELS_URL: str = "https://models.github.ai/inference"
+    GITHUB_MODELS_MODEL: str = "openai/gpt-4o-mini"
+    GITHUB_MODELS_TOKEN: str = ""
     # Comma-separated CORS allow-origins (main.py). Env-driven so a hosted
     # frontend origin can be added without a code change; defaults to local dev.
     CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
