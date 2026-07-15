@@ -20,7 +20,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
 MODULE = 'owasp'
 
-_TIMEOUT = scaled_timeout(30)
+# Per-request timeout for the active tests. 15s (x mult) is ample for any real
+# response - a legit page returns in <3s - while a hung/dead request is abandoned
+# fast instead of tying up a whole test for ~45s each. This is what keeps a
+# single test function bounded so the _OWASP_TIME_BUDGET_SECONDS check (between
+# tests) can actually fire on a slow, sprawling target. Retry handling for
+# WAF throttles (429/503) is unchanged (mount_retry_adapter, status-code based,
+# not triggered by a plain timeout).
+_TIMEOUT = scaled_timeout(10)
 _SESSION_KWARGS = dict(timeout=_TIMEOUT, verify=False, allow_redirects=False)
 
 # SQL error patterns that indicate injection vulnerability
