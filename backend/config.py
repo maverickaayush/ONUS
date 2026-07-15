@@ -121,6 +121,21 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_STARTTLS: bool = True
 
+    # ── OAuth (hosted only). A provider is ENABLED only when its client id AND
+    # secret are both set; otherwise its buttons/routes are inert. Self-hosted
+    # (REQUIRE_AUTH off) never touches any of this. Do not introduce JWT — OAuth
+    # reuses the existing Redis session + HttpOnly cookie.
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
+    # Frontend base URL. OAuth callbacks route back through it (same-origin
+    # /api proxy), and users land here after login. The callback URL registered
+    # with each provider is {APP_URL}/api/auth/{provider}/callback.
+    APP_URL: str = "http://localhost:3002"
+    # TTL for the one-time OAuth state + PKCE verifier held in Redis.
+    OAUTH_STATE_TTL_SECONDS: int = 600
+
     # Usage + abuse controls (hosted mode). Enforced server-side via Redis
     # counters (security.py) / a DB monthly count; the dashboard only displays
     # them. All windows in seconds.

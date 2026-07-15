@@ -8,6 +8,7 @@ Flow: signup -> email OTP verify (establishes session) -> domain ownership
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 
@@ -23,6 +24,7 @@ from schemas import (
     ResendOTPRequest, SignupRequest,
 )
 import security
+import oauth
 from routers.verify import user_has_verified_domain
 
 logger = logging.getLogger(__name__)
@@ -195,3 +197,53 @@ def me(request: Request, db: Session = Depends(get_db)):
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required.")
     return _auth_state(user, db)
+
+
+# ── OAuth (Google / GitHub) ──────────────────────────────────────────────────
+@router.get("/providers")
+def auth_providers():
+    """Which login methods the frontend should render. Password is always
+    available; OAuth providers appear only when configured AND REQUIRE_AUTH is
+    on (self-hosted gets password only)."""
+    if not settings.REQUIRE_AUTH:
+        return {"password": True, "google": False, "github": False}
+    return {"password": True, **oauth.enabled_providers()}
+
+
+def _callback_uri(provider: str) -> str:
+    # Callback routes back through the frontend origin's same-origin /api proxy,
+    # so the session cookie is set first-party. Register this exact URL with the
+    # provider: {APP_URL}/api/auth/{provider}/callback.
+    return f"{settings.APP_URL.rstrip('/')}/api/auth/{provider}/callback"
+
+
+@router.get("/{provider}/login")
+def oauth_login(provider: str):
+    if not settings.REQUIRE_AUTH:
+        raise HTTPException(status_code=404, detail="Not found")
+    if provider not in oauth.SUPPORTED or not oauth.provider_enabled(provider):
+        raise HTTPException(status_code=404, detail=f"{provider} sign-in is not configured.")
+    url = oauth.build_authorize_url(provider, _callback_uri(provider))
+    return RedirectResponse(url, status_code=307)
+
+
+@router.get("/{provider}/callback")
+def oauth_callback(provider: str, request: Request, db: Session = Depends(get_db),
+                   code: str | None = None, state: str | None = None,
+                   error: str | None = None):
+    front = settings.APP_URL.rstrip("/")
+    if not settings.REQUIRE_AUTH:
+        raise HTTPException(status_code=404, detail="Not found")
+    if error or not code or not state or provider not in oauth.SUPPORTED:
+        return RedirectResponse(f"{front}/sign-in?error=oauth", status_code=303)
+    try:
+        identity = oauth.exchange_and_fetch(provider, code, state)
+        user = oauth.upsert_oauth_user(db, identity)
+    except oauth.OAuthError as e:
+        logger.warning("oauth %s callback failed: %s", provider, e)
+        return RedirectResponse(f"{front}/sign-in?error=oauth", status_code=303)
+
+    token = security.create_session(user.id)
+    redirect = RedirectResponse(f"{front}/", status_code=303)
+    _set_session_cookie(redirect, token)
+    return redirect
