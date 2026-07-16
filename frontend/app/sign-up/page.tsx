@@ -18,6 +18,13 @@ import { HostingNotice } from '@/components/hosting-notice'
 const CYAN = '#00F0FF'
 const msg = (e: unknown) => (e instanceof ApiError ? e.message : 'LINK FAILURE — backend unreachable.')
 
+// Post-auth destination: the ?next= path if safe/same-origin, else the dashboard.
+function nextTarget(): string {
+  if (typeof window === 'undefined') return '/scans'
+  const n = new URLSearchParams(window.location.search).get('next')
+  return n && n.startsWith('/') && !n.startsWith('//') ? n : '/scans'
+}
+
 function SecurityMeter({ value }: { value: string }) {
   const score = passwordScore(value)
   return (
@@ -41,7 +48,7 @@ export default function SignUpTerminal() {
   const [resendIn, setResendIn] = useState(0)
 
   useEffect(() => {
-    getMe().then((u) => { if (u?.next_step === 'ready') router.replace('/') }).catch(() => {})
+    getMe().then((u) => { if (u?.next_step === 'ready') router.replace(nextTarget()) }).catch(() => {})
   }, [router])
 
   useEffect(() => {
@@ -70,7 +77,7 @@ export default function SignUpTerminal() {
     try {
       await verifyOtp(email, code)
       setPhase('verified')
-      window.setTimeout(() => router.replace('/'), 1600)
+      window.setTimeout(() => router.replace(nextTarget()), 1600)
     } catch (err) { setError(msg(err)) } finally { setBusy(false) }
   }
 

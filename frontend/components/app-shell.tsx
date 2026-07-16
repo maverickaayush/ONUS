@@ -2,7 +2,8 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Activity, FilePlus2, LayoutList } from 'lucide-react'
+import { Activity, FilePlus2, LayoutList, LogOut } from 'lucide-react'
+import { logout } from '@/lib/api'
 
 // GitHub mark inline (lucide dropped its brand icons); currentColor so it
 // inherits the rail's cyan hover exactly like the nav icons.
@@ -39,6 +40,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   if (AUTH_ROUTES.some((r) => pathname === r || pathname.startsWith(r + '/'))) {
     return <>{children}</>
+  }
+  // Full reload after clearing the session so no authenticated state lingers;
+  // /sign-in is public so the guard lets it through immediately.
+  async function handleLogout() {
+    try {
+      await logout()
+    } catch {
+      /* even if the request fails, still leave the authenticated area */
+    }
+    window.location.href = '/sign-in'
   }
   return (
     <>
@@ -131,6 +142,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               <GithubMark className="h-[18px] w-[18px] shrink-0" />
             </a>
+            {/* Sign out - clears the session and returns to /sign-in. */}
+            <button
+              type="button"
+              onClick={handleLogout}
+              aria-label="Sign out"
+              title="Sign out"
+              className="mt-1 flex w-full items-center gap-3.5 overflow-hidden rounded-md px-[11px] py-2 text-ink-dim transition-colors hover:bg-white/[0.03] hover:text-accent"
+            >
+              <LogOut className="h-[18px] w-[18px] shrink-0" strokeWidth={1.7} />
+              <span className="whitespace-nowrap text-[13px] font-medium opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                Sign out
+              </span>
+            </button>
           </div>
         </nav>
 

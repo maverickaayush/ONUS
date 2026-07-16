@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter, JetBrains_Mono, Orbitron } from 'next/font/google'
-import { AppShell } from '@/components/app-shell'
+import { AuthGate } from '@/components/auth-gate'
 import './globals.css'
 
 // DIRECTION B typographic thesis - dramatic duality, command-console register:
@@ -43,7 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${orbitron.variable} ${jbMono.variable} ${inter.variable}`}>
       <body className="min-h-screen font-sans antialiased">
-        <AppShell>{children}</AppShell>
+        <AuthGate>{children}</AuthGate>
       </body>
     </html>
   )

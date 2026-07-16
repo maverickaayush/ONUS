@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ApiError, login, verifyOtp } from '@/lib/api'
+import { ApiError, getMe, login, verifyOtp } from '@/lib/api'
 import { ScrambleButton, TerminalError, TerminalShell } from '@/components/hud/terminal-shell'
 import { KineticField, KineticPassword } from '@/components/hud/hud-input'
 import { OAuthButtons } from '@/components/hud/oauth-buttons'
@@ -16,6 +16,14 @@ import { HostingNotice } from '@/components/hosting-notice'
 
 const CYAN = '#00F0FF'
 const msg = (e: unknown) => (e instanceof ApiError ? e.message : 'LINK FAILURE — backend unreachable.')
+
+// Where to go after a successful login: the ?next= destination if it's a safe
+// same-origin path, else the dashboard. Blocks open-redirects (//evil, http://).
+function nextTarget(): string {
+  if (typeof window === 'undefined') return '/scans'
+  const n = new URLSearchParams(window.location.search).get('next')
+  return n && n.startsWith('/') && !n.startsWith('//') ? n : '/scans'
+}
 
 export default function SignInTerminal() {
   const router = useRouter()
@@ -32,9 +40,14 @@ export default function SignInTerminal() {
     }
   }, [])
 
+  // Already signed in? Don't show the sign-in form - go straight into the app.
+  useEffect(() => {
+    getMe().then((u) => { if (u?.next_step === 'ready') router.replace(nextTarget()) }).catch(() => {})
+  }, [router])
+
   function succeed() {
     setPhase('verified')
-    window.setTimeout(() => router.replace('/'), 1600)
+    window.setTimeout(() => router.replace(nextTarget()), 1600)
   }
 
   async function onLogin(e: React.FormEvent) {
