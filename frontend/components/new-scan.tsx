@@ -23,6 +23,7 @@ import {
 import { cn } from '@/lib/format'
 import { MagneticButton, ModuleIcon, Panel, Spinner } from './ui'
 import { TargetClearance } from './target-clearance'
+import { HostingNotice } from './hosting-notice'
 
 const DOMAIN_RE =
   /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/
@@ -374,31 +375,7 @@ export function NewScan() {
             )}
           </MagneticButton>
 
-          {/* Hosting notice - plain fine print, matching the domain hint above
-              (same muted color/size, no box/border/icon). Two plain links, both
-              to the repo. Deliberately no scan number, ever. */}
-          <p className="mt-3.5 text-[11px] leading-relaxed text-ink-faint">
-            This tool is{' '}
-            <a
-              href="https://github.com/maverickaayush/ONUS"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent hover:underline"
-            >
-              open source
-            </a>{' '}
-            - github.com/maverickaayush/ONUS. Hosted scans are limited to keep this free to use. For
-            unlimited use,{' '}
-            <a
-              href="https://github.com/maverickaayush/ONUS"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent hover:underline"
-            >
-              support the repo
-            </a>{' '}
-            or run it locally.
-          </p>
+          <HostingNotice />
         </form>
       </Panel>
 

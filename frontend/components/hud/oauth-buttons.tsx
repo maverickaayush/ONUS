@@ -35,14 +35,15 @@ export function OAuthButtons() {
 
   return (
     <div className="mb-5">
-      {p.github && (
-        <a href="/api/auth/github/login" className="onus-oauth-btn mb-2.5 flex w-full items-center justify-center gap-2.5 rounded-none border py-3 font-mono text-[12px] uppercase tracking-[0.14em]">
-          <GithubIcon /> Continue with GitHub
-        </a>
-      )}
+      {/* Order: Google, then GitHub, then (below the divider) email + password. */}
       {p.google && (
         <a href="/api/auth/google/login" className="onus-oauth-btn mb-2.5 flex w-full items-center justify-center gap-2.5 rounded-none border py-3 font-mono text-[12px] uppercase tracking-[0.14em]">
           <GoogleIcon /> Continue with Google
+        </a>
+      )}
+      {p.github && (
+        <a href="/api/auth/github/login" className="onus-oauth-btn mb-2.5 flex w-full items-center justify-center gap-2.5 rounded-none border py-3 font-mono text-[12px] uppercase tracking-[0.14em]">
+          <GithubIcon /> Continue with GitHub
         </a>
       )}
       <div className="my-4 flex items-center gap-3">

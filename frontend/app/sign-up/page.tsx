@@ -13,6 +13,7 @@ import { ScrambleButton, TerminalError, TerminalShell } from '@/components/hud/t
 import { KineticField, KineticPassword } from '@/components/hud/hud-input'
 import { OAuthButtons } from '@/components/hud/oauth-buttons'
 import { OtpInput, passwordScore } from '@/components/auth-ui'
+import { HostingNotice } from '@/components/hosting-notice'
 
 const CYAN = '#00F0FF'
 const msg = (e: unknown) => (e instanceof ApiError ? e.message : 'LINK FAILURE — backend unreachable.')
@@ -113,6 +114,7 @@ export default function SignUpTerminal() {
               EXISTING OPERATOR? <a href="/sign-in" style={{ color: CYAN }}>AUTHENTICATE</a>
             </p>
           </form>
+          <HostingNotice />
         </>
       )}
     </TerminalShell>
