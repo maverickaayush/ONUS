@@ -39,7 +39,7 @@ class TestStuckScanReaper:
         scan = _fake_scan(ScanStatus.running, datetime.utcnow() - STUCK_SCAN_DEADLINE - timedelta(seconds=1))
         db = _db_with(scan)
 
-        get_scan_status(scan.id, db)
+        get_scan_status(scan.id, MagicMock(), db)
 
         assert scan.status == ScanStatus.failed
         db.commit.assert_called_once()
@@ -48,7 +48,7 @@ class TestStuckScanReaper:
         scan = _fake_scan(ScanStatus.running, datetime.utcnow() - timedelta(seconds=60))
         db = _db_with(scan)
 
-        get_scan_status(scan.id, db)
+        get_scan_status(scan.id, MagicMock(), db)
 
         assert scan.status == ScanStatus.running
         db.commit.assert_not_called()
@@ -57,7 +57,7 @@ class TestStuckScanReaper:
         scan = _fake_scan(ScanStatus.complete, datetime.utcnow() - STUCK_SCAN_DEADLINE - timedelta(days=1))
         db = _db_with(scan)
 
-        get_scan_status(scan.id, db)
+        get_scan_status(scan.id, MagicMock(), db)
 
         assert scan.status == ScanStatus.complete
         db.commit.assert_not_called()
@@ -70,7 +70,7 @@ class TestStuckScanReaper:
                            created_at=datetime.utcnow() - STUCK_SCAN_DEADLINE - timedelta(seconds=1))
         db = _db_with(scan)
 
-        get_scan_status(scan.id, db)
+        get_scan_status(scan.id, MagicMock(), db)
 
         assert scan.status == ScanStatus.failed
 
