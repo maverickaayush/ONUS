@@ -140,7 +140,7 @@ class TestListScans:
         scans = [_fake_scan(status=ScanStatus.complete) for _ in range(5)]
         db = _db_for_list(status_counts=status_counts, page_scans=scans, total_matching=5)
 
-        result = list_scans(status=None, db=db)
+        result = list_scans(MagicMock(), status=None, db=db)
 
         assert result.counts["completed"] == 5
         assert result.counts["failed"] == 1
@@ -152,19 +152,19 @@ class TestListScans:
     def test_unknown_status_filter_is_422(self):
         db = _db_for_list()
         with pytest.raises(HTTPException) as exc:
-            list_scans(status="not-a-real-status", db=db)
+            list_scans(MagicMock(), status="not-a-real-status", db=db)
         assert exc.value.status_code == 422
 
     def test_unknown_sort_key_is_422(self):
         db = _db_for_list()
         with pytest.raises(HTTPException) as exc:
-            list_scans(sort="not-a-column", db=db)
+            list_scans(MagicMock(), sort="not-a-column", db=db)
         assert exc.value.status_code == 422
 
     def test_invalid_order_is_422(self):
         db = _db_for_list()
         with pytest.raises(HTTPException) as exc:
-            list_scans(order="sideways", db=db)
+            list_scans(MagicMock(), order="sideways", db=db)
         assert exc.value.status_code == 422
 
     def test_counts_stay_global_when_a_filter_is_applied(self):
@@ -175,7 +175,7 @@ class TestListScans:
         status_counts = [(ScanStatus.running, 3), (ScanStatus.failed, 7)]
         db = _db_for_list(status_counts=status_counts, page_scans=[], total_matching=0)
 
-        result = list_scans(status="completed", db=db)
+        result = list_scans(MagicMock(), status="completed", db=db)
 
         assert result.counts["running"] == 3
         assert result.counts["failed"] == 7
@@ -183,14 +183,14 @@ class TestListScans:
 
     def test_pagination_math_and_clamping(self):
         db = _db_for_list(status_counts=[], page_scans=[], total_matching=45)
-        result = list_scans(page=2, page_size=20, db=db)
+        result = list_scans(MagicMock(), page=2, page_size=20, db=db)
         assert result.page == 2
         assert result.page_size == 20
         assert result.total_pages == 3  # ceil(45/20)
 
         # page_size clamped to [1, 100]
         db2 = _db_for_list(status_counts=[], page_scans=[], total_matching=0)
-        result2 = list_scans(page=0, page_size=500, db=db2)
+        result2 = list_scans(MagicMock(), page=0, page_size=500, db=db2)
         assert result2.page == 1          # clamped up to 1
         assert result2.page_size == 100   # clamped down to 100
 
@@ -201,7 +201,7 @@ class TestListScans:
         scan = _fake_scan(status=ScanStatus.awaiting_user_decision, raw_findings=raw_findings)
         db = _db_for_list(status_counts=[], page_scans=[scan], total_matching=1)
 
-        result = list_scans(status="awaiting_user_decision", db=db)
+        result = list_scans(MagicMock(), status="awaiting_user_decision", db=db)
 
         item = result.scans[0]
         assert item.module_errors == ["recon"]
@@ -216,7 +216,7 @@ class TestListScans:
         scan = _fake_scan(status=ScanStatus.running, module_statuses=module_statuses)
         db = _db_for_list(status_counts=[], page_scans=[scan], total_matching=1)
 
-        result = list_scans(db=db)
+        result = list_scans(MagicMock(), db=db)
 
         assert result.scans[0].modules_completed == 2
         assert result.scans[0].modules_total == 8
