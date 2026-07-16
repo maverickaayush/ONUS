@@ -47,6 +47,43 @@ def _is_waiting(scan: Scan) -> bool:
             and scan.dispatched_at is None)
 
 
+def _require_user(request: Request, db: Session):
+    """Resolve the caller for a scan-scoped read. Returns the authenticated User
+    in hosted mode (REQUIRE_AUTH=true), or None in self-hosted mode where scans
+    are not owner-scoped. In hosted mode a missing/invalid session raises 401 -
+    ownership can only be checked once we know who the caller is."""
+    if not settings.REQUIRE_AUTH:
+        return None
+    import security
+    user = security.get_current_user(request, db)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return user
+
+
+def get_owned_scan_or_404(scan_id: UUID, request: Request, db: Session) -> Scan:
+    """Fetch a scan, enforcing per-user ownership in hosted auth mode. The single
+    source of truth for scan access - every scan-scoped endpoint (status,
+    findings, report, decision) routes through here so the rule lives in one
+    place, never duplicated.
+
+    - REQUIRE_AUTH=false (self-hosted, single operator): NOT owner-scoped -
+      returns the scan by id (404 if missing). Preserves existing open behavior.
+    - REQUIRE_AUTH=true (hosted): caller must be authenticated (else 401); a scan
+      that does not exist OR is not owned by the caller returns the SAME 404, so
+      we never disclose whether another user's scan exists (no 403 - that would
+      confirm existence). Ownerless legacy scans (user_id NULL, pre-auth) are
+      treated as not-owned and 404 for everyone.
+    """
+    user = _require_user(request, db)
+    scan = db.query(Scan).filter(Scan.id == scan_id).first()
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if user is not None and scan.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return scan
+
+
 def _reap_stuck_scans(db: Session) -> int:
     """
     Sweep every queued/running/analysing scan and fail the ones past
@@ -356,6 +393,7 @@ def _to_list_item(scan: Scan) -> ScanListItem:
 
 @router.get("/scans", response_model=ScanListResponse)
 def list_scans(
+    http_request: Request,
     status: Optional[str] = None,
     search: Optional[str] = None,
     sort: str = "created_at",
@@ -373,6 +411,12 @@ def list_scans(
     touches the heavy raw_findings/ai_analysis JSONB columns), one filtered/
     sorted/limited SELECT for the actual page - no N+1.
     """
+    # Hosted mode: scope every result to the authenticated user (401 if no
+    # session). Self-hosted (REQUIRE_AUTH=false): user is None -> unscoped, the
+    # existing open behavior. This is what prevents /api/scans leaking the whole
+    # table across tenants.
+    user = _require_user(http_request, db)
+
     # Same rationale as create_scan's concurrency check reaping first - this
     # page is the one most likely to be left open unattended, and is the
     # exact page meant to surface a scan stuck past its deadline.
@@ -387,9 +431,13 @@ def list_scans(
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
 
-    # Query 1: global tab counts - always reflects the WHOLE table so tab
-    # badges never zero out just because a filter/search is currently active.
-    status_counts = dict(db.query(Scan.status, func.count(Scan.id)).group_by(Scan.status).all())
+    # Query 1: tab counts - reflect this user's whole set (not the global
+    # table) so badges never zero out just because a filter/search is active,
+    # while never leaking other users' totals. Unscoped only in self-hosted mode.
+    counts_q = db.query(Scan.status, func.count(Scan.id))
+    if user is not None:
+        counts_q = counts_q.filter(Scan.user_id == user.id)
+    status_counts = dict(counts_q.group_by(Scan.status).all())
     counts = {
         "running": sum(status_counts.get(s, 0) for s in STATUS_BUCKETS["active"]),
         "awaiting_user_decision": status_counts.get(ScanStatus.awaiting_user_decision, 0),
@@ -398,8 +446,10 @@ def list_scans(
         "total": sum(status_counts.values()),
     }
 
-    # Query 2: the actual page.
+    # Query 2: the actual page - scoped to the user in hosted mode.
     query = db.query(Scan)
+    if user is not None:
+        query = query.filter(Scan.user_id == user.id)
     if status is not None:
         query = query.filter(Scan.status.in_(STATUS_BUCKETS[status]))
     if search:
@@ -425,10 +475,8 @@ def list_scans(
 
 
 @router.get("/scan/{scan_id}/status", response_model=ScanStatusResponse)
-def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
+def get_scan_status(scan_id: UUID, http_request: Request, db: Session = Depends(get_db)):
+    scan = get_owned_scan_or_404(scan_id, http_request, db)
 
     # Opportunistic queue promotion (no-op when the flag is off). Status polls
     # are the self-healing tick: any slot freed without a direct hook (reaper,
@@ -478,10 +526,9 @@ def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/scan/{scan_id}/decision", response_model=ScanStatusResponse)
-def submit_scan_decision(scan_id: UUID, request: ScanDecisionRequest, db: Session = Depends(get_db)):
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
+def submit_scan_decision(scan_id: UUID, request: ScanDecisionRequest,
+                         http_request: Request, db: Session = Depends(get_db)):
+    scan = get_owned_scan_or_404(scan_id, http_request, db)
     if scan.status != ScanStatus.awaiting_user_decision:
         raise HTTPException(status_code=409, detail="Scan is not awaiting a decision")
 
@@ -507,14 +554,12 @@ def submit_scan_decision(scan_id: UUID, request: ScanDecisionRequest, db: Sessio
             promote_queued_scans()
 
     db.refresh(scan)
-    return get_scan_status(scan_id, db)
+    return get_scan_status(scan_id, http_request, db)
 
 
 @router.get("/scan/{scan_id}/findings", response_model=FindingsResponse)
-def get_findings(scan_id: UUID, db: Session = Depends(get_db)):
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
+def get_findings(scan_id: UUID, http_request: Request, db: Session = Depends(get_db)):
+    scan = get_owned_scan_or_404(scan_id, http_request, db)
 
     if scan.status not in (ScanStatus.complete, ScanStatus.analysing):
         raise HTTPException(status_code=202, detail="Scan not yet complete")

@@ -192,7 +192,7 @@ class TestCancelEndpoint:
         db = _db_with(scan)
 
         with patch("reports.generator.generate_pdf") as mock_pdf:
-            submit_scan_decision(SCAN_ID, ScanDecisionRequest(action="cancel"), db)
+            submit_scan_decision(SCAN_ID, ScanDecisionRequest(action="cancel"), MagicMock(), db)
 
         assert scan.status == ScanStatus.cancelled
         db.commit.assert_called()

@@ -1,20 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from uuid import UUID
 
 from database import get_db
-from models import Scan, Report, ScanStatus
+from models import Report, ScanStatus
 from reports.generator import safe_filename
+from routers.scan import get_owned_scan_or_404
 
 router = APIRouter(prefix="/api", tags=["report"])
 
 
 @router.get("/scan/{scan_id}/report")
-def download_report(scan_id: UUID, db: Session = Depends(get_db)):
-    scan = db.query(Scan).filter(Scan.id == scan_id).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
+def download_report(scan_id: UUID, http_request: Request, db: Session = Depends(get_db)):
+    # Ownership enforced identically to the other scan-scoped endpoints: in
+    # hosted mode a report for a scan the caller doesn't own returns 404.
+    scan = get_owned_scan_or_404(scan_id, http_request, db)
 
     report = db.query(Report).filter(Report.scan_id == scan_id).first()
 
