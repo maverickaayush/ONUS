@@ -477,6 +477,14 @@ def _finalize(results: list, scan_id: str, domain: str) -> None:
             pass
     finally:
         db.close()
+        # This scan just reached a terminal state and freed its slot - start the
+        # next queued scan (no-op when the hosted queue flag is off / nothing
+        # waiting). Own session inside; must run after db.close() above.
+        try:
+            from tasks.queue_scheduler import promote_queued_scans
+            promote_queued_scans()
+        except Exception:
+            logger.exception("post-finalize queue promotion failed for scan %s", scan_id)
 
 
 def _incomplete_modules_warning(module_execution: list) -> Optional[str]:
