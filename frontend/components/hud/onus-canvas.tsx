@@ -81,9 +81,13 @@ export function OnusCanvas() {
 
     function drawEmblem() {
       // Two phase-shifted emblem outlines that emerge/dissolve; max ~3% opacity.
+      // On small screens draw a SINGLE stroke — the double stroke of this complex
+      // path is the main per-frame cost, and it's barely visible anyway, so this
+      // halves canvas work on phones without changing the look meaningfully.
       const s = (Math.min(width, height) * 0.85) / ONUS_EMBLEM_VIEWBOX
       const half = (ONUS_EMBLEM_VIEWBOX / 2) * s
-      for (const phase of [0, Math.PI]) {
+      const phases = width < 640 ? [0] : [0, Math.PI]
+      for (const phase of phases) {
         const op = (0.014 + 0.012 * (0.5 + 0.5 * Math.sin(t / 6000 + phase)))
         ctx.save()
         ctx.translate(width / 2, height / 2)

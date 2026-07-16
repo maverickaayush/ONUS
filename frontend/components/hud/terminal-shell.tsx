@@ -94,7 +94,15 @@ export function TerminalShell({ subtitle, verified, children }: {
 }) {
   const [booted, setBooted] = useState(false)
   return (
-    <div className="onus-cursor-none relative flex min-h-screen items-center justify-center overflow-hidden px-4">
+    <div
+      className="onus-cursor-none relative flex min-h-screen items-center justify-center overflow-hidden"
+      style={{
+        paddingLeft: 'max(1rem, env(safe-area-inset-left))',
+        paddingRight: 'max(1rem, env(safe-area-inset-right))',
+        paddingTop: 'env(safe-area-inset-top)',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}
+    >
       <OnusCanvas />
       <TargetingReticle />
       <BootSequence onComplete={() => setBooted(true)} />
@@ -126,7 +134,14 @@ export function TerminalShell({ subtitle, verified, children }: {
         </div>
       </motion.div>
 
-      <p className="pointer-events-none fixed bottom-2 left-2 z-20 font-mono text-white/25" style={{ fontSize: '8px' }}>
+      <p
+        className="pointer-events-none fixed z-20 font-mono text-white/25"
+        style={{
+          fontSize: '8px',
+          bottom: 'max(0.5rem, env(safe-area-inset-bottom))',
+          left: 'max(0.5rem, env(safe-area-inset-left))',
+        }}
+      >
         Developed by maverickaayush | Report by ONUS
       </p>
     </div>

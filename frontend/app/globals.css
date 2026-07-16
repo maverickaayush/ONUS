@@ -256,7 +256,12 @@ body::before {
 /* ═══ ONUS Authentication Terminal (HUD, private frontend) ═════════════════ */
 /* Scoped cursor-none: only the terminal page hides the native cursor, so the
    rest of the app is unaffected. */
-.onus-cursor-none, .onus-cursor-none * { cursor: none !important; }
+/* Hide the native cursor ONLY on fine (mouse) pointers — the custom reticle
+   replaces it there. Touch/coarse devices keep default behavior (no reticle,
+   no hidden cursor), so nothing feels broken on mobile. */
+@media (pointer: fine) {
+  .onus-cursor-none, .onus-cursor-none * { cursor: none !important; }
+}
 
 .onus-ibeam {
   width: 2px;

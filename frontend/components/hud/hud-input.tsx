@@ -130,7 +130,7 @@ export function KineticPassword({
           type="button"
           onClick={() => setShow((s) => !s)}
           aria-label={show ? 'Hide' : 'Show'}
-          className="absolute right-0 top-1/2 -translate-y-1/2 p-1 text-white/30 transition-colors hover:text-white/70"
+          className="absolute right-0 top-1/2 -translate-y-1/2 p-2 text-white/30 transition-colors hover:text-white/70"
         >
           {show ? <EyeOff size={15} /> : <Eye size={15} />}
         </button>

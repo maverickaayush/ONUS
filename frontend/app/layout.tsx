@@ -34,6 +34,9 @@ export const viewport: Viewport = {
   themeColor: '#030304',
   width: 'device-width',
   initialScale: 1,
+  // Extend under the notch / Dynamic Island so full-bleed canvases fill the
+  // screen; fixed UI uses env(safe-area-inset-*) to stay clear of it.
+  viewportFit: 'cover',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
