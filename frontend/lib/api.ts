@@ -78,6 +78,9 @@ export interface ScanResponse {
   job_id: string
   status: ScanStatus
   domain: string
+  // Hosted queue only: 1-based place in line when accepted but waiting for
+  // capacity. Absent/null for an immediately-started scan and for self-hosted.
+  queue_position?: number | null
 }
 
 // ── Status ──────────────────────────────────────────────────────────────────
@@ -90,6 +93,11 @@ export interface ScanStatusResponse {
   modules: Record<string, ModuleStatus>
   module_errors?: Record<string, string> | null
   can_retry?: boolean | null
+  // Hosted queue only (additive, safe to ignore): queue_position is the 1-based
+  // place in line while waiting; waiting_for_capacity is true iff parked for a
+  // slot. Both take the not-queued shape everywhere else.
+  queue_position?: number | null
+  waiting_for_capacity?: boolean
 }
 
 // ── Findings ────────────────────────────────────────────────────────────────

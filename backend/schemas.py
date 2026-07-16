@@ -128,6 +128,10 @@ class ScanResponse(BaseModel):
     job_id: UUID
     status: str
     domain: str
+    # Set only when the hosted queue accepted a scan into a full pipeline
+    # (status 'queued', waiting for capacity): its 1-based place in line.
+    # None for an immediately-started scan and for all self-hosted responses.
+    queue_position: Optional[int] = None
 
 
 # --- Domain-ownership verification (routers/verify.py) ---
@@ -253,6 +257,12 @@ class ScanStatusResponse(BaseModel):
     # decision modal's reason for existing is showing exactly what failed.
     module_errors: Optional[Dict[str, str]] = None
     can_retry: Optional[bool] = None
+    # Hosted queue only. queue_position: 1-based place in line while waiting for
+    # capacity (None once running or when not queued). waiting_for_capacity: True
+    # iff the scan is accepted but parked for a slot. Both default to the
+    # not-queued shape, so existing clients and self-hosted are unaffected.
+    queue_position: Optional[int] = None
+    waiting_for_capacity: bool = False
 
     @field_serializer('started_at')
     def _serialize_started_at(self, dt: Optional[datetime]) -> Optional[str]:

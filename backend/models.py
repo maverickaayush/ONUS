@@ -82,6 +82,13 @@ class Scan(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    # Set the moment a scan is handed to Celery (immediately at acceptance, or
+    # later by tasks/queue_scheduler.py when a slot frees). Distinguishes a scan
+    # WAITING for capacity (status='queued' AND dispatched_at IS NULL) from one
+    # already dispatched and occupying a slot. Only written/read when
+    # config.HOSTED_QUEUE_ENABLED is True; stays NULL (and unused) otherwise, so
+    # this column is inert for self-hosted deployments.
+    dispatched_at = Column(DateTime, nullable=True)
     module_statuses = Column(JSONB, nullable=True, default=dict)
     raw_findings = Column(JSONB, nullable=True)
     ai_analysis = Column(JSONB, nullable=True)

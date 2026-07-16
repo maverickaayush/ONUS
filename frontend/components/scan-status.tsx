@@ -145,6 +145,23 @@ export function ScanStatus({ jobId }: { jobId: string }) {
         </div>
       </div>
 
+      {/* Queued-for-capacity banner (hosted queue). Reassures the user the scan
+          was accepted and will start on its own - never a "try again" dead end. */}
+      {status?.waiting_for_capacity && (
+        <div
+          className="mb-8 flex items-center gap-3 rounded-[4px] border border-accent/30 bg-accent/[0.06] px-4 py-3 onus-fade-up"
+          role="status"
+        >
+          <CircleDashed className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.8} />
+          <p className="text-[12.5px] text-ink-dim">
+            {status.queue_position
+              ? <>Queued — <span className="font-medium text-ink">#{status.queue_position} in line</span>.{' '}</>
+              : <>Queued.{' '}</>}
+            This scan was accepted and will start automatically as soon as a slot frees up. No action needed — this page updates live.
+          </p>
+        </div>
+      )}
+
       {/* Progress */}
       <div className="mb-8 onus-fade-up" style={{ animationDelay: '40ms' }}>
         <div className="mb-2 flex items-center justify-between">

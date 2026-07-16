@@ -35,6 +35,18 @@ from tasks.scan_orchestrator import _AGGREGATE_HARD_LIMIT
 STUCK_SCAN_DEADLINE = timedelta(seconds=_RECON_HARD_LIMIT + _AGGREGATE_HARD_LIMIT + 120)
 
 
+def _is_waiting(scan: Scan) -> bool:
+    """A scan accepted but parked for capacity (hosted queue only): status
+    'queued' AND never dispatched. Such a scan is waiting BY DESIGN and must be
+    exempt from the stuck-scan reaper - however long it sits in line is not a
+    hang. Always False when the queue flag is off (dispatched_at is never set,
+    but the flag short-circuits first), so the reaper is unchanged for
+    self-hosted."""
+    return (settings.HOSTED_QUEUE_ENABLED
+            and scan.status == ScanStatus.queued
+            and scan.dispatched_at is None)
+
+
 def _reap_stuck_scans(db: Session) -> int:
     """
     Sweep every queued/running/analysing scan and fail the ones past
@@ -58,6 +70,8 @@ def _reap_stuck_scans(db: Session) -> int:
     ).all()
     reaped = 0
     for scan in stuck:
+        if _is_waiting(scan):
+            continue  # parked for capacity, not hung - never reap
         reference_time = scan.started_at or scan.created_at
         if reference_time and reference_time < cutoff:
             scan.status = ScanStatus.failed
@@ -217,17 +231,29 @@ def create_scan(request: ScanRequest, http_request: Request, db: Session = Depen
     # 'failed'/'cancelled' don't count. Previously documented but never
     # enforced in code.
     _reap_stuck_scans(db)
-    active_count = db.query(Scan).filter(
-        Scan.status.in_([
-            ScanStatus.queued, ScanStatus.running,
-            ScanStatus.analysing, ScanStatus.awaiting_user_decision,
-        ])
-    ).count()
-    if active_count >= settings.MAX_CONCURRENT_SCANS:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Maximum concurrent scans ({settings.MAX_CONCURRENT_SCANS}) reached - try again shortly",
-        )
+
+    # Capacity check - two behaviors selected by the hosted queue flag:
+    #   flag OFF (self-hosted default): UNCHANGED - reject overflow with 429.
+    #   flag ON  (hosted): never 429 for ordinary overflow; accept the scan and
+    #     park it as 'queued' (dispatched_at=NULL). queue_scheduler auto-starts
+    #     it when a slot frees. (The monthly-limit 429 above is unaffected -
+    #     that's real quota/abuse limiting, not capacity overflow.)
+    should_queue = False
+    if settings.HOSTED_QUEUE_ENABLED:
+        from tasks.queue_scheduler import count_occupied_slots
+        should_queue = count_occupied_slots(db) >= settings.MAX_CONCURRENT_SCANS
+    else:
+        active_count = db.query(Scan).filter(
+            Scan.status.in_([
+                ScanStatus.queued, ScanStatus.running,
+                ScanStatus.analysing, ScanStatus.awaiting_user_decision,
+            ])
+        ).count()
+        if active_count >= settings.MAX_CONCURRENT_SCANS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Maximum concurrent scans ({settings.MAX_CONCURRENT_SCANS}) reached - try again shortly",
+            )
 
     from tasks.base_task import module_ids_for_mode
     scan = Scan(
@@ -239,11 +265,15 @@ def create_scan(request: ScanRequest, http_request: Request, db: Session = Depen
         user_id=(current_user.id if current_user else None),
         module_statuses={module_id: "queued" for module_id in module_ids_for_mode(mode)},
     )
+    # Queue on + slot free => claim the slot now. Queue on + full => leave NULL
+    # (waiting). Queue off => NULL and never read (unchanged self-hosted path).
+    if settings.HOSTED_QUEUE_ENABLED and not should_queue:
+        scan.dispatched_at = datetime.utcnow()
     db.add(scan)
     db.commit()
     db.refresh(scan)
 
-    logger.info("Scan %s created for domain %s", scan.id, scan.domain)
+    logger.info("Scan %s created for domain %s (queued=%s)", scan.id, scan.domain, should_queue)
 
     # Auth credentials never touch the Scan row above or a Celery task arg
     # (Celery logs task args in plaintext at INFO) - stored in Redis, keyed
@@ -251,6 +281,13 @@ def create_scan(request: ScanRequest, http_request: Request, db: Session = Depen
     if request.auth:
         from tasks.auth_store import store_scan_auth
         store_scan_auth(str(scan.id), request.auth.model_dump())
+
+    if should_queue:
+        # Accepted but waiting for capacity - no dispatch now; the scheduler
+        # starts it when a slot frees. Tell the frontend its place in line.
+        from tasks.queue_scheduler import queue_position
+        return ScanResponse(job_id=scan.id, status=scan.status.value,
+                            domain=scan.domain, queue_position=queue_position(db, scan))
 
     # Import here to avoid circular imports at module load time
     try:
@@ -393,7 +430,16 @@ def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    if scan.status in (ScanStatus.queued, ScanStatus.running, ScanStatus.analysing):
+    # Opportunistic queue promotion (no-op when the flag is off). Status polls
+    # are the self-healing tick: any slot freed without a direct hook (reaper,
+    # hard-fail) gets picked up here, and a waiting scan whose slot just opened
+    # is started when its own owner polls. Refresh to see a just-set dispatch.
+    if settings.HOSTED_QUEUE_ENABLED:
+        from tasks.queue_scheduler import promote_queued_scans
+        promote_queued_scans()
+        db.refresh(scan)
+
+    if scan.status in (ScanStatus.queued, ScanStatus.running, ScanStatus.analysing) and not _is_waiting(scan):
         reference_time = scan.started_at or scan.created_at
         if reference_time and datetime.utcnow() - reference_time > STUCK_SCAN_DEADLINE:
             logger.error(
@@ -412,6 +458,11 @@ def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
         stash = scan.raw_findings or {}
         can_retry = _can_retry(list(module_errors.keys()), stash.get("retry_counts", {}))
 
+    q_pos = None
+    if settings.HOSTED_QUEUE_ENABLED:
+        from tasks.queue_scheduler import queue_position
+        q_pos = queue_position(db, scan)
+
     return ScanStatusResponse(
         job_id=scan.id,
         domain=scan.domain,
@@ -421,6 +472,8 @@ def get_scan_status(scan_id: UUID, db: Session = Depends(get_db)):
         modules=scan.module_statuses or {},
         module_errors=module_errors,
         can_retry=can_retry,
+        queue_position=q_pos,
+        waiting_for_capacity=(q_pos is not None),
     )
 
 
@@ -448,6 +501,10 @@ def submit_scan_decision(scan_id: UUID, request: ScanDecisionRequest, db: Sessio
     elif request.action == "cancel":
         scan.status = ScanStatus.cancelled
         db.commit()
+        # A cancel frees the slot this scan held - start the next in line.
+        if settings.HOSTED_QUEUE_ENABLED:
+            from tasks.queue_scheduler import promote_queued_scans
+            promote_queued_scans()
 
     db.refresh(scan)
     return get_scan_status(scan_id, db)

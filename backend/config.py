@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     # (isolated, autoscaling) - so this is now a Modal-budget + target-politeness
     # rate guard on the shared credit, not a memory limit. Default lowered 5 -> 3.
     MAX_CONCURRENT_SCANS: int = 3
+    # Hosted-only scan queue. When False (the default, and the ONLY value
+    # self-hosted users ever see) a scan request past MAX_CONCURRENT_SCANS is
+    # rejected with HTTP 429 - the original, unchanged behavior. When True
+    # (set only on the hosted deployment) an over-capacity scan is instead
+    # ACCEPTED and parked as status='queued' with dispatched_at=NULL, then
+    # auto-started by tasks/queue_scheduler.py the moment a slot frees. No 429
+    # for ordinary overflow. Purely additive: flag off => byte-identical to
+    # the pre-queue code path, dispatched_at stays NULL and is never read.
+    HOSTED_QUEUE_ENABLED: bool = False
     # Where the 8 scanner modules actually execute (tasks/dispatch.py):
     #   'local'  - in-process subprocess tools (local Docker dev; needs the
     #              'full' Dockerfile target with all scanner binaries installed).
