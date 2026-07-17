@@ -375,7 +375,7 @@ def _run_zap(scan_id: str, domain: str, target_url: str, auth: Optional[dict] = 
         # isolated tests, but the real culprit was this indicator check, not
         # load - concurrency wasn't touched in the end.
         # auth is passed in by scan_webscan (the dispatcher fetched it from
-        # Redis on Oracle) - never read here, so this runs unchanged on a
+        # Redis on the droplet) - never read here, so this runs unchanged on a
         # stateless Modal container.
         # login_type defaults to auto-detection (form vs JSON sniffed from the
         # login URL) unless the operator forced 'form'/'json'.
@@ -745,8 +745,8 @@ def scan_webscan(scan_id: str, domain: str, auth: dict = None) -> dict:
     """
     Pure half (runs locally or on Modal via tasks.dispatch). On Modal, ZAP runs
     in-container (config.ZAP_URL empty -> _run_zap's local-daemon spawn/kill
-    branch). `auth` is passed in by the dispatcher (fetched from Redis on
-    Oracle); the pure half never reads Redis, so it runs on a stateless Modal
+    branch). `auth` is passed in by the dispatcher (fetched from Redis on the
+    droplet); the pure half never reads Redis, so it runs on a stateless Modal
     container.
 
     Web scan module: OWASP ZAP (spider + active scan) + Katana (parallel,

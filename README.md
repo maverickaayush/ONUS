@@ -204,11 +204,15 @@ Env vars, set via `.env` (copied from `.env.example`):
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1` | FastAPI allowed hosts |
 | `OLLAMA_URL` | `http://host.docker.internal:11434` | Where the backend/worker reach Ollama |
 | `SCAN_TIMEOUT_MULTIPLIER` | `1.5` | Scales every module's tool/Celery timeout - real-world targets are slower than lab targets; drop to `1.0` for lab-tuned timings |
-| `MAX_CONCURRENT_SCANS` | `5` | Concurrent-scan cap (resource-exhaustion guard, also sizes the DB connection pool) |
+| `MAX_CONCURRENT_SCANS` | `3` | Concurrent-scan cap (resource-exhaustion / target-politeness guard, also sizes the DB connection pool) |
+| `ONUS_ENV` | `development` | `development` (self-hosted localhost — weak secrets only warn) or `production` (weak `SECRET_KEY`/Postgres password become a hard boot failure) |
 
 **The `POSTGRES_PASSWORD`/`SECRET_KEY` defaults above are demo-only** -
 they're fine for a local/personal instance but change both before deploying
-anywhere reachable by anyone else.
+anywhere reachable by anyone else. This is now *enforced*, not just advised:
+set `ONUS_ENV=production` (or turn on hosted auth) and the backend **refuses to
+start** while either is still a default/placeholder. Generate a strong key with
+`python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
 **Hosted-only features are off by default.** `REQUIRE_AUTH` (accounts / OAuth
 sign-in) and `HOSTED_QUEUE_ENABLED` (scan queue) both default to `false` and
