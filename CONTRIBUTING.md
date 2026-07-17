@@ -26,9 +26,30 @@ Some tests need a local Redis instance reachable at `REDIS_URL` (default
 `redis://localhost:6379/0`) - `redis-cli ping` should return `PONG` before
 running the suite. CI runs a Redis service container automatically.
 
+## Good first issues
+
+New here? These are real, self-contained, pre-scoped tasks — small enough for a
+first PR, useful enough to be worth merging. Issues carrying the
+[`good first issue`](https://github.com/maverickaayush/ONUS/labels/good%20first%20issue)
+label track the current live set; the list below seeds it:
+
+- Add a `LLM_PROVIDER` value/table entry to the README's env-var docs so all
+  three (`ollama`, `github`) are documented in one place.
+- Add a `docker compose config` smoke assertion for `docker-compose.prod.yml`
+  (CI only validates the dev compose today).
+- Add a small unit test for `config.validate_startup_security()` covering the
+  warn-vs-raise branches (dev default vs `ONUS_ENV=production`).
+- Add a `HEALTHCHECK` to `backend/Dockerfile` hitting `/api/health`.
+- Frontend: surface a friendly toast/message on an API `429` (rate-limited)
+  instead of a generic failure.
+- Add Vitest/RTL coverage for one dashboard component (see "Known gaps").
+
+Comment on an issue to claim it before starting, so two people don't duplicate
+work.
+
 ## Known gaps
 
-- No frontend test suite yet (backend has 400+ tests, frontend has none) -
+- No frontend unit-test suite yet (backend has 550+ tests, frontend has none) -
   contributions adding Vitest/RTL coverage for the dashboard are welcome.
 
 ## Before you touch a scanning module

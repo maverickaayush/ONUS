@@ -1,0 +1,11 @@
+# Presence of this file is what makes GitHub's community-profile check recognize
+# the issue templates (otherwise it reports issue_template: null). It also routes
+# non-bug/feature conversations to the right place.
+blank_issues_enabled: false
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/maverickaayush/ONUS/discussions
+    about: Ask how something works, share what you're scanning, or propose an idea before filing a formal issue.
+  - name: Report a security vulnerability
+    url: https://github.com/maverickaayush/ONUS/security/advisories/new
+    about: Please report vulnerabilities privately here, never as a public issue (see SECURITY.md).

@@ -17,6 +17,12 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # AOF persistence so a restart/redeploy doesn't drop Celery task state,
+    # rate-limit counters, or (hosted) sessions. everysec = durable without the
+    # fsync-per-write latency of 'always'.
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -50,7 +56,8 @@ services:
       context: .
       dockerfile: backend/Dockerfile
       # 'full' = base backend + all scanner binaries, for local SCANNER_BACKEND=
-      # local. Production Oracle builds the slim arm64 'backend' target instead.
+      # local. Production (the DigitalOcean droplet, x86_64) builds the slim
+      # 'backend' target instead — see docker-compose.prod.yml.
       target: full
     restart: unless-stopped
     depends_on:
@@ -367,5 +374,6 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:     # Redis AOF file (append-only persistence, see redis service)
   ollama_data:    # kept for a future containerized-Ollama migration; unused while Ollama runs natively
   dvwp_wp:

@@ -889,7 +889,7 @@ def _login_result_finding(login_result: dict, domain: str) -> Optional[dict]:
 def scan_owasp(scan_id: str, domain: str, auth: dict = None) -> dict:
     """
     Pure half (runs locally or on Modal via tasks.dispatch). `auth` is passed in
-    by the dispatcher (fetched from Redis on Oracle) - the pure half never reads
+    by the dispatcher (fetched from Redis on the droplet) - the pure half never reads
     Redis itself, so it can run on a stateless Modal container.
 
     OWASP Top 10 module: 6 non-destructive active tests (SQLi, XSS, path
