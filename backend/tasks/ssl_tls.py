@@ -6,6 +6,10 @@ import socket
 import ssl
 import subprocess
 import time
+# Parses sslscan's own `--xml` output file (a trusted local binary writing to
+# /tmp), never an attacker-supplied XML document, so stdlib ElementTree is safe
+# here: there is no path for external-entity/XXE or billion-laughs content, which
+# would require the attacker to control the XML document structure sslscan emits.
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple

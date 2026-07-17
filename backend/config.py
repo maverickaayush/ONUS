@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     OLLAMA_URL: str = "http://localhost:11434"
     SECRET_KEY: str = "change-me-in-production"
     ALLOWED_HOSTS: str = "localhost,127.0.0.1"
+    # Deployment posture. 'development' (default) is the self-hosted, localhost,
+    # single-operator path — weak/default secrets only warn, so a fresh clone
+    # `docker compose up` still boots. 'production' (or any REQUIRE_AUTH /
+    # SESSION_COOKIE_SECURE hosted signal) makes validate_startup_security()
+    # REFUSE to boot on a default SECRET_KEY or the shipped Postgres password —
+    # a documented warning turned into an enforced guarantee. See main.py.
+    ONUS_ENV: str = "development"
     # Remote ZAP daemon (Docker sidecar). Empty = run a local ZAP process
     # instead (native dev workflow) — see tasks/webscan.py.
     ZAP_URL: str = ""
@@ -52,8 +59,9 @@ class Settings(BaseSettings):
     #   'local'  - in-process subprocess tools (local Docker dev; needs the
     #              'full' Dockerfile target with all scanner binaries installed).
     #   'modal'  - dispatched to per-module Modal functions (production); the
-    #              Oracle backend image then needs none of the amd64 scanner
-    #              binaries (arm64-clean 'backend' target).
+    #              orchestrator backend image then needs none of the scanner
+    #              binaries (slim 'backend' target; the DigitalOcean x86_64
+    #              droplet only orchestrates, it never runs a scanner tool).
     SCANNER_BACKEND: str = "local"
     # Deployed Modal app name that tasks/dispatch.py looks scanner functions up
     # in (modal.Function.from_name). Only used when SCANNER_BACKEND='modal'.
@@ -166,3 +174,74 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# Secrets that ship in the repo as placeholders. If any of these survives into a
+# production boot the deployment is unsafe, so validate_startup_security() below
+# refuses to start. Kept as a set (not a regex) so it's obvious what's blocked.
+_KNOWN_WEAK_SECRETS = {
+    "change-me-in-production",
+    "change_me_in_production",
+    "change_me_to_a_long_random_string",
+    "change_me",
+    "change-me",
+}
+_KNOWN_WEAK_DB_PASSWORDS = ("vapt_secure_2025",)
+
+
+def _secret_is_weak() -> bool:
+    s = settings.SECRET_KEY.strip()
+    return s in _KNOWN_WEAK_SECRETS or "change" in s.lower() or len(s) < 32
+
+
+def _db_password_is_weak() -> bool:
+    return any(pw in settings.DATABASE_URL for pw in _KNOWN_WEAK_DB_PASSWORDS)
+
+
+def is_production() -> bool:
+    """A production/exposed posture — the only mode where weak secrets are fatal.
+
+    Any one signal is enough: an explicit ONUS_ENV, hosted auth being on, or a
+    cross-site Secure cookie (which only makes sense behind TLS). Self-hosted
+    localhost defaults hit none of these, so `docker compose up` still boots.
+    """
+    return (
+        settings.ONUS_ENV.strip().lower() in {"production", "prod"}
+        or settings.REQUIRE_AUTH
+        or settings.SESSION_COOKIE_SECURE
+    )
+
+
+def validate_startup_security() -> None:
+    """Fail hard on unsafe production secrets; warn (never block) self-hosted.
+
+    Called once at process start by main.py (API) and celery_app.py (worker) so
+    both entrypoints enforce the same contract. Idempotent and side-effect-free
+    apart from logging / raising.
+    """
+    import logging
+
+    log = logging.getLogger("onus.startup")
+    problems = []
+    if _secret_is_weak():
+        problems.append(
+            "SECRET_KEY is a default/placeholder or too short (<32 chars). "
+            "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+        )
+    if _db_password_is_weak():
+        problems.append(
+            "DATABASE_URL still contains the shipped placeholder Postgres password "
+            "(vapt_secure_2025). Set a strong POSTGRES_PASSWORD."
+        )
+
+    if not problems:
+        return
+
+    if is_production():
+        raise RuntimeError(
+            "Refusing to start with insecure secrets in a production posture "
+            f"(ONUS_ENV={settings.ONUS_ENV}, REQUIRE_AUTH={settings.REQUIRE_AUTH}). "
+            "Fix these and restart:\n  - " + "\n  - ".join(problems)
+        )
+    for p in problems:
+        log.warning("INSECURE DEFAULT (ok for local self-hosted, NOT for a public deployment): %s", p)

@@ -6,10 +6,10 @@ download / air-gapped-at-runtime, same discipline as the scanner tools).
 
 Wire the backend to it:
     OLLAMA_URL=https://<workspace>--onus-llm-ollama-api.modal.run
-    OLLAMA_AUTH_TOKEN=<the token below>   # optional; endpoint is open if unset
+    OLLAMA_AUTH_TOKEN=<the token below>
 
 Deploy:  modal deploy modal_app/llm.py
-Auth (recommended before production):
+Auth (REQUIRED — the endpoint refuses to serve requests without it):
     modal secret create onus-llm-auth OLLAMA_AUTH_TOKEN=$(openssl rand -hex 24)
 """
 import os
@@ -35,9 +35,10 @@ llm_image = (
 
 app = modal.App("onus-llm")
 
-# Optional auth: create `modal secret create onus-llm-auth OLLAMA_AUTH_TOKEN=...`.
-# If the secret doesn't exist the endpoint deploys open (a startup warning is
-# logged); add the secret + redeploy before real use.
+# Auth is mandatory: `modal secret create onus-llm-auth OLLAMA_AUTH_TOKEN=...`.
+# If the secret is absent the endpoint still deploys but every inference request
+# is refused (401) — fail closed, so a missing secret degrades to "no AI prose"
+# (the backend falls back to templates) rather than an open GPU endpoint.
 try:
     _secrets = [modal.Secret.from_name("onus-llm-auth")]
 except Exception:
@@ -69,8 +70,8 @@ def ollama_api():
 
     token = os.environ.get("OLLAMA_AUTH_TOKEN", "")
     if not token:
-        print("WARNING: OLLAMA_AUTH_TOKEN unset - endpoint is OPEN. Add the "
-              "onus-llm-auth secret + redeploy before production.")
+        print("ERROR: OLLAMA_AUTH_TOKEN unset - inference is REFUSED (401) until "
+              "the onus-llm-auth secret is created and the app redeployed.")
 
     web = FastAPI()
 
@@ -82,7 +83,9 @@ def ollama_api():
 
     @web.post("/api/{path:path}")
     async def proxy(path: str, request: Request):
-        if token and request.headers.get("authorization") != f"Bearer {token}":
+        # Fail closed: no configured token means the endpoint is misconfigured,
+        # not open. Never serve inference without a matching bearer token.
+        if not token or request.headers.get("authorization") != f"Bearer {token}":
             raise HTTPException(status_code=401, detail="unauthorized")
         body = await request.body()
         # Generous timeout: ollama_client's own budget (240s+) is the real bound.
