@@ -1,13 +1,13 @@
 """
-Scanner dispatch layer — the single seam between the Celery orchestrator (Oracle)
-and where a module's work physically runs.
+Scanner dispatch layer — the single seam between the Celery orchestrator (the
+DigitalOcean droplet, x86_64) and where a module's work physically runs.
 
 Each module is split into two halves (ARCHITECTURE.md / migration plan):
 
   - Pure half `scan_<module>(scan_id, domain, auth) -> build_module_result envelope`
     lives in tasks/<module>.py. It does ALL tool/subprocess work and returns the
     envelope. It touches NO DB and NO Redis, so it can run unchanged on a Modal
-    container (which cannot reach Oracle's private Postgres/Redis).
+    container (which cannot reach the droplet's private Postgres/Redis).
 
   - Dispatcher: the `run_<module>` Celery task calls `dispatch_scan(...)` here,
     which owns the DB status writes and picks where the pure half runs:
@@ -18,7 +18,7 @@ Each module is split into two halves (ARCHITECTURE.md / migration plan):
 This keeps the finding (`normalize_finding`) and module-result
 (`build_module_result`) contracts identical regardless of where a module ran,
 and keeps Postgres/Redis private (Modal is stateless — the dispatcher reads auth
-from Redis on Oracle and passes it in as an argument).
+from Redis on the droplet and passes it in as an argument).
 """
 import logging
 
