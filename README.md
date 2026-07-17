@@ -11,6 +11,15 @@ every finding (CVSS v3.1), optionally adds AI-generated plain-English
 descriptions via a local LLM, and produces a PDF report plus a live web
 dashboard. No external API calls - everything runs on your own network.
 
+> **Two ways to run ONUS:**
+> - **Self-hosted (this repo):** `docker compose up` → enter a domain → tick the
+>   authorization box → scan. No account, no sign-in, no email verification -
+>   it's single-operator by design, and everything below covers this path.
+> - **Hosted:** a managed instance is live at **[tryonus.tech](https://tryonus.tech)**.
+>   It layers on production-only features (accounts / OAuth sign-in, a scan
+>   queue, per-user history) that default **off** in this repo, so self-hosting
+>   stays simple. See [Self-hosted vs hosted](#self-hosted-vs-hosted).
+
 ## Features
 
 - **8 parallel scanning modules** (Celery) - network recon
@@ -28,8 +37,32 @@ dashboard. No external API calls - everything runs on your own network.
 - **Optional local AI analysis** - Ollama + Qwen 2.5 7B turns scored
   findings into plain-English descriptions and remediation steps. Fully
   air-gapped; the tool works without it (see Quick start below).
+- **Context-aware, actionable remediation** - every finding ends with a
+  concrete next step. Stable issues use deterministic templates; genuinely
+  context-dependent ones use the AI; and managed-platform detection
+  (Vercel / Cloudflare / Netlify / GitHub Pages / …) means a platform-owned
+  TLS finding says who controls that layer and what to do next, instead of
+  impossible "edit your server config" advice.
 - **PDF report + web dashboard** - WeasyPrint-rendered report and a Next.js
   dashboard, both driven by the same scored/described findings.
+
+## Self-hosted vs hosted
+
+|  | Self-hosted (this repo) | Hosted ([tryonus.tech](https://tryonus.tech)) |
+|---|---|---|
+| Setup | `docker compose up` | none - just open the site |
+| Sign-in | **none** - single operator | account / Google / GitHub OAuth |
+| Scan flow | domain → authorization box → scan | same, after signing in |
+| Extras | - | scan queue, per-user history, hosted email |
+| Runs on | your own network, air-gapped | managed cloud |
+
+The self-hosted default path is intentionally the simple one: **no sign-up, no
+email verification, no OAuth**. The hosted-only features (authentication, scan
+queue) live behind config flags that default **off** (`REQUIRE_AUTH=false`,
+`HOSTED_QUEUE_ENABLED=false`; see [Configuration](#configuration)) and are not
+set in `docker-compose.yml` - so running ONUS locally never puts you behind a
+login. Prefer zero setup? Use the hosted site at
+**[tryonus.tech](https://tryonus.tech)**.
 
 ## Screenshots
 
@@ -80,7 +113,12 @@ docker compose up -d
 docker compose ps        # wait for zap to report healthy (~2 min)
 ```
 
-Open **http://localhost:3000**.
+Open **http://localhost:3000**, enter a domain, tick the authorization box, and
+start the scan.
+
+**No sign-in, sign-up, or email verification.** Self-hosted ONUS is
+single-operator by default - there's no account step between opening the
+dashboard and scanning.
 
 **This works with no Ollama install.** CVSS/severity/priority scoring is
 always deterministic (`analysis/cvss_scorer.py`) - without Ollama running,
@@ -172,6 +210,13 @@ Env vars, set via `.env` (copied from `.env.example`):
 they're fine for a local/personal instance but change both before deploying
 anywhere reachable by anyone else.
 
+**Hosted-only features are off by default.** `REQUIRE_AUTH` (accounts / OAuth
+sign-in) and `HOSTED_QUEUE_ENABLED` (scan queue) both default to `false` and
+aren't set in `docker-compose.yml`, so self-hosted ONUS never gates you behind
+a login or a queue. Leave them off unless you're intentionally building a
+multi-user hosted deployment - the managed [tryonus.tech](https://tryonus.tech)
+instance is the one that turns them on.
+
 ## API docs
 
 FastAPI generates interactive Swagger docs for free - once the backend is
@@ -196,7 +241,7 @@ pip install -r backend/requirements-dev.txt
 pytest backend/tests
 ```
 
-438 automated backend tests as of this writing. Beyond the unit/integration
+655 automated backend tests as of this writing. Beyond the unit/integration
 suite, the tool has been exercised end-to-end during development: 79 real
 scans executed and 124 PDF reports generated against nine deliberately-
 vulnerable practice applications (DVWA, Juice Shop, Mutillidae, NodeGoat,
