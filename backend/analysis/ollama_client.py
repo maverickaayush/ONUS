@@ -31,10 +31,19 @@ _SYSTEM_PROMPT = (
     "  how to check or fix it. Technical language is fine here; the audience\n"
     "  is a developer.\n"
     "\n"
-    "If a 'Target environment' block is provided, prefer remediation steps "
-    "specific to what it names (the actual server, framework, or WAF) over "
-    "generic multi-platform advice - but only where it's actually relevant "
-    "to the finding.\n"
+    "Context may include a 'Hosting platform' and/or 'Target environment' "
+    "block. Use them to make each finding SPECIFIC to this target: say what "
+    "was actually detected, why it matters for THIS site, and the exact next "
+    "step - not generic textbook advice. If a managed hosting platform is "
+    "named, that platform (not the user) controls the TLS and server layer: "
+    "NEVER tell the user to edit server, TLS, cipher, or certificate "
+    "configuration they don't run; instead state plainly that the platform "
+    "manages it and what the user can actually do (check the platform "
+    "dashboard, contact its support, or nothing if it's a platform default). "
+    "Each finding also carries a 'user_controls_layer' flag and a 'confidence' "
+    "tier - when user_controls_layer is false, give platform-appropriate "
+    "advice, and reflect the confidence honestly (a 'probable' finding is a "
+    "likely-but-unconfirmed signal, not a certainty).\n"
     "\n"
     "Also produce:\n"
     "- executive_summary: 3 to 4 sentences overviewing the scan results in plain\n"
@@ -902,6 +911,35 @@ _TYPE_REMEDIATION = {
         "network issue during the original run is the most common cause "
         "and often doesn't repeat.",
     ),
+    'testssl_capability': (
+        "This is a TLS *capability* line from the SSL/TLS scanner - it reports "
+        "which signature algorithms, key-exchange mechanisms, or forward-"
+        "secrecy options the server offers (the evidence names the exact one). "
+        "It describes how the server is configured, not a confirmed weakness, "
+        "and on its own is usually low-to-no risk.",
+        "1) Read the evidence line - it names the specific capability the "
+        "scanner reported. 2) If your site is on a managed host (Vercel, "
+        "Netlify, Cloudflare, GitHub Pages, etc.), this is set by the platform "
+        "and there is nothing to change on your side. 3) If you run your own "
+        "TLS termination and want to tune it, regenerate a modern config with "
+        "the Mozilla SSL Configuration Generator (ssl-config.mozilla.org, "
+        "\"Intermediate\" profile) and reload the server - don't hand-pick "
+        "individual algorithms. 4) Re-test for free at ssllabs.com/ssltest.",
+    ),
+    'testssl_missing_extension': (
+        "The server's TLS handshake doesn't negotiate a particular hardening "
+        "extension the scanner checked for (the evidence names it - e.g. the "
+        "extended master secret extension, RFC 7627). This is a minor "
+        "hardening gap, not an exploitable hole, and many well-run sites are "
+        "in the same state depending on their TLS stack.",
+        "1) Confirm what the evidence names. 2) On a managed host (Vercel, "
+        "Cloudflare, etc.) this is the platform's TLS stack - you can't enable "
+        "it directly, and it isn't something you need to chase. 3) If you run "
+        "your own server, this extension comes with keeping OpenSSL / your TLS "
+        "library current and using a modern config (ssl-config.mozilla.org) - "
+        "upgrade the library and reload. 4) Re-test with `testssl.sh` to "
+        "confirm.",
+    ),
 
     # --- tech_fingerprint.py ---
     'tech_detected': (
@@ -1202,6 +1240,187 @@ def _extract_target_profile(findings: List[dict]) -> dict:
     return profile
 
 
+# ── Managed-platform awareness + strategy routing ────────────────────────────
+# Hosting platforms that fully own the HTTPS/TLS transport layer - the user
+# cannot change ciphers, protocol versions, TLS extensions, or (usually) the
+# certificate from their own config. The dominant real-world failure mode this
+# fixes: the AI, told "Target environment: Vercel", wrote "modify the Vercel
+# deployment settings" for a TLS finding the user has no way to reconfigure.
+# Detected from fingerprint / recon / header evidence. Value = display name.
+# Actionability model. Every finding is one of three tiers, and the tier - not
+# a per-finding string - decides the *shape* of its next-step guidance. This is
+# the reusable core: (tier, platform) is enough to compose a clear next step.
+ACTION_DIRECT = 'directly_actionable'      # user controls the layer - fix it now
+ACTION_INDIRECT = 'indirectly_actionable'  # can't fix directly - review/escalate/accept
+ACTION_NONE = 'no_action_required'         # informational / expected / scanner-limited
+
+# Managed hosting platforms: needle (matched case-insensitively in the scan's
+# own evidence) -> (display name, layer kind). `kind` only drives phrasing, so
+# adding a platform is a single line - there is no per-platform remediation
+# string to hand-write.
+_PLATFORM_KIND_PHRASE = {
+    'edge': 'edge network',
+    'static': 'static-hosting platform',
+    'paas': 'hosting platform',
+}
+_MANAGED_PLATFORMS = {
+    'vercel': ('Vercel', 'edge'), 'netlify': ('Netlify', 'edge'),
+    'cloudflare': ('Cloudflare', 'edge'), 'pages.dev': ('Cloudflare Pages', 'edge'),
+    'github.io': ('GitHub Pages', 'static'), 'githubusercontent': ('GitHub Pages', 'static'),
+    'fastly': ('Fastly', 'edge'), 'cloudfront': ('AWS CloudFront', 'edge'),
+    'amplifyapp': ('AWS Amplify', 'paas'), 'herokuapp': ('Heroku', 'paas'),
+    'herokudns': ('Heroku', 'paas'), 'onrender': ('Render', 'paas'),
+    'render.com': ('Render', 'paas'), 'railway.app': ('Railway', 'paas'),
+    'up.railway': ('Railway', 'paas'), 'firebaseapp': ('Firebase Hosting', 'static'),
+    'web.app': ('Firebase Hosting', 'static'), 'azurewebsites': ('Azure App Service', 'paas'),
+    'azurestaticapps': ('Azure Static Web Apps', 'static'), 'pantheonsite': ('Pantheon', 'paas'),
+    'surge.sh': ('Surge', 'static'), 'wixsite': ('Wix', 'paas'),
+    'squarespace': ('Squarespace', 'paas'), 'myshopify': ('Shopify', 'paas'),
+    'shopify': ('Shopify', 'paas'), 'wpengine': ('WP Engine', 'paas'),
+}
+# Reverse lookup: display name -> kind (a platform can have several needles).
+_PLATFORM_KIND = {name: kind for name, kind in _MANAGED_PLATFORMS.values()}
+
+
+def _detect_platform_pair(findings: List[dict]):
+    hay: List[str] = []
+    for f in findings:
+        for k in ('technology', 'server_value', 'powered_by_value', 'waf_name',
+                  'evidence', 'title'):
+            v = f.get(k)
+            if v:
+                hay.append(str(v).lower())
+    blob = ' '.join(hay)
+    for needle, pair in _MANAGED_PLATFORMS.items():
+        if needle in blob:
+            return pair
+    return None
+
+
+def detect_platform(findings: List[dict]) -> Optional[str]:
+    """Best-effort managed-hosting-platform detection from the scan's own
+    fingerprint/recon/header evidence. Returns a display name (e.g. 'Vercel')
+    or None. Deterministic - no AI, no external lookup."""
+    pair = _detect_platform_pair(findings)
+    return pair[0] if pair else None
+
+
+# Finding types that live in the TLS/HTTPS transport layer a managed platform
+# owns. Deliberately does NOT include response-header findings (missing_csp,
+# cors_wildcard, hsts_*, …): those ARE user-controllable on managed platforms
+# (e.g. a vercel.json / _headers file), so their existing templates stay as-is.
+_TLS_LAYER_TYPES = frozenset({
+    'no_https', 'cert_expired', 'cert_expiring_soon', 'cert_self_signed',
+    'sslv2_enabled', 'sslv3_enabled', 'tls10_enabled', 'tls11_enabled',
+    'weak_cipher_rc4', 'weak_cipher_des', 'weak_cipher_bits', 'weak_dh_params',
+    'testssl_capability', 'testssl_missing_extension',
+})
+
+
+def _is_tls_layer(ftype: str) -> bool:
+    # Every open-ended testssl_* check (except the scan-coverage note) plus the
+    # fixed crypto/protocol/cert types are the platform-owned transport layer.
+    if ftype == 'testssl_scanTime':
+        return False
+    return ftype.startswith('testssl_') or ftype in _TLS_LAYER_TYPES
+
+
+# Inventory / non-vulnerability types: rendered as short informational entries,
+# never sent to the AI, never described as something to "fix".
+_INVENTORY_TYPES = frozenset({
+    'tech_detected', 'waf_detected', 'waf_unknown', 'no_waf_detected',
+    'subdomain_found', 'live_subdomain', 'open_port', 'open_port_naabu',
+    'scan_timeout', 'whois_registrar', 'whois_creation_date', 'whois_nameservers',
+    'whois_abuse_contact', 'dns_a_record', 'dns_mx_record', 'dns_txt_record',
+    'dns_ns_record', 'dns_cname_record', 'headers_present_summary',
+    'testssl_scanTime', 'testssl_capability', 'exposed_path_401', 'exposed_path_403',
+    'exposed_path_301', 'exposed_path_302', 'exposed_admin_panel_denied',
+    'crawled_endpoint_katana', 'auth_login_confirmed',
+})
+
+# The four report-generation lanes. Kept as plain strings (not an Enum) so they
+# serialize trivially and read clearly in logs/tests.
+STRATEGY_TEMPLATE = 'template'    # stable, well-understood issue -> fixed template
+STRATEGY_INVENTORY = 'inventory'  # not a vulnerability -> short informational entry
+STRATEGY_HYBRID = 'hybrid'        # fixed facts + platform-conditional remediation
+STRATEGY_AI = 'ai'                # genuinely context-dependent -> LLM with evidence
+
+
+def report_strategy(finding: dict, platform: Optional[str] = None) -> str:
+    """The routing decision, made explicit. Considers finding type, whether a
+    reliable template exists, whether it's a non-vulnerability, and whether the
+    layer is owned by a detected managed platform (making generic server-config
+    advice wrong). This is what analyse() uses to decide what reaches the LLM."""
+    ftype = finding.get('type', '')
+    if ftype in _INVENTORY_TYPES:
+        return STRATEGY_INVENTORY
+    # A TLS-layer finding on a managed platform: the deterministic facts stay
+    # fixed, but the remediation must be platform-conditional (you can't
+    # reconfigure it locally) - the AI must not invent server-config steps.
+    if platform and _is_tls_layer(ftype):
+        return STRATEGY_HYBRID
+    if ftype in _TYPE_REMEDIATION:
+        return STRATEGY_TEMPLATE
+    return STRATEGY_AI
+
+
+def classify_actionability(finding: dict, platform: Optional[str] = None) -> str:
+    """The finding's actionability tier, reusing the same signals as the strategy
+    router so the two never disagree: a managed-platform TLS finding is
+    INDIRECT, a non-vulnerability is NO_ACTION, everything else (headers, DNS the
+    user owns, application code) is DIRECT."""
+    strat = report_strategy(finding, platform)
+    if strat == STRATEGY_HYBRID:
+        return ACTION_INDIRECT
+    if strat == STRATEGY_INVENTORY:
+        return ACTION_NONE
+    return ACTION_DIRECT
+
+
+def _managed_platform_next_steps(name: str, kind: str) -> str:
+    """The reusable next-step composer for an INDIRECTLY-actionable finding on a
+    managed host. Answers the fifth question ('what should I do next?') with a
+    concrete decision path - review docs -> escalate with evidence -> re-terminate
+    or accept - instead of dead-ending at 'you cannot configure this'. One
+    composer for every platform; `kind` only changes the ownership phrasing."""
+    layer = _PLATFORM_KIND_PHRASE.get(kind, 'hosting platform')
+    return (
+        f"This HTTPS/TLS behavior is provided by {name}'s {layer} and cannot be "
+        f"changed from your application code or server configuration - {name} "
+        f"owns this layer and keeps it current.\n"
+        f"Next steps:\n"
+        f"1) Check {name}'s TLS/SSL documentation to confirm whether this is "
+        f"expected platform behavior. If it is a documented default, no further "
+        f"action is required - it is not a gap on your side.\n"
+        f"2) If your organization has a specific TLS, security, or compliance "
+        f"requirement this does not meet, contact {name} support and share the "
+        f"evidence line from this report so they can confirm or adjust it.\n"
+        f"3) If you need TLS behavior {name} does not offer, put TLS termination "
+        f"you control in front of it (a reverse proxy or CDN you manage) or move "
+        f"to hosting where you own the TLS layer - escalate that trade-off to "
+        f"whoever owns your infrastructure."
+    )
+
+
+def apply_platform_context(finding: dict, platform: Optional[str]) -> None:
+    """Mutate a TLS-layer finding's remediation into honest, next-step guidance
+    when it's on a detected managed platform. Deterministic facts
+    (type/severity/evidence) are untouched - only the advice changes. HYBRID
+    lane. Also stamps the finding's actionability tier as INDIRECT. Fires only
+    for the HYBRID lane - a pure-informational capability/inventory line stays
+    NO_ACTION (its template already ends with a clear 'no action needed'), so we
+    never tell someone to 'contact support' about a non-issue."""
+    if not platform or report_strategy(finding, platform) != STRATEGY_HYBRID:
+        return
+    kind = _PLATFORM_KIND.get(platform, 'paas')
+    finding['remediation'] = _managed_platform_next_steps(platform, kind)
+    finding['actionability'] = ACTION_INDIRECT
+    desc = finding.get('description', '')
+    note = f" (Note: this site runs on {platform}, which owns the TLS layer - see remediation.)"
+    if desc and 'owns the TLS layer' not in desc:
+        finding['description'] = desc.rstrip() + note
+
+
 def _full_scan_stats(findings: List[dict]) -> dict:
     """
     Deterministic totals across the WHOLE scan, not just the (possibly much
@@ -1270,14 +1489,20 @@ def _strip_emdashes(obj):
     return obj
 
 
-def _shape_for_prompt(findings: List[dict]) -> List[dict]:
+def _shape_for_prompt(findings: List[dict], platform: Optional[str] = None) -> List[dict]:
+    # Richer per-finding evidence than the old {title, evidence} pair: the module
+    # that found it, the confidence tier, and whether the user actually controls
+    # the layer - so the model can be specific and honest about who can fix it.
     return [
         {
             'finding_id': f.get('finding_id', ''),
             'title': f.get('title', ''),
+            'module': f.get('module', ''),
             'evidence': str(f.get('evidence', ''))[:300],
             'owasp_category': f.get('owasp_category', ''),
             'severity_hint': str(f.get('severity', 'Informational')).lower(),
+            'confidence': f.get('confidence', 'probable'),
+            'user_controls_layer': not (bool(platform) and _is_tls_layer(f.get('type', ''))),
         }
         for f in findings
     ]
@@ -1285,7 +1510,8 @@ def _shape_for_prompt(findings: List[dict]) -> List[dict]:
 
 def _call_ollama(shaped: List[dict], overflow: int, domain: str,
                   target_profile: Optional[dict] = None,
-                  scan_stats: Optional[dict] = None) -> dict:
+                  scan_stats: Optional[dict] = None,
+                  platform: Optional[str] = None) -> dict:
     """One HTTP round-trip to Ollama. Raises on any failure - callers handle
     retry/fallback. Returns the parsed {'executive_summary','findings'} dict."""
     note = ''
@@ -1294,6 +1520,11 @@ def _call_ollama(shaped: List[dict], overflow: int, domain: str,
             f'NOTE: {overflow} additional lower-severity findings exist and '
             f'are grouped in the appendix; do not describe them individually. '
         )
+    if platform:
+        note += (f'Hosting platform: {platform} (a MANAGED host - the user does '
+                 f'not run its server and cannot edit its TLS/server config; '
+                 f'do not suggest server, TLS, or cipher changes as if they '
+                 f'control it). ')
     if target_profile:
         note += f'Target environment: {json.dumps(target_profile)}. '
     user_content = f'{note}Analyze these VAPT findings for {domain}: {json.dumps(shaped)}'
@@ -1381,14 +1612,17 @@ def analyse(findings: List[dict], domain: str) -> dict:
     template so the pipeline never hard-fails here.
     """
     ordered = sorted(findings, key=lambda f: f.get('priority', 5))
-    # Types with their own fixed, always-correct template (_ENUMERATION_TYPE_
-    # REMEDIATION above) are never sent to the LLM at all - the deterministic
-    # template is what every scan shows for these, not a maybe depending on
-    # whether the finding happened to rank in the top _MAX_SENT_TO_AI.
-    candidates = [f for f in ordered if f.get('type') not in _TYPE_REMEDIATION]
+    platform = detect_platform(findings)
+    # Route by the explicit four-lane strategy. ONLY genuinely context-dependent
+    # findings (STRATEGY_AI) reach the LLM; TEMPLATE/INVENTORY get deterministic
+    # text, and HYBRID (a TLS-layer finding on a managed platform) gets its
+    # platform-conditional text applied deterministically in _score_and_describe
+    # via apply_platform_context - it must never be sent to the model, since the
+    # whole point is that generic server-config advice is wrong for it.
+    candidates = [f for f in ordered if report_strategy(f, platform) == STRATEGY_AI]
     top = candidates[:_MAX_SENT_TO_AI]
     overflow = max(0, len(candidates) - _MAX_SENT_TO_AI)
-    shaped = _shape_for_prompt(top)
+    shaped = _shape_for_prompt(top, platform)
     # Built from the FULL findings list, not just `candidates` - the tech
     # stack/WAF signal comes from finding types that are themselves excluded
     # from the AI batch (they have their own templates), so this must run
@@ -1403,7 +1637,8 @@ def analyse(findings: List[dict], domain: str) -> dict:
     last_error: Optional[Exception] = None
     for attempt in range(1, _JSON_RETRY_ATTEMPTS + 1):
         try:
-            result = _call_ollama(shaped, overflow, domain, target_profile, scan_stats)
+            result = _call_ollama(shaped, overflow, domain, target_profile,
+                                  scan_stats, platform)
             descriptions = {}
             for f in result['findings']:
                 if not isinstance(f, dict):

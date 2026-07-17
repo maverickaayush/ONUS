@@ -50,7 +50,55 @@ _TESTSSL_NOISE_PHRASES = (
     "didn't succeed", 'did not succeed', 'repeatedly zero', 'header reply empty',
     'no http status', 'no server certificate could be retrieved',
     'scan interrupted', 'handshake failed',
+    # A testssl attack/feature test that could not complete (the request
+    # stalled, was terminated, timed out, or was aborted mid-check) is a scan
+    # artefact, not a weakness of the target - real report showed a "BREACH:
+    # Test failed as first HTTP request stalled and was terminated" line
+    # rendered as a scary Low finding with "investigate your server logs"
+    # advice. Drop it like every other incomplete-check line.
+    'stalled', 'was terminated', 'test failed', 'aborted', 'timed out',
+    'timeout', 'incomplete',
 )
+
+
+def _classify_testssl(item_id: str, finding_text: str, raw_sev: str):
+    """Map a raw testssl JSON item to an honest (report_type, severity), or None
+    to skip it. Fixes the two failure modes seen in real reports: (1) testssl
+    scan-mechanics / incomplete-check lines rendered as vulnerabilities, and (2)
+    Forward-Secrecy signature-algorithm / KEM *capability* lines over-graded to
+    High/Critical (testssl grades what the server offers, not always an
+    actionable weakness). Everything genuinely graded keeps testssl's own
+    severity - the trust-source contract (cvss_scorer.py) is unchanged for those.
+    """
+    text = (finding_text or '').lower()
+    low = item_id.lower()
+
+    # testssl's own "did my scan finish" signal - always kept as an
+    # Informational coverage note (has its own template), never graded.
+    if item_id == 'scanTime':
+        return ('testssl_scanTime', 'Informational')
+
+    # Scan-mechanics / incomplete-check artefacts - not a target weakness.
+    if item_id in _TESTSSL_NOISE_IDS or any(p in text for p in _TESTSSL_NOISE_PHRASES):
+        return None
+
+    # Forward-Secrecy signature-algorithm / KEM capability lines: these describe
+    # what the server *offers*, not a fixable weakness, and testssl's High/
+    # Critical grade on them is noise. Cap at Informational with a dedicated,
+    # honest template. (Deliberately narrow: cipher-strength and protocol IDs
+    # are NOT swept in here - those can be real weaknesses and keep their grade.)
+    if low.startswith('fs_') or 'sig_algs' in low or 'kems' in low:
+        return ('testssl_capability', 'Informational')
+
+    # A missing TLS extension (e.g. extended master secret, RFC 7627): a real
+    # but minor hardening item, never Critical. Own template + platform-aware.
+    if low.startswith('tls_misses_extension'):
+        return ('testssl_missing_extension', 'Low')
+
+    # Genuinely graded issue - trust testssl's severity (existing design).
+    if raw_sev in _TESTSSL_SKIP or raw_sev not in _TESTSSL_SEVERITY_MAP:
+        return None
+    return (f'testssl_{item_id}', _TESTSSL_SEVERITY_MAP[raw_sev])
 
 
 # ---------------------------------------------------------------------------
@@ -197,37 +245,14 @@ def _parse_testssl_json(path: str, domain: str, scan_id: str) -> List[dict]:
                 continue
             item_id = item.get('id', 'ssl_finding')
             finding_text = item.get('finding', '') or item_id
-            if item_id == 'scanTime':
-                # testssl.sh's own "did my scan finish" signal, not a graded
-                # vulnerability about the target - real bug found live
-                # against clinkl.in: testssl.sh reported this as WARN (->
-                # "Low" via the map below), and since it was the only
-                # finding in that scan without a fixed remediation template,
-                # it became the sole input to the AI executive summary,
-                # which then described the whole 38-finding scan as "a
-                # single low-severity issue" about an "interruption".
-                # Deliberately EXEMPT from the noise filters below: scanTime is
-                # metadata we always keep as Informational, even when testssl
-                # phrases it as an interruption/warning (which would otherwise
-                # match a _TESTSSL_NOISE_PHRASES entry and be dropped).
-                severity = 'Informational'
-            else:
-                # testssl emits its own scan-mechanics/diagnostic lines at WARN
-                # (which maps to "Low" below) - "check failed", "couldn't
-                # connect", "not tested", engine errors, the overall letter
-                # grade. These are NOT vulnerabilities about the target, but
-                # they rendered as real Low/Medium findings with scary CVSS
-                # bands and useless "no tailored guidance" text (user-reported,
-                # clinkl.in report). Drop them by id and by diagnostic phrasing,
-                # regardless of the severity testssl set.
-                if item_id in _TESTSSL_NOISE_IDS:
-                    continue
-                if any(p in finding_text.lower() for p in _TESTSSL_NOISE_PHRASES):
-                    continue
-                raw_sev = str(item.get('severity', '')).upper().strip()
-                if raw_sev in _TESTSSL_SKIP or raw_sev not in _TESTSSL_SEVERITY_MAP:
-                    continue
-                severity = _TESTSSL_SEVERITY_MAP[raw_sev]
+            raw_sev = str(item.get('severity', '')).upper().strip()
+            # Single honest classification point (capability/artefact/graded) -
+            # see _classify_testssl. None => skip (passing check, scan artefact,
+            # or unmapped severity).
+            classified = _classify_testssl(item_id, finding_text, raw_sev)
+            if classified is None:
+                continue
+            report_type, severity = classified
             # Human title: testssl's `finding` text is usually a readable
             # sentence ("No ciphers supporting Forward Secrecy offered"); use it
             # alone and drop the raw scanner id prefix. Only fall back to the
@@ -235,7 +260,7 @@ def _parse_testssl_json(path: str, domain: str, scan_id: str) -> List[dict]:
             title = finding_text if len(finding_text) >= 18 else f'{item_id}: {finding_text}'
             findings.append(normalize_finding(
                 module=MODULE, tool='testssl',
-                type_=f'testssl_{item_id}',
+                type_=report_type,
                 title=title[:120],
                 evidence=f'{item_id}: {finding_text}',
                 severity=severity, target=domain,

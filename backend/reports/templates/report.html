@@ -400,6 +400,7 @@ h3 {
 .tag-partial    { color: var(--med);  border-color: var(--med);  background: rgba(245,166,35,0.10); }
 .tag-success    { color: var(--low);  border-color: var(--low);  background: rgba(38,224,245,0.10); }
 .tag-fail       { color: var(--crit); border-color: var(--crit); background: rgba(255,45,74,0.10); }
+.tag-platform   { color: var(--gray); border-color: var(--gray); background: rgba(148,163,184,0.10); }
 
 .verification-note {
   font-size: 8pt;
@@ -583,6 +584,7 @@ h3 {
     <span class="fc-tags">
       {% if finding.confidence == 'confirmed' %}<span class="tag tag-verified">Verified</span>
       {% elif finding.confidence == 'unverified' %}<span class="tag tag-unverified">Requires Manual Review</span>{% endif %}
+      {% if finding.actionability == 'indirectly_actionable' %}<span class="tag tag-platform">Platform-Managed</span>{% endif %}
       {% if ai_unavailable %}<span class="tag tag-ai">AI Unavailable</span>{% endif %}
     </span>
     {{ severity_badge(finding.severity or 'Informational') }}

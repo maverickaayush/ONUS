@@ -512,7 +512,10 @@ def _score_and_describe(aggregated: dict, domain: str) -> dict:
     executive_summary prose (ARCHITECTURE.md Section 4.5/4.6).
     """
     from analysis.cvss_scorer import score_finding, compute_risk_score
-    from analysis.ollama_client import analyse, _generic_remediation
+    from analysis.ollama_client import (
+        analyse, _generic_remediation, detect_platform, apply_platform_context,
+        classify_actionability,
+    )
 
     findings = aggregated.get('findings', [])
     counts = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0, 'Informational': 0}
@@ -539,6 +542,17 @@ def _score_and_describe(aggregated: dict, domain: str) -> dict:
             description, remediation = _generic_remediation(f)
             f['description'] = description
             f['remediation'] = remediation
+
+    # Actionability + HYBRID lane: stamp every finding with its actionability
+    # tier (directly / indirectly / no-action), and give a TLS-layer finding on
+    # a detected managed platform its next-step platform remediation - applied
+    # deterministically after description/remediation are set, whether they came
+    # from a template or the AI.
+    platform = detect_platform(findings)
+    for f in findings:
+        f['actionability'] = classify_actionability(f, platform)
+        if platform:
+            apply_platform_context(f, platform)
 
     findings.sort(key=lambda f: (f.get('priority', 5), -f.get('cvss_score', 0)))
 
