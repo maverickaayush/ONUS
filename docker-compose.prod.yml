@@ -28,6 +28,12 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # AOF persistence: a droplet redeploy/crash must not log out every hosted
+    # session or drop in-flight queue/rate-limit state. everysec = durable
+    # without per-write fsync latency.
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -59,7 +65,7 @@ services:
       MODAL_TOKEN_SECRET: ${MODAL_TOKEN_SECRET}
       DATABASE_URL: postgresql://vapt:${POSTGRES_PASSWORD}@postgres:5432/vapt
       REDIS_URL: redis://redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-change_me}
+      SECRET_KEY: ${SECRET_KEY:?set a strong SECRET_KEY in .env (python -c "import secrets; print(secrets.token_urlsafe(48))")}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       MAX_CONCURRENT_SCANS: 3
     ports:
@@ -91,6 +97,9 @@ services:
       MODAL_TOKEN_SECRET: ${MODAL_TOKEN_SECRET}
       DATABASE_URL: postgresql://vapt:${POSTGRES_PASSWORD}@postgres:5432/vapt
       REDIS_URL: redis://redis:6379/0
+      # Same secret as the backend — the worker runs the same startup security
+      # check and must not fall back to the weak default in a production posture.
+      SECRET_KEY: ${SECRET_KEY:?set a strong SECRET_KEY in .env (python -c "import secrets; print(secrets.token_urlsafe(48))")}
       MAX_CONCURRENT_SCANS: 3
     # Threads pool (NOT gevent - gevent breaks the Playwright verifier). Dispatch
     # to Modal is I/O-bound, so high concurrency is cheap.
@@ -98,3 +107,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
