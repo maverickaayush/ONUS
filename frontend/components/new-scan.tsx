@@ -21,6 +21,7 @@ import {
   type ScanModuleInfo,
 } from '@/lib/api'
 import { cn } from '@/lib/format'
+import { trackEvent } from '@/lib/analytics'
 import { MagneticButton, ModuleIcon, Panel, Spinner } from './ui'
 import { TargetClearance } from './target-clearance'
 import { HostingNotice } from './hosting-notice'
@@ -113,6 +114,8 @@ export function NewScan() {
         mode: scanMode,
         ...(auth ? { auth } : {}),
       })
+      // Anonymous: only the mode (enum), never the domain/target.
+      trackEvent('scan_started', { scan_mode: scanMode })
       router.push(`/scan/${res.job_id}/status`)
     } catch (err) {
       setLoading(false)
@@ -217,7 +220,10 @@ export function NewScan() {
               <button
                 key={m}
                 type="button"
-                onClick={() => setScanMode(m)}
+                onClick={() => {
+                  setScanMode(m)
+                  trackEvent(m === 'quick' ? 'quick_scan_selected' : 'full_scan_selected')
+                }}
                 className={cn(
                   'rounded-md border px-3.5 py-3 text-left transition-colors',
                   scanMode === m
@@ -441,6 +447,9 @@ export function NewScan() {
             try {
               // Backend re-checks ownership; the frontend belief isn't trusted.
               const res = await submitScan({ domain: t, authorized: true, mode: 'full' })
+              // The scan actually starts here (the first attempt threw before
+              // starting); a full scan always follows the clearance flow.
+              trackEvent('scan_started', { scan_mode: 'full' })
               router.push(`/scan/${res.job_id}/status`)
             } catch (err) {
               setLoading(false)

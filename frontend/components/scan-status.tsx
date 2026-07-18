@@ -15,6 +15,7 @@ import {
   type ScanStatusResponse,
 } from '@/lib/api'
 import { cn, formatElapsed } from '@/lib/format'
+import { trackEvent } from '@/lib/analytics'
 import { DecisionModal } from './decision-modal'
 import { MarkNotFound, ModuleIcon, Panel, ProgressBar, SchematicCorners, StatusPill, Tooltip } from './ui'
 
@@ -80,6 +81,9 @@ export function ScanStatus({ jobId }: { jobId: string }) {
   useEffect(() => {
     if (status?.status === 'complete' && !redirectRef.current) {
       redirectRef.current = true
+      // Anonymous completion signal — no domain/results. Guarded by redirectRef
+      // so it fires exactly once per scan, not on every poll.
+      trackEvent('scan_completed')
       const t = setTimeout(() => router.push(`/scan/${jobId}/report`), 1500)
       return () => clearTimeout(t)
     }

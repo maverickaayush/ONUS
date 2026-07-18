@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Activity, FilePlus2, LayoutList, LogOut } from 'lucide-react'
 import { logout } from '@/lib/api'
+import { trackEvent } from '@/lib/analytics'
 
 // GitHub mark inline (lucide dropped its brand icons); currentColor so it
 // inherits the rail's cyan hover exactly like the nav icons.
@@ -132,10 +133,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             {/* Attribution - icon-only GitHub link, matching the nav icons above
                 (same stroke, resting opacity, cyan hover). */}
+            {/* TODO(analytics): when the UI gains a docs link, wire
+                trackEvent('documentation_clicked'); for a "Deploy with Docker"
+                / install link, wire trackEvent('docker_install_clicked'). And
+                if a practice-target picker is ever surfaced in the UI (today
+                practice targets are a docker-compose profile only, not a
+                frontend feature), wire trackEvent('practice_target_selected').
+                No clean attach point exists for these three yet. */}
             <a
               href="https://github.com/maverickaayush/ONUS"
               target="_blank"
               rel="noopener noreferrer"
+              onClick={() => trackEvent('github_repository_clicked')}
               aria-label="ONUS on GitHub"
               title="ONUS on GitHub"
               className="mt-1 flex items-center rounded-md px-[11px] py-2 text-ink-dim transition-colors hover:bg-white/[0.03] hover:text-accent"

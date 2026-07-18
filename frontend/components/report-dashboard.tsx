@@ -34,6 +34,7 @@ import {
   normalizeSeverity,
   splitRemediation,
 } from '@/lib/format'
+import { trackEvent } from '@/lib/analytics'
 import {
   ConfidenceTag,
   InfoPopover,
@@ -121,6 +122,12 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
         },
         findings: (res.findings ?? []).map(mapFinding),
       })
+      // TODO(analytics): `report_generated` is fundamentally a BACKEND event
+      // (the PDF is rendered server-side in reports/generator.py). The frontend
+      // only ever *views* an already-generated report, so firing it here would
+      // conflate "generated" with "viewed" and double-count on reloads. Emit it
+      // from the backend when the PDF is first written, or add a dedicated
+      // "report_ready" transition to the status payload and fire it there once.
     } catch (err) {
       // 202 (not ready yet) and genuine errors render identically, by design.
       void (err instanceof ApiError)
@@ -183,6 +190,7 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
           <a
             href={reportPdfUrl(jobId)}
             download
+            onClick={() => trackEvent('report_downloaded')}
             className="flex shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-accent/90"
           >
             <Download className="h-4 w-4" strokeWidth={1.8} />
