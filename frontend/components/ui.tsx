@@ -666,7 +666,12 @@ export function RiskScoreRing({ score }: { score: number }) {
           <span className="mt-1 font-mono text-[10px] tracking-[0.2em] text-ink-faint">/ 100</span>
         </div>
       </div>
-      <span className="signage mt-3.5 text-[12px] font-bold" style={{ color: band.color }}>
+      {/* The gauge previously rendered a bare "52 / 100" plus a band label, with
+          nothing naming the measure. risk_score is a first-class field in the API
+          and DB contract, so it gets a visible name rather than relying on the
+          reader inferring it from the band. */}
+      <span className="signage mt-3.5 text-[10.5px] text-ink-faint">Risk score</span>
+      <span className="signage mt-1 text-[12px] font-bold" style={{ color: band.color }}>
         {band.label}
       </span>
     </div>

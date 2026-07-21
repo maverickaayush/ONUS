@@ -17,6 +17,7 @@ import {
   Info,
   Sparkles,
   TriangleAlert,
+  X,
 } from 'lucide-react'
 import {
   ApiError,
@@ -34,6 +35,7 @@ import {
   normalizeSeverity,
   splitRemediation,
 } from '@/lib/format'
+import { trackEvent } from '@/lib/analytics'
 import {
   ConfidenceTag,
   InfoPopover,
@@ -47,6 +49,9 @@ import {
   useCountUp,
   usePrefersReducedMotion,
 } from './ui'
+
+import { ReconTopology } from './recon-topology'
+import { DecorDefs, Motif } from './decor'
 
 interface UiFinding {
   id: number
@@ -99,6 +104,9 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
 
   // Table controls (all client-side)
   const [sevFilter, setSevFilter] = useState<'All' | Severity>('All')
+  // Set by clicking a node in the topology. Matched against title+evidence
+  // because findings carry no host field - see recon-topology.tsx.
+  const [hostFilter, setHostFilter] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('priority')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
@@ -121,6 +129,12 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
         },
         findings: (res.findings ?? []).map(mapFinding),
       })
+      // TODO(analytics): `report_generated` is fundamentally a BACKEND event
+      // (the PDF is rendered server-side in reports/generator.py). The frontend
+      // only ever *views* an already-generated report, so firing it here would
+      // conflate "generated" with "viewed" and double-count on reloads. Emit it
+      // from the backend when the PDF is first written, or add a dedicated
+      // "report_ready" transition to the status payload and fire it there once.
     } catch (err) {
       // 202 (not ready yet) and genuine errors render identically, by design.
       void (err instanceof ApiError)
@@ -145,7 +159,9 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
     const rows = data.findings.filter(
       (f) =>
         (sevFilter === 'All' || f.severity === sevFilter) &&
-        (q === '' || f.title.toLowerCase().includes(q)),
+        (q === '' || f.title.toLowerCase().includes(q)) &&
+        (hostFilter === null ||
+          `${f.title} ${f.evidence}`.toLowerCase().includes(hostFilter.toLowerCase())),
     )
     const dir = sortDir === 'asc' ? 1 : -1
     return [...rows].sort((a, b) => {
@@ -156,7 +172,7 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
       else c = a.title.localeCompare(b.title)
       return c * dir
     })
-  }, [data, sevFilter, search, sortKey, sortDir])
+  }, [data, sevFilter, search, sortKey, sortDir, hostFilter])
 
   function toggleSort(k: SortKey) {
     if (sortKey === k) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
@@ -183,6 +199,7 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
           <a
             href={reportPdfUrl(jobId)}
             download
+            onClick={() => trackEvent('report_downloaded')}
             className="flex shrink-0 items-center gap-2 rounded-md bg-accent px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-accent/90"
           >
             <Download className="h-4 w-4" strokeWidth={1.8} />
@@ -191,6 +208,12 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
         </div>
       </div>
 
+      <div className="relative w-full overflow-x-clip">
+      <DecorDefs />
+      {/* Single motif: the topology below is already the page's visual anchor,
+          so a second piece here would compete with it rather than frame it. */}
+      <Motif kind="magnifier" tone="ink" rotate={-9} opacity={0.07}
+        className="left-[2%] top-[26%] hidden h-[250px] w-[250px] 2xl:block" />
       <div className="mx-auto max-w-[1080px] px-6 py-8">
         {failed ? (
           <Panel className="flex flex-col items-center gap-4 p-10 text-center">
@@ -255,7 +278,14 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
                 (parsed from the findings the API already returns). Revealed all
                 at once with a single staggered entrance - never animated as a
                 live discovery process, so nothing is shown that wasn't found. */}
-            {data && <ReconTopology findings={data.findings} domain={domain || jobId} />}
+            {data && (
+              <ReconTopology
+                findings={data.findings}
+                domain={domain || jobId}
+                selectedHost={hostFilter}
+                onSelectHost={setHostFilter}
+              />
+            )}
 
             {/* Findings - a genuinely clean scan (zero findings, not a filtered
                 empty) gets the emblem-anchored all-clear moment (signature
@@ -282,9 +312,23 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
             ) : (
             <div className="mt-8">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-[15px] font-semibold text-ink">
-                  Findings <span className="tnum font-mono text-ink-faint">({data?.findings.length ?? 0})</span>
-                </h2>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h2 className="text-[15px] font-semibold text-ink">
+                    Findings <span className="tnum font-mono text-ink-faint">({data?.findings.length ?? 0})</span>
+                  </h2>
+                  {hostFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setHostFilter(null)}
+                      className="inline-flex items-center gap-1.5 rounded-full border-2 border-border bg-mint px-3 py-1 font-mono text-[11.5px] font-semibold text-ink"
+                      style={{ boxShadow: 'var(--shadow-hard)' }}
+                    >
+                      host: {hostFilter}
+                      <X className="h-3.5 w-3.5" strokeWidth={2.6} />
+                      <span className="sr-only">Clear host filter</span>
+                    </button>
+                  )}
+                </div>
                 <div className="flex w-full gap-2 sm:w-auto">
                   <select
                     value={sevFilter}
@@ -347,114 +391,7 @@ export function ReportDashboard({ jobId }: { jobId: string }) {
           </>
         )}
       </div>
-    </div>
-  )
-}
-
-// ── ReconTopology ── the honest command-center substitute for a "live topology
-// graph": a static radial node map of the REAL subdomains recon discovered,
-// parsed from the findings the API already returns (no new data, no fabrication,
-// no live-discovery animation - one staggered entrance across the final list).
-function extractSubdomains(findings: UiFinding[], domain: string): string[] {
-  const base = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
-  const hostRe = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b/gi
-  const hosts = new Set<string>()
-  for (const f of findings) {
-    if (f.module !== 'recon') continue
-    if (!/subdomain/i.test(f.title)) continue
-    const text = `${f.title} ${f.evidence}`
-    for (const m of text.match(hostRe) || []) {
-      const h = m.toLowerCase()
-      if (h !== base && h.endsWith('.' + base)) hosts.add(h)
-    }
-  }
-  return [...hosts].sort()
-}
-
-function ReconTopology({ findings, domain }: { findings: UiFinding[]; domain: string }) {
-  const reduced = usePrefersReducedMotion()
-  const base = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
-  const subs = useMemo(() => extractSubdomains(findings, domain), [findings, domain])
-  if (subs.length === 0) return null
-
-  const CAP = 18
-  const shown = subs.slice(0, CAP)
-  const extra = subs.length - shown.length
-  // Radial layout. viewBox is fixed; SVG scales responsively.
-  const W = 760
-  const H = Math.min(460, 240 + shown.length * 6)
-  const cx = W / 2
-  const cy = H / 2
-  const R = Math.min(cx, cy) - 96
-  const nodes = shown.map((host, i) => {
-    const ang = (i / shown.length) * Math.PI * 2 - Math.PI / 2
-    const label = host.slice(0, Math.max(0, host.length - base.length - 1)) || host
-    return { host, label, x: cx + R * Math.cos(ang), y: cy + R * Math.sin(ang), right: Math.cos(ang) >= 0 }
-  })
-
-  return (
-    <div className="mt-8 onus-fade-up">
-      <div className="mb-2.5 flex items-center gap-3">
-        <p className="signage text-[10px] text-accent text-glow-cyan">Recon // Topology</p>
-        <span className="h-px flex-1 bg-line" />
-        <span className="tnum font-mono text-[10.5px] text-ink-faint">
-          {subs.length} host{subs.length === 1 ? '' : 's'}
-        </span>
       </div>
-      <Panel className="relative overflow-hidden p-4">
-        <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" style={{ maxHeight: H }} role="img" aria-label={`${subs.length} discovered subdomains of ${base}`}>
-          <defs>
-            <radialGradient id="recon-core" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="color-mix(in srgb, var(--color-cyan) 55%, transparent)" />
-              <stop offset="100%" stopColor="transparent" />
-            </radialGradient>
-          </defs>
-          {/* edges */}
-          {nodes.map((n, i) => (
-            <line
-              key={`e${i}`}
-              x1={cx}
-              y1={cy}
-              x2={n.x}
-              y2={n.y}
-              stroke="var(--color-cyan)"
-              strokeWidth="1"
-              opacity={0.28}
-              className={reduced ? undefined : 'onus-fade-up'}
-              style={reduced ? undefined : { animationDelay: `${i * 45}ms` }}
-            />
-          ))}
-          {/* center = target */}
-          <circle cx={cx} cy={cy} r="34" fill="url(#recon-core)" />
-          <circle cx={cx} cy={cy} r="7" fill="var(--color-cyan)" style={{ filter: 'drop-shadow(0 0 6px var(--color-cyan))' }} />
-          <text x={cx} y={cy + 26} textAnchor="middle" className="fill-[var(--color-ink)] font-mono text-glow-cyan" style={{ fontSize: 13, fontWeight: 600 }}>
-            {base}
-          </text>
-          {/* subdomain nodes */}
-          {nodes.map((n, i) => (
-            <g
-              key={n.host}
-              className={reduced ? undefined : 'onus-scale-in'}
-              style={reduced ? undefined : { animationDelay: `${120 + i * 45}ms`, transformOrigin: `${n.x}px ${n.y}px` }}
-            >
-              <circle cx={n.x} cy={n.y} r="4.5" fill="var(--color-cyan)" style={{ filter: 'drop-shadow(0 0 5px var(--color-cyan))' }} />
-              <circle cx={n.x} cy={n.y} r="9" fill="none" stroke="var(--color-cyan)" strokeWidth="1" opacity="0.35" />
-              <text
-                x={n.x + (n.right ? 13 : -13)}
-                y={n.y + 4}
-                textAnchor={n.right ? 'start' : 'end'}
-                className="fill-[var(--color-ink-dim)] font-mono"
-                style={{ fontSize: 11 }}
-              >
-                {n.label}
-              </text>
-            </g>
-          ))}
-        </svg>
-        {extra > 0 && (
-          <p className="mt-1 text-center font-mono text-[10.5px] text-ink-faint">+{extra} more discovered</p>
-        )}
-      </Panel>
     </div>
   )
 }

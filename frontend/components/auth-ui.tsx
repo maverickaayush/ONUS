@@ -18,43 +18,10 @@ import {
   useState,
 } from 'react'
 import { Eye, EyeOff, Check, Copy } from 'lucide-react'
-import { TangleCanvas } from './tangle-canvas'
 
 const CYAN = '#00F0FF'
 const CRIMSON = '#FF0055'
 
-// ── Full-viewport auth shell (canvas + centered card + attribution) ──────────
-export function AuthShell({ children }: { children: ReactNode }) {
-  return (
-    <div className="relative flex min-h-screen items-center justify-center px-4 py-10">
-      <TangleCanvas />
-      <div className="w-full max-w-[420px]">
-        {children}
-        <Attribution />
-      </div>
-    </div>
-  )
-}
-
-function Attribution() {
-  return (
-    <p className="mt-6 text-center font-mono text-[11px] tracking-wide text-white/25">
-      Developed by{' '}
-      <a
-        href="https://github.com/maverickaayush/ONUS"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-white/40 transition-colors hover:text-[color:var(--cyan)]"
-        style={{ ['--cyan' as string]: CYAN }}
-      >
-        maverickaayush
-      </a>{' '}
-      | Report by ONUS
-    </p>
-  )
-}
-
-// ── Glass card with animated height ──────────────────────────────────────────
 export function AuthCard({ children }: { children: ReactNode }) {
   return (
     <div
@@ -349,7 +316,7 @@ export function OtpInput({
 }
 
 // ── Scramble text (loading label) ────────────────────────────────────────────
-const GLYPHS = '!<>-_\\/[]{}—=+*^?#0123456789ABCDEF'
+const GLYPHS = '!<>-_\\/[]{}=+*^?#0123456789ABCDEF'
 
 export function ScrambleText({ text, active }: { text: string; active: boolean }) {
   const [display, setDisplay] = useState(text)

@@ -1,0 +1,11 @@
+// The exact ONUS emblem geometry (mirrors components/ui.tsx's OnusMark path).
+// Shared so the canvas (Path2D) and the wireframe background render the SAME
+// mark — the emblem is the page's visual anchor, never a re-drawn approximation.
+export const ONUS_EMBLEM_PATH =
+  'M1024.19 534.779C1027.44 537.995 1052.55 579.131 1056.86 586.04L1120.56 687.811C1131.46 705.218 1142.64 724.096 1154 741.071C1144.69 754.716 1134.55 772.332 1125.54 786.594L1066.29 879.34L838.468 1232.27C880.889 1234.04 930.329 1232.94 973.259 1232.94L1207.1 1232.83C1195.99 1212.53 1180.51 1188.5 1168.29 1168.5C1141.09 1124.38 1114.15 1080.09 1087.47 1035.65C1114.21 994.428 1141.16 953.347 1168.34 912.41C1181.26 892.791 1200.66 861.401 1214.63 843.324C1226.63 860.305 1240.53 883.882 1251.93 901.953L1322.33 1013.81L1555.45 1385.53C1581.89 1427.97 1610.14 1471.72 1635.52 1514.57L845.334 1514.4L568.17 1514.39C516.879 1514.38 463.685 1513.65 412.523 1514.59C426.901 1492.28 440.861 1468.82 455.043 1446.26L584.897 1238.81L842.521 826.618L962.796 633.284C982.236 602.039 1003.83 564.773 1024.19 534.779Z'
+export const ONUS_EMBLEM_VIEWBOX = 2048
+
+// Shared, module-level pointer position (CSS px). The reticle writes it every
+// mousemove; the canvas reads it for its gravity well — so the particle field
+// is attracted to the custom reticle, not a separate browser-cursor listener.
+export const pointer = { x: -9999, y: -9999, active: false }

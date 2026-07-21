@@ -41,17 +41,46 @@ export interface AuthConfigWire {
   token_header_prefix?: string
 }
 
+export type ScanMode = 'quick' | 'full'
+
 export interface ScanRequestBody {
   domain: string
   authorized: boolean
+  // 'quick' = passive-only assessment (no ownership needed); 'full' = active
+  // VAPT (requires verified ownership in hosted mode). Omitted => backend
+  // defaults to 'full' (open-source/local unchanged).
+  mode?: ScanMode
   notes?: string
   auth?: AuthConfigWire
+}
+
+// Backend's structured 403 when a FULL scan targets an unverified domain.
+export interface TargetAuthorizationRequired {
+  code: 'TARGET_AUTHORIZATION_REQUIRED'
+  target: string
+  methods: ('meta_tag' | 'http_file')[]
+  message: string
+}
+
+export function targetAuthorizationRequired(
+  e: unknown,
+): TargetAuthorizationRequired | null {
+  if (e instanceof ApiError && e.status === 403) {
+    const d = (e.body as { detail?: unknown })?.detail
+    if (d && typeof d === 'object' && (d as { code?: string }).code === 'TARGET_AUTHORIZATION_REQUIRED') {
+      return d as TargetAuthorizationRequired
+    }
+  }
+  return null
 }
 
 export interface ScanResponse {
   job_id: string
   status: ScanStatus
   domain: string
+  // Hosted queue only: 1-based place in line when accepted but waiting for
+  // capacity. Absent/null for an immediately-started scan and for self-hosted.
+  queue_position?: number | null
 }
 
 // ── Status ──────────────────────────────────────────────────────────────────
@@ -64,6 +93,11 @@ export interface ScanStatusResponse {
   modules: Record<string, ModuleStatus>
   module_errors?: Record<string, string> | null
   can_retry?: boolean | null
+  // Hosted queue only (additive, safe to ignore): queue_position is the 1-based
+  // place in line while waiting; waiting_for_capacity is true iff parked for a
+  // slot. Both take the not-queued shape everywhere else.
+  queue_position?: number | null
+  waiting_for_capacity?: boolean
 }
 
 // ── Findings ────────────────────────────────────────────────────────────────
@@ -262,6 +296,8 @@ export interface AuthUser {
   email_verified: boolean
   has_verified_domain: boolean
   next_step: AuthNextStep
+  scans_this_month: number
+  scan_limit: number
 }
 
 export interface DomainChallenge {
@@ -310,6 +346,29 @@ export const login = (email: string, password: string) =>
   postJson<AuthUser>('/api/auth/login', { email, password })
 
 export const logout = () => postJson<{ ok: boolean }>('/api/auth/logout')
+
+export interface AuthProviders {
+  password: boolean
+  google: boolean
+  github: boolean
+  /**
+   * True on the hosted tier (REQUIRE_AUTH=true), false self-hosted. The only
+   * reliable discriminator: google/github being false is ambiguous, because a
+   * hosted instance with no OAuth app configured reports the same. Drives both
+   * route guarding and whether the scan-mode toggle is offered.
+   */
+  require_auth: boolean
+}
+
+export async function getAuthProviders(): Promise<AuthProviders> {
+  try {
+    const res = await fetch('/api/auth/providers', authInit)
+    return await handle<AuthProviders>(res)
+  } catch {
+    // Unreachable backend: assume self-hosted (no hosted-only UI is shown).
+    return { password: true, google: false, github: false, require_auth: false }
+  }
+}
 
 export async function getMe(): Promise<AuthUser | null> {
   const res = await fetch('/api/auth/me', authInit)
