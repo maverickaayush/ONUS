@@ -97,14 +97,18 @@ modules → Ollama (Qwen 2.5 7B) → WeasyPrint PDF + dashboard. Full details in
 ## Prerequisites
 
 - Docker + Docker Compose v2
-- ~6GB free disk for the core image build (the backend image bundles Nuclei
-  templates and a headless Chromium via Playwright, adding ~1.5GB on top of
-  the base Python image)
+- **~8GB free disk.** The built images total ~6.8GB (backend and worker are
+  ~3.25GB each - they bundle Nuclei templates and a headless Chromium via
+  Playwright - plus a ~270MB frontend), and the build itself needs headroom
+  on top.
+- **~6GB free RAM.** The ZAP sidecar alone is capped at 4GB (`mem_limit: 4g`),
+  and Postgres, Redis, the API, the worker and the frontend run alongside it.
+- First build takes roughly 10-15 minutes on a decent connection.
 
 ## Quick start
 
-> Needs ~6GB free disk for the first `docker compose up` (Nuclei templates +
-> headless Chromium add ~1.5GB on top of the base image) - see Prerequisites above.
+> See Prerequisites above: ~8GB disk and ~6GB RAM, and expect a 10-15 minute
+> first build.
 
 ```bash
 cp .env.example .env
@@ -220,6 +224,29 @@ aren't set in `docker-compose.yml`, so self-hosted ONUS never gates you behind
 a login or a queue. Leave them off unless you're intentionally building a
 multi-user hosted deployment - the managed [tryonus.tech](https://tryonus.tech)
 instance is the one that turns them on.
+
+## Analytics (optional)
+
+ONUS has **no analytics by default** - nothing loads and no data leaves the
+browser. To collect anonymous product-usage metrics on your own deployment,
+set a single Google Analytics 4 Measurement ID:
+
+```bash
+NEXT_PUBLIC_GA_ID=G-XXXXXXXXXX
+```
+
+It's a frontend build-time variable, so set it in the frontend build
+environment (a Vercel/host env var, or `frontend/.env.local` for a local
+`npm run build`). When set, GA loads **only in production builds** and tracks
+page views plus a few product events (e.g. `scan_started`, `scan_completed`,
+`report_downloaded`). Custom events go through the typed helper in
+[`frontend/lib/analytics.ts`](frontend/lib/analytics.ts) -
+`trackEvent('scan_started')`.
+
+**Privacy:** only anonymous, low-cardinality usage events are sent - never
+scanned domains, scan results, findings, report contents, the authorization
+state, or any personal data. Leave `NEXT_PUBLIC_GA_ID` unset and ONUS behaves
+exactly as before; analytics is entirely opt-in.
 
 ## API docs
 

@@ -59,8 +59,19 @@ graphify-out/
 
 # Runtime scratch + scanner session data (not source)
 /scratchpad/
-/zap-sessions/
+# ZAP writes session data here at scan time; the DIRECTORY itself must exist
+# and be writable by the non-root zap user before `docker compose up`, or the
+# bind mount is created as root and ZAP dies with 'Permission denied'. Ignore
+# the contents, keep the directory (via .gitkeep) so a fresh clone has it.
+/zap-sessions/*
+!/zap-sessions/.gitkeep
 
 # Stray dev caches/config that must not ship
 .vite/
 .mcp.json
+
+# Local-only hosted deployment setup notes (never commit)
+docs/HOSTED_SETUP.md
+
+# Auto-generated self-hosted SECRET_KEY (config.ensure_secret_key). Never commit.
+.secret_key
