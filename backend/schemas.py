@@ -109,7 +109,11 @@ class ScanRequest(BaseModel):
     # Scan mode is part of the request contract, not inferred from which button
     # the frontend clicked. 'quick' = passive-only profile (no target ownership
     # required); 'full' = the active VAPT pipeline (requires verified ownership
-    # in hosted mode). Default 'full' preserves prior local/self-hosted behavior.
+    # in hosted mode). Default 'full' is the SELF-HOSTED behaviour by design: a
+    # self-hosted operator owns the target and wants the complete assessment, and
+    # that frontend renders no mode toggle at all. The hosted frontend always
+    # sends an explicit mode from its toggle, so this default only ever applies
+    # to the self-hosted path.
     mode: Literal["quick", "full"] = "full"
     notes: Optional[str] = None
     auth: Optional[AuthConfig] = None

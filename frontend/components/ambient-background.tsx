@@ -57,7 +57,7 @@ export function AmbientBackground() {
         <div
           className="h-full w-full rounded-full"
           style={{
-            background: 'radial-gradient(circle, rgba(38,224,245,0.10), transparent 62%)',
+            background: 'radial-gradient(circle, rgba(193,240,76,0.22), transparent 62%)',
             filter: 'blur(60px)',
             animation: 'onus-drift-a 34s ease-in-out infinite',
           }}
@@ -71,7 +71,7 @@ export function AmbientBackground() {
         <div
           className="h-full w-full rounded-full"
           style={{
-            background: 'radial-gradient(circle, rgba(26,169,189,0.09), transparent 60%)',
+            background: 'radial-gradient(circle, rgba(196,161,255,0.20), transparent 60%)',
             filter: 'blur(70px)',
             animation: 'onus-drift-b 42s ease-in-out infinite',
           }}

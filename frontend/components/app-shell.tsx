@@ -2,7 +2,10 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Activity, FilePlus2, LayoutList } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Activity, FilePlus2, LayoutList, LogOut } from 'lucide-react'
+import { getAuthProviders, logout } from '@/lib/api'
+import { trackEvent } from '@/lib/analytics'
 
 // GitHub mark inline (lucide dropped its brand icons); currentColor so it
 // inherits the rail's cyan hover exactly like the nav icons.
@@ -19,7 +22,10 @@ import { OnusMark } from './ui'
 import { cn } from '@/lib/format'
 
 const NAV = [
-  { href: '/', label: 'New Scan', icon: FilePlus2, match: (p: string) => p === '/' },
+  // The form moved to /scan/new when '/' became the marketing landing. The
+  // match arm was equally stale: '/' renders chrome-free, so a rail item that
+  // only highlighted on '/' could never show as active at all.
+  { href: '/scan/new', label: 'New Scan', icon: FilePlus2, match: (p: string) => p === '/scan/new' },
   // "Scan Status" is a placeholder destination - it resolves to a real status
   // page for a scan literally named `demo` (preserving the existing quirk).
   {
@@ -31,14 +37,32 @@ const NAV = [
   { href: '/scans', label: 'Scans', icon: LayoutList, match: (p: string) => p.startsWith('/scans') },
 ]
 
-// Auth routes render full-bleed (their own TangleCanvas backdrop), without the
-// command-center rail / ambient / grain overlays.
-const AUTH_ROUTES = ['/sign-in', '/sign-up']
+// Routes that render full-bleed, without the operator rail / ambient / grain
+// overlays: the auth screens (own backdrop) and the marketing landing (own
+// sticky nav + footer).
+const AUTH_ROUTES = ['/', '/sign-in', '/sign-up']
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  // Sign-out is a hosted-only affordance. Self-hosted (require_auth=false) has
+  // no session to end; a button that does nothing reads as broken, and in the
+  // trimmed public build /sign-in does not exist for it to redirect to.
+  const [hosted, setHosted] = useState(false)
+  useEffect(() => {
+    getAuthProviders().then((p) => setHosted(p.require_auth)).catch(() => setHosted(false))
+  }, [])
   if (AUTH_ROUTES.some((r) => pathname === r || pathname.startsWith(r + '/'))) {
     return <>{children}</>
+  }
+  // Full reload after clearing the session so no authenticated state lingers;
+  // /sign-in is public so the guard lets it through immediately.
+  async function handleLogout() {
+    try {
+      await logout()
+    } catch {
+      /* even if the request fails, still leave the authenticated area */
+    }
+    window.location.href = '/sign-in'
   }
   return (
     <>
@@ -121,16 +145,39 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             {/* Attribution - icon-only GitHub link, matching the nav icons above
                 (same stroke, resting opacity, cyan hover). */}
+            {/* TODO(analytics): when the UI gains a docs link, wire
+                trackEvent('documentation_clicked'); for a "Deploy with Docker"
+                / install link, wire trackEvent('docker_install_clicked'). And
+                if a practice-target picker is ever surfaced in the UI (today
+                practice targets are a docker-compose profile only, not a
+                frontend feature), wire trackEvent('practice_target_selected').
+                No clean attach point exists for these three yet. */}
             <a
               href="https://github.com/maverickaayush/ONUS"
               target="_blank"
               rel="noopener noreferrer"
+              onClick={() => trackEvent('github_repository_clicked')}
               aria-label="ONUS on GitHub"
               title="ONUS on GitHub"
               className="mt-1 flex items-center rounded-md px-[11px] py-2 text-ink-dim transition-colors hover:bg-white/[0.03] hover:text-accent"
             >
               <GithubMark className="h-[18px] w-[18px] shrink-0" />
             </a>
+            {/* Sign out - hosted only; clears the session and returns to /sign-in. */}
+            {hosted && (
+            <button
+              type="button"
+              onClick={handleLogout}
+              aria-label="Sign out"
+              title="Sign out"
+              className="mt-1 flex w-full items-center gap-3.5 overflow-hidden rounded-md px-[11px] py-2 text-ink-dim transition-colors hover:bg-white/[0.03] hover:text-accent"
+            >
+              <LogOut className="h-[18px] w-[18px] shrink-0" strokeWidth={1.7} />
+              <span className="whitespace-nowrap text-[13px] font-medium opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                Sign out
+              </span>
+            </button>
+            )}
           </div>
         </nav>
 

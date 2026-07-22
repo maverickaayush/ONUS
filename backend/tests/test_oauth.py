@@ -198,7 +198,7 @@ class TestProvidersEndpoint:
     def test_self_hosted_reports_password_only(self, monkeypatch):
         from routers.auth import auth_providers
         monkeypatch.setattr(settings, "REQUIRE_AUTH", False)
-        assert auth_providers() == {"password": True, "google": False, "github": False}
+        assert auth_providers() == {"password": True, "google": False, "github": False, "require_auth": False}
 
     def test_hosted_reports_configured(self, monkeypatch):
         from routers.auth import auth_providers
@@ -206,4 +206,4 @@ class TestProvidersEndpoint:
         _creds(monkeypatch, "google")
         monkeypatch.setattr(settings, "GITHUB_CLIENT_ID", "")
         monkeypatch.setattr(settings, "GITHUB_CLIENT_SECRET", "")
-        assert auth_providers() == {"password": True, "google": True, "github": False}
+        assert auth_providers() == {"password": True, "google": True, "github": False, "require_auth": True}

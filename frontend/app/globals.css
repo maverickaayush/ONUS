@@ -1,62 +1,97 @@
 @import 'tailwindcss';
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   ONUS - DIRECTION B · "Command Center"
-   A powered-on operator console. Discipline within excess: everything CAN glow,
-   but not everything glows at once. TWO neon hues only - electric cyan (calm/
-   active/info/primary) and intense crimson (Critical/danger). Everything else
-   is desaturated near-black. Permanent dark.
+   ONUS - DIRECTION C · "Printed Field Manual"
+   Warm cream canvas on printed graph paper. Full-bleed pastel section blocks
+   alternate down the page, each keeping its own tinted grid. Neo-brutalist
+   surfaces: thick near-black border, hard offset shadow, no blur.
 
-   Token NAMES are kept from the restrained build (accent/crit/high/…) but their
-   VALUES are remapped to Direction B so every screen re-skins at once:
-     accent* → electric cyan     crit → crimson
-     high/med/low/info → DESATURATED, non-glowing (only Critical earns neon).
+   Token NAMES are carried over from the Command Center build so every screen
+   re-skins from this one file. Their VALUES invert dark→light:
+     canvas/panel/raised → cream + paper whites
+     ink*                → near-black + warm greys
+     accent              → DEEP chartreuse (readable as TEXT on cream)
+     lime                → BRIGHT chartreuse (button/badge FILL only, never text)
+     indigo              → periwinkle, for italic serif accent words
+   Severity keeps its meaning but is re-tuned for light ground.
+
+   Contrast note: --color-accent is deliberately NOT the bright lime. 32 call
+   sites use `text-accent`; #C1F04C on cream is ~1.3:1 and unreadable. The deep
+   value below clears 4.5:1, and `--color-lime` covers the fill cases.
    ═══════════════════════════════════════════════════════════════════════════ */
 @theme {
-  --font-display: var(--font-orbitron), ui-sans-serif, system-ui, sans-serif; /* signage */
-  --font-mono: var(--font-jbmono), ui-monospace, 'SFMono-Regular', monospace;  /* data */
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;        /* prose */
+  --font-display: var(--font-instrument-serif), Georgia, 'Times New Roman', serif;
+  --font-sans: var(--font-instrument-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jbmono), ui-monospace, 'SFMono-Regular', monospace;
 
-  --color-canvas: #030304;
-  --color-panel: #08090c;
-  --color-raised: #0d0f13;
-  --color-raised-2: #14171d;
+  /* Paper */
+  --color-canvas: #f6f3ec;
+  --color-panel: #fffdf8;
+  --color-raised: #fffdf8;
+  --color-raised-2: #efeae0;
 
-  --color-line: rgba(150, 170, 190, 0.08);
-  --color-line-strong: rgba(150, 180, 200, 0.16);
-  --color-grid: rgba(70, 130, 150, 0.05);
+  /* Ink. Both muted greys are pinned by contrast, not taste:
+       ink-dim  4.9:1 on the lilac card tint (the darkest pastel body-text pairing)
+       ink-faint 5.0:1 inside the 'cancelled' pill (10px, tinted bg: the floor)
+     The lighter values these replaced failed WCAG AA at 4.01:1 and 3.61:1. */
+  --color-ink: #0a0a0a;
+  --color-ink-dim: #4d4d4d;
+  --color-ink-faint: #615d51;
 
-  --color-ink: #d7dde4;
-  --color-ink-dim: #8b95a1;
-  --color-ink-faint: #545d69;
+  /* Rules — near-black hairlines, not translucent whites */
+  --color-line: rgba(10, 10, 10, 0.14);
+  --color-line-strong: rgba(10, 10, 10, 0.32);
+  --color-border: #0a0a0a;
+  --color-grid: rgba(120, 100, 80, 0.10);
 
-  /* NEON #1 - electric cyan (was "accent") */
-  --color-accent: #26e0f5;
-  --color-accent-soft: #74ecfa;
-  --color-accent-deep: #0c5563;
-  --color-cyan: #26e0f5;
+  /* Chartreuse — the brand mark. Deep = text/border, bright = fill. */
+  --color-accent: #4f6e12;
+  /* 4.7:1 against StatusPill's 12%-tinted background over cream (the worst
+     pairing on the site). Two earlier values failed: #6b9119 at 3.63:1 on the
+     scans list, then #5c7d15 at 3.74:1 inside the 'analysing' pill. */
+  --color-accent-soft: #4e6b12;
+  --color-accent-deep: #3a5210;
+  --color-lime: #c1f04c;
+  --color-lime-deep: #a8d63a;
+  --color-cyan: #4f6e12; /* legacy alias — old cyan call sites land on brand */
 
-  /* NEON #2 - intense crimson (was "crit"). ONLY Critical + danger. */
-  --color-crit: #ff2d4a;
-  --color-crimson: #ff2d4a;
+  /* Periwinkle — italic display accent + secondary highlight */
+  --color-indigo: #5b5bd6;
+  --color-indigo-soft: #c4a1ff;
 
-  /* Non-critical severities - DESATURATED, no glow (keeps palette at 2 neon) */
-  --color-high: #b8863f;
-  --color-med: #8a7a45;
-  --color-low: #4f6b7a;
-  --color-info: #55606b;
-  --color-authz: #b8863f;
+  /* Pastel section blocks */
+  --color-peach: #f8d6b3;
+  --color-butter: #fdfd96;
+  --color-lilac: #c8bff5;
+  --color-mint: #daf5f0;
 
-  --radius-xs: 2px;
-  --radius: 3px;
-  --radius-lg: 5px;
+  /* Severity — re-tuned for light ground, all ≥4.5:1 on cream */
+  --color-crit: #b3200f;
+  --color-crimson: #b3200f;
+  /* 5.0:1 inside the 'awaiting decision' pill; #b04a08 was 4.21:1. */
+  --color-high: #9c4107;
+  /* 4.8:1 on the medium-severity row tint (#f1ebdb); #8a6508 was 4.47:1,
+     marginally under AA at the 10px row size. */
+  --color-med: #7d5b07;
+  --color-low: #1d6a96;
+  /* Slate blue, not neutral grey: as a chart fill on cream, #5a5a5a was the
+     darkest mass on the page and read as a black block. 5.7:1 on cream. */
+  --color-info: #55607a;
+  --color-authz: #a8412c;
+
+  --radius-xs: 3px;
+  --radius: 6px;
+  --radius-lg: 10px;
+
+  --shadow-hard: 2px 2px 0 var(--color-border);
+  --shadow-hard-lg: 4px 4px 0 var(--color-border);
 
   --ease-hud: cubic-bezier(0.16, 1, 0.3, 1);
   --default-transition-timing-function: var(--ease-hud);
   --default-transition-duration: 180ms;
 }
 
-html { color-scheme: dark; }
+html { color-scheme: light; }
 
 body {
   background: var(--color-canvas);
@@ -67,7 +102,8 @@ body {
   position: relative;
 }
 
-/* Blueprint grid across the whole surface - HUD framing */
+/* Printed graph paper across the whole surface. Sections that set their own
+   .sec-* tint paint over this, so the texture never doubles up. */
 body::before {
   content: '';
   position: fixed;
@@ -75,32 +111,110 @@ body::before {
   z-index: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(var(--color-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--color-grid) 1px, transparent 1px);
-  background-size: 44px 44px;
-  mask-image: radial-gradient(ellipse 130% 100% at 50% 0%, #000 55%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse 130% 100% at 50% 0%, #000 55%, transparent 100%);
+    linear-gradient(90deg, var(--color-grid) 1px, transparent 0),
+    linear-gradient(var(--color-grid) 1px, transparent 0);
+  background-size: 24px 24px;
 }
 
 .tnum { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum'; }
 
-/* Command signage - extended geometric all-caps, heavy tracking */
-.signage {
+/* ── Type ──────────────────────────────────────────────────────────────────
+   .display  large high-contrast serif, upright
+   .accent-word  the one italic periwinkle word inside a display heading
+   .signage  small all-caps eyebrow label (sans, not serif) */
+.display {
   font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 0.95;
+}
+.accent-word {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--color-indigo);
+  letter-spacing: 0;
+}
+.signage {
+  font-family: var(--font-sans);
   text-transform: uppercase;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.14em;
+  font-weight: 700;
 }
 
-/* Glassmorphism - FLOATING LAYERS ONLY (palette, modal, tooltip) */
-.glass {
-  background: color-mix(in srgb, var(--color-raised) 60%, transparent);
-  backdrop-filter: blur(22px) saturate(1.3);
-  -webkit-backdrop-filter: blur(22px) saturate(1.3);
-  border: 1px solid var(--color-line-strong);
-  box-shadow: 0 24px 70px -20px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+/* ── Full-bleed pastel section blocks ──────────────────────────────────────
+   Each keeps its own grid tint, matching the printed-paper motif. */
+/* overflow-x: clip (not hidden) contains the sunburst's negative inset without
+   creating a scroll container that would break position: sticky elsewhere. */
+.sec {
+  position: relative;
+  z-index: 1;
+  overflow-x: clip;
+  background-size: 24px 24px, 24px 24px, auto;
+}
+.sec-cream {
+  background-image:
+    linear-gradient(90deg, rgba(120,100,80,0.10) 1px, transparent 0),
+    linear-gradient(rgba(120,100,80,0.10) 1px, transparent 0);
+  background-color: var(--color-canvas);
+}
+.sec-peach {
+  background-image:
+    linear-gradient(90deg, rgba(180,60,30,0.18) 1px, transparent 0),
+    linear-gradient(rgba(180,60,30,0.18) 1px, transparent 0);
+  background-color: var(--color-peach);
+}
+.sec-butter {
+  background-image:
+    linear-gradient(90deg, rgba(160,120,20,0.18) 1px, transparent 0),
+    linear-gradient(rgba(160,120,20,0.18) 1px, transparent 0);
+  background-color: var(--color-butter);
+}
+/* Deliberately a step more saturated than --color-lilac (the page surround), so
+   the sheet's ruled edge stays legible where a lavender section meets it. */
+.sec-lilac {
+  background-image:
+    linear-gradient(90deg, rgba(90,70,160,0.20) 1px, transparent 0),
+    linear-gradient(rgba(90,70,160,0.20) 1px, transparent 0);
+  background-color: #c4a1ff;
+}
+.sec-mint {
+  background-image:
+    linear-gradient(90deg, rgba(100,140,20,0.18) 1px, transparent 0),
+    linear-gradient(rgba(100,140,20,0.18) 1px, transparent 0);
+  background-color: var(--color-mint);
 }
 
-/* Grid-framed SOLID panel - base content cards (never glass). Cyan corner ticks. */
+/* ── Neo-brutalist surfaces ────────────────────────────────────────────────
+   .glass keeps its name (floating layers reference it) but is now an opaque
+   card — a blurred translucent panel reads as a bug on printed paper.
+
+   Declared in @layer components so a `bg-*` utility on the same element still
+   wins (Tailwind orders components before utilities). Outside a layer these
+   rules would tie on specificity and beat the utility on source order, which
+   silently flattened every pastel card fill to panel white. */
+@layer components {
+  .glass,
+  .brut {
+    background: var(--color-panel);
+    border: 2px solid var(--color-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-hard-lg);
+  }
+}
+
+/* The printed sheet: content sits on a centered page with the ruled edge
+   visible, floating on a flat pastel surround. */
+.sheet {
+  width: 100%;
+  max-width: 1320px;
+  margin-inline: auto;
+  border-inline: 2px solid var(--color-border);
+}
+@media (max-width: 1360px) {
+  .sheet { border-inline: 0; }
+}
+
+/* Corner ticks on framed panels — carried over, re-inked. */
 .panel-frame { position: relative; }
 .panel-frame::before, .panel-frame::after {
   content: '';
@@ -109,24 +223,25 @@ body::before {
   height: 9px;
   pointer-events: none;
   border-color: var(--color-accent);
-  opacity: 0.4;
+  opacity: 0.55;
 }
-.panel-frame::before { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
-.panel-frame::after { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
+.panel-frame::before { top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid; }
+.panel-frame::after { bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid; }
 
-/* Glow utilities - reserved for earned moments */
-.glow-cyan {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-cyan) 40%, transparent),
-    0 0 18px -2px color-mix(in srgb, var(--color-cyan) 55%, transparent);
-}
-.glow-crimson {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-crimson) 45%, transparent),
-    0 0 22px -2px color-mix(in srgb, var(--color-crimson) 60%, transparent);
-}
-.text-glow-cyan { text-shadow: 0 0 14px color-mix(in srgb, var(--color-cyan) 60%, transparent); }
-.text-glow-crimson { text-shadow: 0 0 16px color-mix(in srgb, var(--color-crimson) 70%, transparent); }
+/* Mechanical press: travel equals the shadow offset, so the card physically
+   lands on the page instead of floating. */
+.press { transition: transform 120ms var(--ease-hud), box-shadow 120ms var(--ease-hud); }
+.press:hover { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--color-border); }
+.press:active { transform: translate(4px, 4px); box-shadow: 0 0 0 var(--color-border); }
 
-/* Cursor-following spotlight (cards set --mx/--my in JS) */
+/* Glow utilities kept by NAME (6 files reference them) — on paper a glow is
+   wrong, so they resolve to the hard offset shadow instead. */
+.glow-cyan { box-shadow: var(--shadow-hard-lg); }
+.glow-crimson { box-shadow: 4px 4px 0 var(--color-crit); }
+.text-glow-cyan { text-shadow: none; }
+.text-glow-crimson { text-shadow: none; }
+
+/* Cursor spotlight — a faint warm wash, not a neon bloom. */
 .spotlight { position: relative; }
 .spotlight::before {
   content: '';
@@ -136,22 +251,39 @@ body::before {
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.3s;
-  background: radial-gradient(300px circle at calc(var(--mx, 0.5) * 100%) calc(var(--my, 0.5) * 100%),
-    color-mix(in srgb, var(--color-cyan) 16%, transparent), transparent 60%);
+  background: radial-gradient(320px circle at calc(var(--mx, 0.5) * 100%) calc(var(--my, 0.5) * 100%),
+    rgba(193, 240, 76, 0.28), transparent 65%);
 }
 .spotlight:hover::before { opacity: 1; }
 
 :focus-visible {
-  outline: 1px solid var(--color-cyan);
+  outline: 2px solid var(--color-ink);
   outline-offset: 2px;
-  box-shadow: 0 0 14px -2px color-mix(in srgb, var(--color-cyan) 50%, transparent);
+  box-shadow: none;
 }
 
-* { scrollbar-width: thin; scrollbar-color: rgba(38, 224, 245, 0.18) transparent; }
-*::-webkit-scrollbar { width: 9px; height: 9px; }
-*::-webkit-scrollbar-thumb { background: rgba(38, 224, 245, 0.16); border-radius: 2px; }
+* { scrollbar-width: thin; scrollbar-color: rgba(10, 10, 10, 0.3) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: rgba(10, 10, 10, 0.28); border-radius: 2px; }
 
-/* ── Animations. Old onus-* names kept (screens reference them) + new b-* ───── */
+/* Keyboard-key glyph chip. */
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.9rem;
+  padding: 0.15rem 0.45rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-ink);
+  background: var(--color-panel);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  box-shadow: var(--shadow-hard);
+}
+
+/* ── Animations. Names preserved — screens reference them by class. ───────── */
 @keyframes onus-fade-up { from { opacity: 0; transform: translateY(10px);} to { opacity: 1; transform: none;} }
 .onus-fade-up { animation: onus-fade-up 0.5s var(--ease-hud) both; }
 
@@ -161,50 +293,45 @@ body::before {
 @keyframes onus-spin { to { transform: rotate(360deg);} }
 .onus-spin { animation: onus-spin 0.8s linear infinite; }
 
-/* running-state pulse ring (cyan) */
 @keyframes onus-pulse-ring { 0%{transform:scale(0.85);opacity:0.6;} 70%{transform:scale(1.9);opacity:0;} 100%{opacity:0;} }
 
-/* Critical breathing crimson aura (louder than restrained direction) */
+/* Critical alarm — an ink-and-crimson double-stroke rather than a neon aura. */
 @keyframes onus-critical-pulse {
-  0%,100% { box-shadow: 0 0 0 0 rgba(255,45,74,0), 0 0 8px -3px rgba(255,45,74,0.4); }
-  50% { box-shadow: 0 0 0 3px rgba(255,45,74,0.18), 0 0 30px -2px rgba(255,45,74,0.6); }
+  0%,100% { box-shadow: 4px 4px 0 var(--color-crit); }
+  50% { box-shadow: 4px 4px 0 var(--color-crit), 0 0 0 3px rgba(179,32,15,0.28); }
 }
 .onus-critical-pulse { animation: onus-critical-pulse 2.6s ease-in-out infinite; }
 .b-breathe-danger { animation: onus-critical-pulse 2.6s ease-in-out infinite; }
 
-/* in-progress shimmer (cyan) */
 @keyframes onus-shimmer { from { transform: translateX(-100%);} to { transform: translateX(300%);} }
 .onus-shimmer::after {
   content: ''; position: absolute; inset: 0; width: 40%;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb,var(--color-cyan) 50%,transparent), transparent);
+  background: linear-gradient(90deg, transparent, rgba(193,240,76,0.75), transparent);
   animation: onus-shimmer 1.8s ease-in-out infinite;
 }
 
-/* slow idle breathe */
 @keyframes onus-breathe { 0%,100%{opacity:1;} 50%{opacity:0.72;} }
 .onus-breathe { animation: onus-breathe 6s ease-in-out infinite; }
 
-/* rail entrance */
 @keyframes onus-rail-in { from{opacity:0;transform:translateX(-14px);} to{opacity:1;transform:none;} }
 .onus-rail-in { animation: onus-rail-in 0.55s var(--ease-hud) both; }
 
-/* RADAR SWEEP - running-state signature (only here) */
+/* Running-state sweep — lime on paper. */
 @keyframes b-radar { to { transform: rotate(360deg);} }
 .b-radar { position: relative; }
 .b-radar::after {
   content: ''; position: absolute; inset: 0; border-radius: inherit;
-  background: conic-gradient(from 0deg, color-mix(in srgb,var(--color-cyan) 65%,transparent), transparent 50%);
+  background: conic-gradient(from 0deg, var(--color-lime), transparent 50%);
   mask: radial-gradient(circle, transparent 34%, #000 37%);
   -webkit-mask: radial-gradient(circle, transparent 34%, #000 37%);
   animation: b-radar 1.4s linear infinite;
 }
 
-/* TRAVELING pipeline light-pulse */
 @keyframes b-travel { from{transform:translateX(-120%);} to{transform:translateX(340%);} }
 .b-travel { position: relative; overflow: hidden; }
 .b-travel::after {
   content: ''; position: absolute; inset: 0; width: 30%;
-  background: linear-gradient(90deg, transparent, var(--color-cyan), transparent);
+  background: linear-gradient(90deg, transparent, var(--color-lime-deep), transparent);
   animation: b-travel 1.5s ease-in-out infinite;
 }
 
@@ -216,39 +343,74 @@ body::before {
   }
   .onus-fade-up { opacity: 1 !important; transform: none !important; }
 
-  /* Deliberate exception: the Critical/high-risk DANGER aura keeps pulsating
-     even under reduced-motion. It animates box-shadow/glow ONLY - no transform,
-     no position/size change - so it doesn't trigger vestibular discomfort the
-     way the radar sweep / traveling pulse / shimmer (all transform-based) would.
-     A danger signal that goes completely static loses its "alive/alert" read;
-     a slow glow breathe restores it safely. */
+  /* Deliberate exception, carried over: the Critical danger cue keeps beating.
+     It animates box-shadow only — no transform, no size change — so it can't
+     trigger vestibular discomfort the way the sweep/travel/shimmer would. */
   .onus-critical-pulse, .b-breathe-danger {
     animation-duration: 3.2s !important;
     animation-iteration-count: infinite !important;
   }
 }
 
-/* ═══ Hosted auth surface (private frontend) ═══════════════════════════════ */
+/* ═══ Auth surface ════════════════════════════════════════════════════════ */
 .onus-auth-input {
-  background: rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--color-panel);
+  border: 2px solid var(--color-border);
 }
 .onus-auth-input:focus {
-  border-color: #00f0ff;
-  box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.3), 0 0 12px -2px rgba(0, 240, 255, 0.25);
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-hard);
 }
-.onus-auth-cta {
-  background: linear-gradient(180deg, rgba(0, 240, 255, 0.16), rgba(0, 240, 255, 0.08));
-  border: 1px solid rgba(0, 240, 255, 0.4);
-  color: #00f0ff;
+.onus-auth-cta,
+.onus-auth-btn {
+  background: var(--color-lime);
+  border: 2px solid var(--color-border);
+  color: var(--color-ink);
+  font-weight: 700;
+  box-shadow: var(--shadow-hard);
+  transition: transform 120ms var(--ease-hud), box-shadow 120ms var(--ease-hud);
 }
-.onus-auth-cta:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(0, 240, 255, 0.24), rgba(0, 240, 255, 0.12));
-  box-shadow: 0 0 18px -4px rgba(0, 240, 255, 0.4);
+.onus-auth-cta:hover:not(:disabled),
+.onus-auth-btn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--color-border);
 }
-.onus-caret {
-  animation: onus-blink 1s step-end infinite;
+.onus-auth-btn:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: none; }
+
+.onus-caret { animation: onus-blink 1s step-end infinite; }
+@keyframes onus-blink { 50% { opacity: 0; } }
+
+@media (pointer: fine) {
+  .onus-cursor-none, .onus-cursor-none * { cursor: none !important; }
 }
-@keyframes onus-blink {
-  50% { opacity: 0; }
+
+.onus-ibeam {
+  width: 2px;
+  height: 18px;
+  border-radius: 1px;
+  animation: onus-ibeam-pulse 1s ease-in-out infinite;
 }
+@keyframes onus-ibeam-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* OAuth provider buttons — paper-native, not third-party brand styles. */
+.onus-oauth-btn {
+  background: var(--color-panel);
+  border: 2px solid var(--color-border);
+  color: var(--color-ink);
+  box-shadow: var(--shadow-hard);
+  transition: transform 120ms var(--ease-hud), box-shadow 120ms var(--ease-hud);
+}
+.onus-oauth-btn:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--color-border);
+}
+
+/* Decorative plate drift. Slow, tiny, and transform-only so it stays on the
+   compositor. The global prefers-reduced-motion block above still neutralises
+   it - decorative motion should never be the thing that makes a working page
+   uncomfortable to read. */
+@keyframes onus-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(var(--rot, 0deg)); }
+  50%      { transform: translate3d(0, -14px, 0) rotate(calc(var(--rot, 0deg) + 1.2deg)); }
+}
+.plate-drift { animation: onus-drift 13s ease-in-out infinite; will-change: transform; }

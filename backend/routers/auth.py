@@ -202,12 +202,16 @@ def me(request: Request, db: Session = Depends(get_db)):
 # ── OAuth (Google / GitHub) ──────────────────────────────────────────────────
 @router.get("/providers")
 def auth_providers():
-    """Which login methods the frontend should render. Password is always
-    available; OAuth providers appear only when configured AND REQUIRE_AUTH is
-    on (self-hosted gets password only)."""
+    """Which login methods the frontend should render, and whether this instance
+    is hosted at all.
+
+    `require_auth` is the frontend's only reliable hosted/self-hosted signal:
+    google/github being false is ambiguous, since a hosted instance with no
+    OAuth app configured reports exactly the same thing. The frontend uses it to
+    decide whether to guard routes and whether to offer the scan-mode toggle."""
     if not settings.REQUIRE_AUTH:
-        return {"password": True, "google": False, "github": False}
-    return {"password": True, **oauth.enabled_providers()}
+        return {"password": True, "google": False, "github": False, "require_auth": False}
+    return {"password": True, **oauth.enabled_providers(), "require_auth": True}
 
 
 def _callback_uri(provider: str) -> str:
@@ -244,6 +248,9 @@ def oauth_callback(provider: str, request: Request, db: Session = Depends(get_db
         return RedirectResponse(f"{front}/sign-in?error=oauth", status_code=303)
 
     token = security.create_session(user.id)
-    redirect = RedirectResponse(f"{front}/", status_code=303)
+    # '/' used to be the scan form; it is now the public marketing landing, so
+    # sending OAuth users there dropped them on marketing instead of the app.
+    # Matches the password path, which resolves to /scan/new via nextTarget().
+    redirect = RedirectResponse(f"{front}/scan/new", status_code=303)
     _set_session_cookie(redirect, token)
     return redirect

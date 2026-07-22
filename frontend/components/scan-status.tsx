@@ -15,8 +15,10 @@ import {
   type ScanStatusResponse,
 } from '@/lib/api'
 import { cn, formatElapsed } from '@/lib/format'
+import { trackEvent } from '@/lib/analytics'
 import { DecisionModal } from './decision-modal'
 import { MarkNotFound, ModuleIcon, Panel, ProgressBar, SchematicCorners, StatusPill, Tooltip } from './ui'
+import { Plate } from './decor'
 
 const TERMINAL = ['complete', 'failed', 'cancelled']
 const FLOW = ['Scan', 'Aggregate', 'Verify', 'AI Analysis', 'Report']
@@ -80,6 +82,9 @@ export function ScanStatus({ jobId }: { jobId: string }) {
   useEffect(() => {
     if (status?.status === 'complete' && !redirectRef.current) {
       redirectRef.current = true
+      // Anonymous completion signal — no domain/results. Guarded by redirectRef
+      // so it fires exactly once per scan, not on every poll.
+      trackEvent('scan_completed')
       const t = setTimeout(() => router.push(`/scan/${jobId}/report`), 1500)
       return () => clearTimeout(t)
     }
@@ -125,6 +130,15 @@ export function ScanStatus({ jobId }: { jobId: string }) {
     scanStatus === 'awaiting_user_decision' && status?.module_errors
 
   return (
+    <div className="relative w-full overflow-x-clip">
+      {/* Waiting and measurement - the page's entire subject. Margins only,
+          well clear of the module list and the progress stepper. */}
+      <Plate src="pressure-gauge" rotate={-7} opacity={0.22} delay={0}
+        className="left-[2%] top-[26%] hidden h-[400px] w-[400px] 2xl:block" />
+      <Plate src="hourglass" rotate={6} opacity={0.24} delay={3}
+        className="right-[2%] top-[14%] hidden h-[340px] w-[340px] 2xl:block" />
+      <Plate src="telegraph-key" rotate={-5} opacity={0.22} delay={6.5}
+        className="bottom-[10%] right-[5%] hidden h-[330px] w-[330px] 2xl:block" />
     <div className="mx-auto w-full max-w-[860px] px-6 py-12">
       {/* Header */}
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4 onus-fade-up">
@@ -144,6 +158,23 @@ export function ScanStatus({ jobId }: { jobId: string }) {
           <StatusPill status={scanStatus} />
         </div>
       </div>
+
+      {/* Queued-for-capacity banner (hosted queue). Reassures the user the scan
+          was accepted and will start on its own - never a "try again" dead end. */}
+      {status?.waiting_for_capacity && (
+        <div
+          className="mb-8 flex items-center gap-3 rounded-[4px] border border-accent/30 bg-accent/[0.06] px-4 py-3 onus-fade-up"
+          role="status"
+        >
+          <CircleDashed className="h-4 w-4 shrink-0 text-accent" strokeWidth={1.8} />
+          <p className="text-[12.5px] text-ink-dim">
+            {status.queue_position
+              ? <>Queued: <span className="font-medium text-ink">#{status.queue_position} in line</span>.{' '}</>
+              : <>Queued.{' '}</>}
+            This scan was accepted and will start automatically as soon as a slot frees up. No action needed. This page updates live.
+          </p>
+        </div>
+      )}
 
       {/* Progress */}
       <div className="mb-8 onus-fade-up" style={{ animationDelay: '40ms' }}>
@@ -203,7 +234,7 @@ export function ScanStatus({ jobId }: { jobId: string }) {
             <X className="h-5 w-5 text-crit" strokeWidth={2} />
             The scan failed and cannot continue.
           </span>
-          <Link href="/" className="rounded-md bg-accent px-3.5 py-2 text-[12.5px] font-semibold text-white hover:bg-accent/90">
+          <Link href="/scan/new" className="rounded-md bg-accent px-3.5 py-2 text-[12.5px] font-semibold text-white hover:bg-accent/90">
             Start a new scan
           </Link>
         </Panel>
@@ -214,7 +245,7 @@ export function ScanStatus({ jobId }: { jobId: string }) {
             <CircleDashed className="h-5 w-5 text-ink-faint" strokeWidth={1.7} />
             This scan was cancelled.
           </span>
-          <Link href="/" className="rounded-md border border-line-strong px-3.5 py-2 text-[12.5px] font-medium text-ink hover:bg-white/[0.03]">
+          <Link href="/scan/new" className="rounded-md border border-line-strong px-3.5 py-2 text-[12.5px] font-medium text-ink hover:bg-white/[0.03]">
             Start a new scan
           </Link>
         </Panel>
@@ -258,6 +289,7 @@ export function ScanStatus({ jobId }: { jobId: string }) {
         />
       )}
     </div>
+    </div>
   )
 }
 
@@ -295,7 +327,7 @@ function CenterCard({ icon, title, body }: { icon: React.ReactNode; title: strin
       <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg border border-line bg-panel">{icon}</div>
       <h1 className="text-[19px] font-semibold text-ink">{title}</h1>
       <p className="mt-2 text-[13.5px] leading-relaxed text-ink-dim">{body}</p>
-      <Link href="/" className="mt-6 rounded-md bg-accent px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-accent/90">
+      <Link href="/scan/new" className="mt-6 rounded-md bg-accent px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-accent/90">
         Start a new scan
       </Link>
     </div>

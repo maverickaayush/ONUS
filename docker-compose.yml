@@ -98,6 +98,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       OLLAMA_URL: http://host.docker.internal:11434
       ZAP_URL: http://zap:8090
+      # The worker runs validate_startup_security() via tasks/celery_app.py, the
+      # same guard the API runs. Without SECRET_KEY here it saw the placeholder
+      # default and refused to start whenever REQUIRE_AUTH=true - a crash loop
+      # in which no scan ever leaves the queue, because nothing consumes it.
+      SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
       # Same host dir the zap service writes session data to (below) - lets
       # _finalize() prune a completed scan's session files. Read-write since
       # pruning deletes files; matches config.py's ZAP_SESSIONS_DIR default.

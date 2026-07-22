@@ -13,13 +13,20 @@ import {
 } from 'lucide-react'
 import {
   ApiError,
+  getAuthProviders,
   getScanModules,
   submitScan,
+  targetAuthorizationRequired,
   type AuthConfigWire,
+  type ScanMode,
   type ScanModuleInfo,
 } from '@/lib/api'
 import { cn } from '@/lib/format'
+import { trackEvent } from '@/lib/analytics'
 import { MagneticButton, ModuleIcon, Panel, Spinner } from './ui'
+import { TargetClearance } from './target-clearance'
+import { HostingNotice } from './hosting-notice'
+import { Plate } from './decor'
 
 const DOMAIN_RE =
   /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/
@@ -39,8 +46,31 @@ function isPublicIpv4(v: string): boolean {
   return true
 }
 
+// Hostnames that resolve to the local machine or a private network. DOMAIN_RE
+// alone accepted these (`foo.localhost` matched: labels + an alphabetic TLD), so
+// the request was dispatched and only the backend refused it. The product claims
+// private ranges are refused BEFORE a job is queued, so the client must hold the
+// same line rather than leaving it to the server.
+const BLOCKED_HOSTNAMES = ['localhost']
+const BLOCKED_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa']
+
+function isBlockedHostname(v: string): boolean {
+  const h = v.toLowerCase().replace(/\.$/, '') // tolerate a trailing FQDN dot
+  return BLOCKED_HOSTNAMES.includes(h) || BLOCKED_SUFFIXES.some((sfx) => h.endsWith(sfx))
+}
+
+// IPv6 loopback (::1), unspecified (::), link-local (fe80::/10) and unique-local
+// (fc00::/7). Bare IPv6 is not an accepted target today; this is a guard against
+// it ever becoming one silently.
+function isBlockedIpv6(v: string): boolean {
+  const h = v.toLowerCase().replace(/^\[|\]$/g, '')
+  if (!h.includes(':')) return false
+  return h === '::1' || h === '::' || h.startsWith('fe80:') || /^f[cd][0-9a-f]{2}:/.test(h)
+}
+
 function isValidTarget(v: string): boolean {
   const t = v.trim()
+  if (!t || isBlockedHostname(t) || isBlockedIpv6(t)) return false
   return DOMAIN_RE.test(t) || isPublicIpv4(t)
 }
 
@@ -53,6 +83,20 @@ export function NewScan() {
   const [authorized, setAuthorized] = useState(false)
   const [loading, setLoading] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // Scan mode + pending target-authorization overlay (hosted). Default 'full'
+  // preserves the classic behavior; the backend gates active scans regardless.
+  // Quick is the default: it is passive, finishes in minutes, and completes
+  // unattended. Full runs the active modules and can park at an operator
+  // decision if one times out, which is a poor first experience for someone
+  // who just cloned the repo. Full stays one click away.
+  // Product decision: the mode toggle is a HOSTED-only affordance. Self-hosted
+  // is full-scan only - that operator owns the target and wants the complete
+  // assessment - so no toggle renders and 'full' is submitted explicitly rather
+  // than relying on the backend default, which must not be able to change this
+  // behaviour silently.
+  const [hosted, setHosted] = useState<boolean | null>(null)
+  const [scanMode, setScanMode] = useState<ScanMode>('full')
+  const [clearanceTarget, setClearanceTarget] = useState<string | null>(null)
 
   const [authOpen, setAuthOpen] = useState(false)
   const [loginType, setLoginType] = useState<LoginType>('auto')
@@ -70,6 +114,13 @@ export function NewScan() {
     getScanModules()
       .then(setModules)
       .catch(() => setModules([]))
+    getAuthProviders()
+      .then((p) => {
+        setHosted(p.require_auth)
+        // Self-hosted never offers a choice; pin the request to full.
+        if (!p.require_auth) setScanMode('full')
+      })
+      .catch(() => setHosted(false))
   }, [])
 
   const domainTouched = domain.trim().length > 0
@@ -102,11 +153,21 @@ export function NewScan() {
       const res = await submitScan({
         domain: domain.trim(),
         authorized: true,
+        mode: scanMode,
         ...(auth ? { auth } : {}),
       })
+      // Anonymous: only the mode (enum), never the domain/target.
+      trackEvent('scan_started', { scan_mode: scanMode })
       router.push(`/scan/${res.job_id}/status`)
     } catch (err) {
       setLoading(false)
+      // FULL scan on an unverified target: open target authorization; the scan
+      // is retried (and re-checked by the backend) after ownership is proven.
+      const authReq = targetAuthorizationRequired(err)
+      if (authReq) {
+        setClearanceTarget(authReq.target)
+        return
+      }
       if (err instanceof ApiError) {
         // Defensive: backend returns 202 (not 409) for duplicates today, but
         // preserve the branch that redirects on a 409 carrying a job_id.
@@ -131,7 +192,18 @@ export function NewScan() {
     }
   }
 
+  // Decor lives in the wrapper's side margins, outside the 640px form column,
+  // and is gated to 2xl so it only appears where there is genuine empty space.
   return (
+    <div className="relative w-full overflow-x-clip">
+      {/* Survey and inspection instruments - the page's own subject. Side
+          margins only, clear of the 640px form column. */}
+      <Plate src="magnifier-blueprint" rotate={5} opacity={0.24} delay={0}
+        className="right-[2%] top-[40%] hidden h-[440px] w-[440px] -translate-y-1/2 2xl:block" />
+      <Plate src="theodolite" rotate={-7} opacity={0.24} delay={3}
+        className="left-[2%] top-[16%] hidden h-[360px] w-[360px] 2xl:block" />
+      <Plate src="compass-dividers" rotate={6} opacity={0.22} delay={6}
+        className="bottom-[8%] left-[5%] hidden h-[320px] w-[320px] 2xl:block" />
     <div className="mx-auto flex min-h-screen w-full max-w-[640px] flex-col justify-center px-6 py-20">
       <header className="mb-8 flex flex-col items-center text-center onus-fade-up">
         <TargetReticle locked={domainValid} />
@@ -191,6 +263,37 @@ export function NewScan() {
               ? 'Enter a domain (example.com) or a public IPv4 address.'
               : 'Enter the exact host you are authorized to scan.'}
           </p>
+
+          {/* Scan mode - hosted only. Rendered once we know which tier we are;
+              self-hosted shows nothing here and submits mode='full'. */}
+          {hosted === true && (
+          <div className="mb-4 mt-1 grid grid-cols-2 gap-2.5">
+            {([
+              ['quick', 'Quick Assessment', 'Fast passive assessment, usually done in a few minutes. No target verification required.'],
+              ['full', 'Full VAPT Scan', 'Complete active assessment. Typically ~30 minutes and may pause for a decision. Target authorization required.'],
+            ] as const).map(([m, title, desc]) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => {
+                  setScanMode(m)
+                  trackEvent(m === 'quick' ? 'quick_scan_selected' : 'full_scan_selected')
+                }}
+                className={cn(
+                  'rounded-md border px-3.5 py-3 text-left transition-colors',
+                  scanMode === m
+                    ? 'border-accent/60 bg-accent/[0.06]'
+                    : 'border-line hover:border-line-strong',
+                )}
+              >
+                <div className={cn('text-[12px] font-semibold', scanMode === m ? 'text-accent' : 'text-ink')}>
+                  {title}
+                </div>
+                <div className="mt-1 text-[10.5px] leading-snug text-ink-faint">{desc}</div>
+              </button>
+            ))}
+          </div>
+          )}
 
           {/* Authorization - the one amber (legal/policy) affordance */}
           <label
@@ -334,31 +437,7 @@ export function NewScan() {
             )}
           </MagneticButton>
 
-          {/* Hosting notice - plain fine print, matching the domain hint above
-              (same muted color/size, no box/border/icon). Two plain links, both
-              to the repo. Deliberately no scan number, ever. */}
-          <p className="mt-3.5 text-[11px] leading-relaxed text-ink-faint">
-            This tool is{' '}
-            <a
-              href="https://github.com/maverickaayush/ONUS"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent hover:underline"
-            >
-              open source
-            </a>{' '}
-            - github.com/maverickaayush/ONUS. Hosted scans are limited to keep this free to use. For
-            unlimited use,{' '}
-            <a
-              href="https://github.com/maverickaayush/ONUS"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent hover:underline"
-            >
-              support the repo
-            </a>{' '}
-            or run it locally.
-          </p>
+          <HostingNotice />
         </form>
       </Panel>
 
@@ -410,6 +489,32 @@ export function NewScan() {
           </div>
         </div>
       )}
+
+      {clearanceTarget && (
+        <TargetClearance
+          target={clearanceTarget}
+          onClose={() => setClearanceTarget(null)}
+          onVerified={async () => {
+            const t = clearanceTarget
+            setClearanceTarget(null)
+            if (!t) return
+            setSubmitError(null)
+            setLoading(true)
+            try {
+              // Backend re-checks ownership; the frontend belief isn't trusted.
+              const res = await submitScan({ domain: t, authorized: true, mode: 'full' })
+              // The scan actually starts here (the first attempt threw before
+              // starting); a full scan always follows the clearance flow.
+              trackEvent('scan_started', { scan_mode: 'full' })
+              router.push(`/scan/${res.job_id}/status`)
+            } catch (err) {
+              setLoading(false)
+              setSubmitError(err instanceof ApiError ? err.message : 'Scan failed to start.')
+            }
+          }}
+        />
+      )}
+    </div>
     </div>
   )
 }

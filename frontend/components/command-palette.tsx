@@ -20,7 +20,7 @@ const STATIC_ACTIONS: Action[] = [
     label: 'New Scan',
     hint: 'Start a new assessment',
     icon: FilePlus2,
-    run: (r) => r.push('/'),
+    run: (r) => r.push('/scan/new'),
   },
   {
     id: 'scans',

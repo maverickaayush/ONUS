@@ -13,6 +13,7 @@ import {
 } from '@/lib/api'
 import { cn, formatDateTime } from '@/lib/format'
 import { Panel, ProgressBar, StatusPill } from './ui'
+import { Plate } from './decor'
 
 const PAGE_SIZE = 20
 const POLL_MS = 12000
@@ -152,6 +153,15 @@ export function ScansList() {
   )
 
   return (
+    <div className="relative w-full overflow-x-clip">
+      {/* Filing and record-keeping. Right/left margins only - the table never
+          sits on top of artwork. */}
+      <Plate src="card-catalogue" rotate={-4} opacity={0.2} delay={0}
+        className="right-[1%] top-[6%] hidden h-[400px] w-[400px] 2xl:block" />
+      <Plate src="stacked-ledgers" rotate={5} opacity={0.2} delay={3.5}
+        className="left-[1%] top-[30%] hidden h-[340px] w-[340px] 2xl:block" />
+      <Plate src="index-card" rotate={-8} opacity={0.18} delay={7}
+        className="bottom-[6%] right-[3%] hidden h-[320px] w-[320px] 2xl:block" />
     <div className="mx-auto w-full max-w-[1160px] px-6 py-10">
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4 onus-fade-up">
         <div>
@@ -166,7 +176,7 @@ export function ScansList() {
             <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.7} />
             Refresh
           </button>
-          <Link href="/" className="flex items-center gap-2 rounded-md bg-accent px-3.5 py-2 text-[12.5px] font-semibold text-white hover:bg-accent/90">
+          <Link href="/scan/new" className="flex items-center gap-2 rounded-md bg-accent px-3.5 py-2 text-[12.5px] font-semibold text-white hover:bg-accent/90">
             <Plus className="h-3.5 w-3.5" strokeWidth={2} />
             New Scan
           </Link>
@@ -262,8 +272,18 @@ export function ScansList() {
               )}
               {!loading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-10 text-center text-[13px] text-ink-faint">
-                    No scans match your filters.
+                  <td colSpan={9} className="px-4 py-16 text-center">
+                    <div className="relative mx-auto flex max-w-[380px] flex-col items-center">
+                      <Plate src="card-catalogue" rotate={-7} opacity={0.3}
+                        className="left-1/2 top-[-26px] h-[190px] w-[190px] -translate-x-1/2" />
+                      <p className="relative mt-[140px] text-[15px] font-semibold text-ink">
+                        Nothing here yet
+                      </p>
+                      <p className="relative mt-1.5 text-[13px] leading-relaxed text-ink-dim">
+                        No scans match your filters. Clear them, or start an assessment
+                        and it will appear in this ledger.
+                      </p>
+                    </div>
                   </td>
                 </tr>
               )}
@@ -363,6 +383,7 @@ export function ScansList() {
           </button>
         </div>
       </div>
+    </div>
     </div>
   )
 }

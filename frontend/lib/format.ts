@@ -68,9 +68,9 @@ export function splitRemediation(remediation: unknown): string[] {
 
 // started_at is always UTC-suffixed ISO8601 — parse directly, do not localize.
 export function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return '—'
+  if (!iso) return '-'
   const d = new Date(iso)
-  if (isNaN(d.getTime())) return '—'
+  if (isNaN(d.getTime())) return '-'
   return d.toLocaleString(undefined, {
     year: 'numeric',
     month: 'short',
