@@ -274,13 +274,47 @@ class TestSslTlsModuleStatus:
         with patch('tasks.ssl_tls.update_module_status', side_effect=record), \
              patch('tasks.ssl_tls.shutil.which', side_effect=mock_which), \
              patch('tasks.ssl_tls._https_reachable', return_value=True), \
-             patch('tasks.ssl_tls._run_testssl', return_value=[]), \
+             patch('tasks.ssl_tls._run_testssl', return_value=([], False)), \
              patch('tasks.ssl_tls._cert_expiry_finding', return_value=None):
             from tasks.ssl_tls import run_ssl_tls
             run_ssl_tls.run(TEST_SCAN_ID, TEST_DOMAIN)
 
         assert status_calls[-1] == 'complete', \
             "Partial success (one tool) must still be 'complete'"
+
+    def test_testssl_timeout_marks_partial_and_keeps_findings(self):
+        """testssl timing out must surface as 'partial' (never a clean
+        'success') AND keep whatever partial findings were salvaged - not
+        silently return an empty, clean-looking TLS scan."""
+        status_calls = []
+
+        def record(scan_id, module, status):
+            status_calls.append(status)
+
+        from tasks.base_task import normalize_finding
+        salvaged = [normalize_finding(
+            module='ssl_tls', tool='testssl', type_='testssl_cert_expired',
+            title='Certificate expired', evidence='notAfter in the past',
+            severity='Critical', target=TEST_DOMAIN,
+        )]
+
+        def mock_which(cmd):
+            return '/usr/bin/testssl.sh' if cmd == 'testssl.sh' else None
+
+        with patch('tasks.ssl_tls.update_module_status', side_effect=record), \
+             patch('tasks.ssl_tls.shutil.which', side_effect=mock_which), \
+             patch('tasks.ssl_tls._https_reachable', return_value=True), \
+             patch('tasks.ssl_tls._run_testssl', return_value=(salvaged, True)), \
+             patch('tasks.ssl_tls._cert_expiry_finding', return_value=None):
+            from tasks.ssl_tls import run_ssl_tls
+            result = run_ssl_tls.run(TEST_SCAN_ID, TEST_DOMAIN)
+
+        assert result['status'] == 'partial', \
+            "testssl timeout must mark the module 'partial', not 'success'"
+        assert result['error'] and 'timed out' in result['error']
+        assert len(result['findings']) == 1, \
+            "salvaged partial findings must be kept, not dropped"
+        assert result['findings'][0]['severity'] == 'Critical'
 
 
 class TestSslTlsCertExpiry:
