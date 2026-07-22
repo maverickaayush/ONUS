@@ -25,6 +25,11 @@ from tasks.celery_app import app
 logger = logging.getLogger(__name__)
 MODULE = 'ssl_tls'
 _TESTSSL_TIMEOUT = scaled_timeout(180)
+# On timeout we SIGTERM testssl (not SIGKILL) so its own cleanup finalizes a
+# valid JSON file, then allow this grace window before a hard kill. Without it,
+# subprocess.run's SIGKILL truncates the JSON mid-array -> unparseable -> the
+# whole TLS scan silently yields zero findings (a Critical expired cert included).
+_TESTSSL_GRACE = scaled_timeout(25)
 _SSLSCAN_TIMEOUT = scaled_timeout(60)
 
 # testssl.sh severity → normalized severity (skip INFO/OK - those are passing checks)
@@ -170,49 +175,61 @@ def _cert_expiry_finding(domain: str) -> Optional[dict]:
 # testssl.sh
 # ---------------------------------------------------------------------------
 
-def _run_testssl(scan_id: str, domain: str) -> List[dict]:
+def _run_testssl(scan_id: str, domain: str) -> Tuple[List[dict], bool]:
+    """Run testssl.sh and parse its JSON. Returns (findings, timed_out).
+
+    `timed_out` lets the caller mark the module 'partial' rather than a clean
+    'success', so a scan that ran out of time on a slow target isn't reported
+    as if the TLS surface came back clean.
+    """
     findings = []
+    timed_out = False
     out_path = f'/tmp/ssl_{scan_id}.json'
 
     if not shutil.which('testssl.sh'):
         logger.warning("testssl.sh not found - skipping for scan %s", scan_id)
-        return findings
+        return findings, timed_out
 
+    # Real bug found live: this used to say `--connect-timeout`, a flag that
+    # doesn't exist in this testssl.sh version (it's `--socket-timeout`) - the
+    # bad flag made testssl.sh reject the whole argument list and print its
+    # usage text instead of scanning, exiting in under a second with no
+    # exception raised, so it silently produced zero findings on every scan.
+    argv = [
+        'testssl.sh', '--jsonfile', out_path, '--quiet', '--color', '0',
+        '--warnings', 'off', '--socket-timeout', '30', '--openssl-timeout', '30',
+        domain,
+    ]
+    proc = None
     try:
-        # Real bug found live: this used to say `--connect-timeout`, a flag
-        # that doesn't exist in this testssl.sh version (it's
-        # `--socket-timeout`) - the bad flag made testssl.sh reject the
-        # whole argument list and print its usage text instead of scanning,
-        # exiting in under a second with no exception raised (check=False,
-        # and the returncode was never inspected), so it silently produced
-        # zero findings on every scan ever run.
-        result = subprocess.run(
-            [
-                'testssl.sh',
-                '--jsonfile', out_path,
-                '--quiet',
-                '--color', '0',
-                '--warnings', 'off',
-                '--socket-timeout', '30',
-                '--openssl-timeout', '30',
-                domain,
-            ],
-            timeout=_TESTSSL_TIMEOUT,
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode != 0 and not os.path.exists(out_path):
-            logger.warning("testssl.sh exited %s with no JSON output for scan %s: %s",
-                            result.returncode, scan_id, result.stdout[-500:] if result.stdout else '')
-    except subprocess.TimeoutExpired:
-        logger.warning("testssl.sh timed out (%ss) for scan %s - parsing partial output", _TESTSSL_TIMEOUT, scan_id)
+        # Popen (not subprocess.run) so a timeout can SIGTERM the child and let
+        # testssl close its JSON array cleanly. subprocess.run's SIGKILL leaves
+        # the file truncated mid-array -> JSONDecodeError -> silent zero findings.
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            _, stderr = proc.communicate(timeout=_TESTSSL_TIMEOUT)
+            if proc.returncode != 0 and not os.path.exists(out_path):
+                logger.warning("testssl.sh exited %s with no JSON output for scan %s: %s",
+                                proc.returncode, scan_id, (stderr or b'')[-500:])
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            logger.warning("testssl.sh timed out (%ss) for scan %s - SIGTERM to salvage partial JSON",
+                            _TESTSSL_TIMEOUT, scan_id)
+            proc.terminate()  # SIGTERM: testssl finalizes a valid JSON file
+            try:
+                proc.communicate(timeout=_TESTSSL_GRACE)
+            except subprocess.TimeoutExpired:
+                proc.kill()   # last resort if cleanup itself hangs
+                proc.communicate()
     except SoftTimeLimitExceeded:
+        if proc and proc.poll() is None:
+            proc.kill()       # don't leave the child running when Celery kills us
         raise
     except Exception as e:
         logger.error("testssl.sh failed for scan %s: %s", scan_id, e)
-        return findings
+        return findings, timed_out
     finally:
-        # Parse whatever JSON was written, even if the process was killed.
+        # Parse whatever JSON was written, even if the process was terminated.
         findings = _parse_testssl_json(out_path, domain, scan_id)
         if os.path.exists(out_path):
             try:
@@ -220,7 +237,7 @@ def _run_testssl(scan_id: str, domain: str) -> List[dict]:
             except OSError:
                 pass
 
-    return findings
+    return findings, timed_out
 
 
 def _parse_testssl_json(path: str, domain: str, scan_id: str) -> List[dict]:
@@ -539,8 +556,10 @@ def scan_ssl_tls(scan_id: str, domain: str, auth: dict = None) -> dict:
                 duration_seconds=time.monotonic() - start)
 
         # Run available tools
+        testssl_timed_out = False
         if testssl_avail:
-            findings.extend(_run_testssl(scan_id, domain))
+            testssl_findings, testssl_timed_out = _run_testssl(scan_id, domain)
+            findings.extend(testssl_findings)
         if sslscan_avail:
             findings.extend(_run_sslscan(scan_id, domain))
 
@@ -556,8 +575,14 @@ def scan_ssl_tls(scan_id: str, domain: str, auth: dict = None) -> dict:
             'testssl': get_tool_version('testssl.sh', '--version'),
             'sslscan': get_tool_version('sslscan', '--version'),
         }
-        return build_module_result(MODULE, findings, tool_versions, status='success',
-                                    duration_seconds=time.monotonic() - start)
+        # testssl timing out on a slow target means the TLS surface was only
+        # partially probed - report 'partial' (with whatever it salvaged), never
+        # a clean 'success' that reads as "TLS is fine".
+        status = 'partial' if testssl_timed_out else 'success'
+        error = ('testssl.sh timed out; TLS results may be incomplete'
+                 if testssl_timed_out else None)
+        return build_module_result(MODULE, findings, tool_versions, status=status,
+                                    error=error, duration_seconds=time.monotonic() - start)
 
     except SoftTimeLimitExceeded:
         logger.warning("ssl_tls hit its soft time limit for scan %s", scan_id)
