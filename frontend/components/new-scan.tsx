@@ -199,11 +199,11 @@ export function NewScan() {
       {/* Survey and inspection instruments - the page's own subject. Side
           margins only, clear of the 640px form column. */}
       <Plate src="magnifier-blueprint" rotate={5} opacity={0.24} delay={0}
-        className="right-[2%] top-[40%] hidden h-[440px] w-[440px] -translate-y-1/2 2xl:block" />
+        className="right-[2%] top-[40%] hidden h-[440px] w-[440px] -translate-y-1/2 xl:block" />
       <Plate src="theodolite" rotate={-7} opacity={0.24} delay={3}
-        className="left-[2%] top-[16%] hidden h-[360px] w-[360px] 2xl:block" />
+        className="left-[2%] top-[16%] hidden h-[360px] w-[360px] xl:block" />
       <Plate src="compass-dividers" rotate={6} opacity={0.22} delay={6}
-        className="bottom-[8%] left-[5%] hidden h-[320px] w-[320px] 2xl:block" />
+        className="bottom-[8%] left-[5%] hidden h-[320px] w-[320px] xl:block" />
     <div className="mx-auto flex min-h-screen w-full max-w-[640px] flex-col justify-center px-6 py-20">
       <header className="mb-8 flex flex-col items-center text-center onus-fade-up">
         <TargetReticle locked={domainValid} />
@@ -437,7 +437,10 @@ export function NewScan() {
             )}
           </MagneticButton>
 
-          <HostingNotice />
+          {/* Hosted-tier fine print (limits / support the repo). Self-hosted
+              users already run it locally and have no scan limits, so gate it
+              on the same require_auth flag the mode toggle uses. */}
+          {hosted === true && <HostingNotice />}
         </form>
       </Panel>
 

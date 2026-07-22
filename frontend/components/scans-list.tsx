@@ -157,11 +157,11 @@ export function ScansList() {
       {/* Filing and record-keeping. Right/left margins only - the table never
           sits on top of artwork. */}
       <Plate src="card-catalogue" rotate={-4} opacity={0.2} delay={0}
-        className="right-[1%] top-[6%] hidden h-[400px] w-[400px] 2xl:block" />
+        className="right-[1%] top-[6%] hidden h-[400px] w-[400px] xl:block" />
       <Plate src="stacked-ledgers" rotate={5} opacity={0.2} delay={3.5}
-        className="left-[1%] top-[30%] hidden h-[340px] w-[340px] 2xl:block" />
+        className="left-[1%] top-[30%] hidden h-[340px] w-[340px] xl:block" />
       <Plate src="index-card" rotate={-8} opacity={0.18} delay={7}
-        className="bottom-[6%] right-[3%] hidden h-[320px] w-[320px] 2xl:block" />
+        className="bottom-[6%] right-[3%] hidden h-[320px] w-[320px] xl:block" />
     <div className="mx-auto w-full max-w-[1160px] px-6 py-10">
       <div className="mb-7 flex flex-wrap items-end justify-between gap-4 onus-fade-up">
         <div>
