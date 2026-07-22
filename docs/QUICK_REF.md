@@ -80,7 +80,7 @@ alembic revision --autogenerate -m "description"
 | `backend/routers/` | FastAPI HTTP endpoints (`scan.py`, `report.py`) — validation + DB only, no scanning logic |
 | `backend/models.py` / `schemas.py` | SQLAlchemy ORM (`Scan`, `Report`) / Pydantic request-response schemas |
 | `migrations/` | Alembic migrations — lives at **repo root**, sibling of `backend/` (not inside it) |
-| `frontend/` | Next.js 16 App Router ("Command Center" UI) — `components/` has the page components, `lib/api.ts` has typed fetch helpers |
+| `frontend/` | Next.js 16 App Router ("Printed Field Manual" UI) — `components/` has the page components, `lib/api.ts` has typed fetch helpers |
 
 ---
 

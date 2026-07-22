@@ -74,11 +74,11 @@ export function TerminalShell({ subtitle, verified, children }: {
           beneath, the technique the printed reference uses. Margins only, 2xl,
           and none within reach of the form or the password field. */}
       <Plate src="filing-cabinet" rotate={-6} opacity={0.26} delay={0}
-        className="left-[2%] top-1/2 hidden h-[420px] w-[420px] -translate-y-1/2 2xl:block" />
+        className="left-[2%] top-1/2 hidden h-[420px] w-[420px] -translate-y-1/2 xl:block" />
       <Plate src="old-key" rotate={9} opacity={0.28} delay={2.5}
-        className="right-[3%] top-[12%] hidden h-[300px] w-[300px] 2xl:block" />
+        className="right-[3%] top-[12%] hidden h-[300px] w-[300px] xl:block" />
       <Plate src="rotary-phone" rotate={-4} opacity={0.24} delay={5}
-        className="bottom-[6%] right-[6%] hidden h-[300px] w-[300px] 2xl:block" />
+        className="bottom-[6%] right-[6%] hidden h-[300px] w-[300px] xl:block" />
 
       <div className="relative z-10 w-full max-w-[440px]">
         <EmblemHeader subtitle={subtitle} verified={verified} />

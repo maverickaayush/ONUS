@@ -134,11 +134,11 @@ export function ScanStatus({ jobId }: { jobId: string }) {
       {/* Waiting and measurement - the page's entire subject. Margins only,
           well clear of the module list and the progress stepper. */}
       <Plate src="pressure-gauge" rotate={-7} opacity={0.22} delay={0}
-        className="left-[2%] top-[26%] hidden h-[400px] w-[400px] 2xl:block" />
+        className="left-[2%] top-[26%] hidden h-[400px] w-[400px] xl:block" />
       <Plate src="hourglass" rotate={6} opacity={0.24} delay={3}
-        className="right-[2%] top-[14%] hidden h-[340px] w-[340px] 2xl:block" />
+        className="right-[2%] top-[14%] hidden h-[340px] w-[340px] xl:block" />
       <Plate src="telegraph-key" rotate={-5} opacity={0.22} delay={6.5}
-        className="bottom-[10%] right-[5%] hidden h-[330px] w-[330px] 2xl:block" />
+        className="bottom-[10%] right-[5%] hidden h-[330px] w-[330px] xl:block" />
     <div className="mx-auto w-full max-w-[860px] px-6 py-12">
       {/* Header */}
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4 onus-fade-up">
