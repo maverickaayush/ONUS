@@ -40,21 +40,29 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     setPhase('checking')
     // Self-hosted (REQUIRE_AUTH=false) has no accounts at all: guarding routes
     // there would put a sign-in wall in front of a single-operator local
-    // instance, which is exactly what `docker compose up` must not do.
+    // instance, which is exactly what `docker compose up` must not do. Only in
+    // the hosted tier do we check the session and, if absent, redirect to
+    // sign-in. getMe() must be nested inside the hosted branch: an
+    // unauthenticated getMe() returns null exactly like the self-hosted
+    // short-circuit, so a shared `user === null` guard would swallow the
+    // redirect and strand the visitor on the loading screen.
     getAuthProviders()
       .then((p) => {
-        if (cancelled) return null
+        if (cancelled) return
         if (!p.require_auth) {
           setPhase('authed')
-          return null
+          return
         }
-        return getMe()
-      })
-      .then((user) => {
-        if (cancelled || user === null) return // null = self-hosted short-circuit above
-        if (user) setPhase('authed')
-        // Not authenticated: preserve the intended destination.
-        else router.replace(`/sign-in?next=${encodeURIComponent(pathname)}`)
+        getMe()
+          .then((user) => {
+            if (cancelled) return
+            if (user) setPhase('authed')
+            // Not authenticated: preserve the intended destination.
+            else router.replace(`/sign-in?next=${encodeURIComponent(pathname)}`)
+          })
+          .catch(() => {
+            if (!cancelled) setPhase('error')
+          })
       })
       .catch(() => {
         // Network / server failure - show an error, do NOT redirect (a redirect
