@@ -49,6 +49,15 @@ _REDIRECT_CODES = {301, 302, 303, 307, 308}
 _MAX_REDIRECTS = 5
 
 
+def _pin_sort_key(ip_str: str):
+    """IPv4 before IPv6, then lexical. The connection pin takes the [0] of this
+    ordering; a plain string sort puts most IPv6 addrs ahead of IPv4, so the pin
+    lands on IPv6 and false-fails on IPv4-only networks (same corruption class as
+    the SNI bug). Mirrors routers/verify.py's v4-preference. `.split('%')` drops
+    the zone id link-local IPv6 can carry (fe80::1%eth0) so ip_address won't choke."""
+    return (ipaddress.ip_address(ip_str.split('%')[0]).version, ip_str)
+
+
 class SsrfBlocked(ValueError):
     """Raised when a host resolves to, or redirects into, a non-public address."""
 
@@ -80,7 +89,7 @@ def resolve_public_ips(host: str) -> list[str]:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as e:
         raise SsrfBlocked(f"{host} does not resolve ({e})")
-    ips = sorted({info[4][0] for info in infos})
+    ips = sorted({info[4][0] for info in infos}, key=_pin_sort_key)
     if not ips:
         raise SsrfBlocked(f"{host} does not resolve")
     bad = [ip for ip in ips if _ip_is_disallowed(ip)]
@@ -205,6 +214,10 @@ def _demo() -> None:
         except SsrfBlocked:
             pass
     assert resolve_public_ips("8.8.8.8") == ["8.8.8.8"]
+    # IPv4-preference: the pin (caller takes [0]) must pick IPv4 over IPv6,
+    # which a plain string sort gets wrong ("2606:..." < "93...").
+    mixed = sorted({"2606:2800:220:1::1", "93.184.216.34", "1.1.1.1"}, key=_pin_sort_key)
+    assert mixed[0] == "1.1.1.1", f"IPv4 must pin first, got {mixed}"
     print("net_guard self-check OK")
 
 

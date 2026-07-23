@@ -64,6 +64,20 @@ def test_accepts_all_public():
         assert resolve_public_ips("ok.example") == ["1.1.1.1", "93.184.216.34"]
 
 
+def test_dual_stack_prefers_ipv4():
+    # string sort puts "2606:..." before "93..."; the pin ([0]) must still be
+    # the IPv4 so an IPv4-only network isn't false-failed as "unreachable".
+    with patch("socket.getaddrinfo", return_value=_addrinfo("2606:2800:220:1::1", "93.184.216.34")):
+        assert resolve_public_ips("dual.example")[0] == "93.184.216.34"
+
+
+def test_pin_selects_ipv4_on_dual_stack():
+    ad = _PinnedPoolAdapter()
+    with patch("socket.getaddrinfo", return_value=_addrinfo("2606:2800:220:1::1", "93.184.216.34")):
+        pool = ad.get_connection("https://dual.example/")
+    assert pool.host == "93.184.216.34"           # connection pinned to the v4, not the v6
+
+
 # --- 2. connection-level pin: connect to IP, SNI stays the hostname ----------
 
 def test_pool_connects_to_ip_but_sni_is_hostname():
