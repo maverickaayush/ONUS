@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import settings, validate_startup_security, ensure_secret_key
+from config import settings, validate_startup_security, ensure_secret_key, is_production
 from routers.scan import router as scan_router
 from routers.report import router as report_router
 from routers.verify import router as verify_router
@@ -16,6 +16,8 @@ app = FastAPI(
     title="ONUS VAPT API",
     description="ONUS - Automated Vulnerability Assessment and Penetration Testing",
     version="1.0.0",
+    # L1: no interactive docs / schema disclosure in a production posture.
+    **({"docs_url": None, "redoc_url": None, "openapi_url": None} if is_production() else {}),
 )
 
 app.add_middleware(

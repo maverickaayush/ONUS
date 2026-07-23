@@ -22,6 +22,7 @@ from typing import Optional
 
 import requests
 import urllib3
+import net_guard
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
@@ -47,8 +48,7 @@ def detect_login_type(login_url: str) -> str:
     (it just submits the page's own fields).
     """
     try:
-        resp = requests.get(login_url, timeout=_TIMEOUT, verify=False,
-                            allow_redirects=True)
+        resp = net_guard.guarded_get(login_url, timeout=_TIMEOUT, allow_redirects=True)
     except Exception as e:
         logger.warning("login-type auto-detect GET %s failed, defaulting to "
                         "'form': %s", login_url, e)
@@ -138,7 +138,7 @@ def fetch_json_auth_token(auth: dict) -> Optional[str]:
         auth['password_field']: auth['password'],
     }
     try:
-        resp = requests.post(login_url, json=body, timeout=_TIMEOUT, verify=False)
+        resp = net_guard.guarded_request('post', login_url, json=body, timeout=_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:

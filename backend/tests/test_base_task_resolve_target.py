@@ -10,11 +10,20 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import patch, MagicMock
+import pytest
 import requests
 
 from tasks.base_task import resolve_target_url
 
 DOMAIN = "example.com"
+
+
+@pytest.fixture(autouse=True)
+def _stub_resolution():
+    # resolve_target_url now routes through net_guard (finding H1), which resolves
+    # the host. Keep these unit tests hermetic (no real DNS) by pinning a public IP.
+    with patch("socket.getaddrinfo", return_value=[(0, 0, 0, "", ("93.184.216.34", 0))]):
+        yield
 
 
 def _resp(url):

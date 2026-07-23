@@ -4,6 +4,7 @@ import os
 import shutil
 import socket
 import ssl
+import net_guard
 import subprocess
 import time
 # Parses sslscan's own `--xml` output file (a trusted local binary writing to
@@ -115,11 +116,14 @@ def _classify_testssl(item_id: str, finding_text: str, raw_sev: str):
 # ---------------------------------------------------------------------------
 
 def _https_reachable(domain: str) -> bool:
-    """Return True if port 443 is open and accepts a TCP connection."""
+    """Return True if port 443 is open and accepts a TCP connection.
+    Resolves+validates first and connects to the pinned public IP (finding H1) -
+    a domain that resolves private/loopback/metadata reads as unreachable."""
     try:
-        with socket.create_connection((domain, 443), timeout=10):
+        ip = net_guard.resolve_public_ips(domain)[0]
+        with socket.create_connection((ip, 443), timeout=10):
             return True
-    except OSError:
+    except (OSError, net_guard.SsrfBlocked):
         return False
 
 
@@ -137,7 +141,8 @@ def _cert_expiry_finding(domain: str) -> Optional[dict]:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((domain, 443), timeout=10) as raw:
+        ip = net_guard.resolve_public_ips(domain)[0]  # pin public IP; SsrfBlocked -> outer except -> None
+        with socket.create_connection((ip, 443), timeout=10) as raw:
             with ctx.wrap_socket(raw, server_hostname=domain) as conn:
                 cert = conn.getpeercert()
 

@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple
 
 import requests
 import urllib3
+import net_guard
 from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import (
@@ -78,8 +79,8 @@ def _calibrate_baseline(target: str) -> Optional[dict]:
     """
     def _probe(path: str) -> Optional[Tuple[int, int]]:
         try:
-            resp = requests.get(f'{target}{path}', timeout=_BASELINE_TIMEOUT,
-                                 verify=False, allow_redirects=False)
+            resp = net_guard.guarded_get(f'{target}{path}', timeout=_BASELINE_TIMEOUT,
+                                         allow_redirects=False)
             return (resp.status_code, len(resp.content))
         except requests.RequestException:
             return None
@@ -136,8 +137,8 @@ def _is_admin_path(path: str) -> bool:
 
 def _check_login_form(target: str, path: str) -> bool:
     try:
-        resp = requests.get(f'{target}/{path.lstrip("/")}', timeout=_BASELINE_TIMEOUT,
-                             verify=False, allow_redirects=True)
+        resp = net_guard.guarded_get(f'{target}/{path.lstrip("/")}', timeout=_BASELINE_TIMEOUT,
+                                     allow_redirects=True)
         return bool(_LOGIN_MARKERS.search(resp.text[:5000]))
     except requests.RequestException:
         return False  # can't confirm a login gate - treat conservatively as open

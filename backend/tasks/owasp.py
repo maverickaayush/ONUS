@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from typing import List, Optional
 
 import requests
+import net_guard
 from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import (
@@ -311,7 +312,7 @@ def _make_session(auth: Optional[dict]) -> requests.Session:
         return session
 
     try:
-        login_page = session.get(auth['login_url'], timeout=_TIMEOUT, verify=False)
+        login_page = net_guard.guarded_request('get', auth['login_url'], session=session, timeout=_TIMEOUT)
         extractor = _FormFieldExtractor()
         extractor.feed(login_page.text)
         form_data = dict(extractor.fields)
@@ -350,14 +351,14 @@ def _make_session(auth: Optional[dict]) -> requests.Session:
             # own fix (_strip_query) - params= appends to an existing query
             # string rather than replacing it, so post_url must be
             # query-free before combining it with the full form_data here.
-            resp = session.get(
-                _strip_query(post_url), params=form_data,
-                timeout=_TIMEOUT, verify=False, allow_redirects=True,
+            resp = net_guard.guarded_request(
+                'get', _strip_query(post_url), session=session, params=form_data,
+                timeout=_TIMEOUT, allow_redirects=True,
             )
         else:
-            resp = session.post(
-                post_url, data=form_data,
-                timeout=_TIMEOUT, verify=False, allow_redirects=True,
+            resp = net_guard.guarded_request(
+                'post', post_url, session=session, data=form_data,
+                timeout=_TIMEOUT, allow_redirects=True,
             )
         indicator = auth.get('logged_in_indicator')
         if indicator:
@@ -437,7 +438,7 @@ def _discover_urls(session: requests.Session, target: str, domain: str) -> List[
     while queue and len(discovered) < _MAX_CRAWL_PAGES and time.monotonic() < deadline:
         url = queue.pop(0)
         try:
-            resp = session.get(url, timeout=_CRAWL_PAGE_TIMEOUT, verify=False)
+            resp = net_guard.guarded_request('get', url, session=session, timeout=_CRAWL_PAGE_TIMEOUT)
             if 'text/html' not in resp.headers.get('Content-Type', ''):
                 continue
             parser = _LinkExtractor()
@@ -481,7 +482,7 @@ def test_sqli(session: requests.Session, target: str, domain: str) -> List[dict]
 
     try:
         # Baseline response for boolean comparison
-        baseline = session.get(base_url, params=base_params, **_SESSION_KWARGS)
+        baseline = net_guard.guarded_request('get', base_url, session=session, params=base_params, **_SESSION_KWARGS)
         baseline_len = len(baseline.text)
 
         for param in list(base_params.keys())[:3]:  # limit to first 3 params
@@ -489,7 +490,7 @@ def test_sqli(session: requests.Session, target: str, domain: str) -> List[dict]
                 injected = dict(base_params)
                 injected[param] = payload
                 try:
-                    resp = session.get(base_url, params=injected, **_SESSION_KWARGS)
+                    resp = net_guard.guarded_request('get', base_url, session=session, params=injected, **_SESSION_KWARGS)
                     body = resp.text
 
                     if _SQL_ERROR_RE.search(body):
@@ -545,7 +546,7 @@ def test_xss(session: requests.Session, target: str, domain: str) -> List[dict]:
                 injected = dict(base_params)
                 injected[param] = payload
                 try:
-                    resp = session.get(base_url, params=injected, **_SESSION_KWARGS)
+                    resp = net_guard.guarded_request('get', base_url, session=session, params=injected, **_SESSION_KWARGS)
                     if marker in resp.text and payload in resp.text:
                         findings.append(normalize_finding(
                             module=MODULE, tool='owasp', type_='reflected_xss',
@@ -598,7 +599,7 @@ def test_path_traversal(session: requests.Session, target: str, domain: str) -> 
         for trav in traversals:
             probe_url = f'{parsed.scheme}://{parsed.netloc}{trav}'
             try:
-                resp = session.get(probe_url, **_SESSION_KWARGS)
+                resp = net_guard.guarded_request('get', probe_url, session=session, **_SESSION_KWARGS)
                 if any(ind in resp.text for ind in indicators):
                     findings.append(normalize_finding(
                         module=MODULE, tool='owasp', type_='path_traversal',
@@ -620,7 +621,7 @@ def test_path_traversal(session: requests.Session, target: str, domain: str) -> 
             injected = dict(base_params)
             injected[param] = '../../../../etc/passwd'
             try:
-                resp = session.get(base_url, params=injected, **_SESSION_KWARGS)
+                resp = net_guard.guarded_request('get', base_url, session=session, params=injected, **_SESSION_KWARGS)
                 if any(ind in resp.text for ind in indicators):
                     findings.append(normalize_finding(
                         module=MODULE, tool='owasp', type_='path_traversal',
@@ -656,11 +657,10 @@ def test_open_redirect(session: requests.Session, target: str, domain: str) -> L
     try:
         for param in redirect_params:
             try:
-                resp = session.get(
-                    base_url,
+                resp = net_guard.guarded_request(
+                    'get', base_url, session=session,
                     params={param: external_url},
                     timeout=_TIMEOUT,
-                    verify=False,
                     allow_redirects=False,
                 )
                 if resp.status_code in (301, 302, 303, 307, 308):
@@ -719,8 +719,8 @@ def test_error_disclosure(session: requests.Session, target: str, domain: str) -
     try:
         for params in probes:
             try:
-                resp = session.get(base_url, params=params,
-                                    timeout=_TIMEOUT, verify=False,
+                resp = net_guard.guarded_request('get', base_url, session=session, params=params,
+                                    timeout=_TIMEOUT,
                                     allow_redirects=True)
                 # Real bug found live: requiring status_code==500 excludes
                 # the far more common real-world case - PHP renders a
@@ -793,7 +793,7 @@ def test_idor(session: requests.Session, target: str, domain: str) -> List[dict]
     """
     findings = []
     try:
-        baseline = session.get(target, **_SESSION_KWARGS)
+        baseline = net_guard.guarded_request('get', target, session=session, **_SESSION_KWARGS)
         if baseline.status_code != 200 or len(baseline.text.strip()) < 50:
             return findings
 
@@ -823,7 +823,7 @@ def test_idor(session: requests.Session, target: str, domain: str) -> List[dict]
 
         for candidate_url in candidates[:6]:
             try:
-                resp = session.get(candidate_url, **_SESSION_KWARGS)
+                resp = net_guard.guarded_request('get', candidate_url, session=session, **_SESSION_KWARGS)
                 if (resp.status_code == 200
                         and len(resp.text.strip()) >= 50
                         and resp.text != baseline.text

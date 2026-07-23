@@ -6,6 +6,7 @@ import urllib3
 from typing import List, Tuple
 
 import requests
+import net_guard
 from celery.exceptions import SoftTimeLimitExceeded
 
 from tasks.base_task import BaseTask, normalize_finding, update_module_status, build_module_result
@@ -211,7 +212,7 @@ def _run_headers(scan_id: str, domain: str) -> List[dict]:
     resp = None
     for scheme in ('https', 'http'):
         try:
-            resp = requests.get(f'{scheme}://{domain}', **_REQUEST_KWARGS)
+            resp = net_guard.guarded_get(f'{scheme}://{domain}', **_REQUEST_KWARGS)
             break
         except requests.exceptions.SSLError:
             continue  # try next scheme

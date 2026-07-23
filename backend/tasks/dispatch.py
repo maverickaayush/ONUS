@@ -86,6 +86,15 @@ def dispatch_scan(module: str, scan_id: str, domain: str, quick: bool = False) -
     active WAF probes — the Quick Assessment profile."""
     auth = _get_auth(module, scan_id)
     try:
+        # SSRF gate (finding H1): re-resolve the target at dispatch time and
+        # refuse if it now maps to a private/loopback/link-local/metadata IP.
+        # This is the single choke point every module (local + Modal) routes
+        # through, so it covers the subprocess tools (nmap/nuclei/ffuf/...) that
+        # do their own DNS. requests-based modules additionally pin the IP per
+        # connection (net_guard.guarded_get). A SsrfBlocked here surfaces as a
+        # failed envelope via the except below.
+        from net_guard import assert_public_host
+        assert_public_host(domain)
         if settings.SCANNER_BACKEND == 'modal':
             return _run_modal(module, scan_id, domain, auth, quick)
         if module == 'tech_fingerprint':

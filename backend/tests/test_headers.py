@@ -15,6 +15,23 @@ import json
 from unittest.mock import patch, MagicMock
 import pytest
 
+@pytest.fixture(autouse=True)
+def _bypass_ssrf_pin():
+    # These tests exercise module LOGIC (form parsing, crawling, type detection),
+    # not the SSRF guard - that is covered in test_net_guard.py. Bypass
+    # net_guard's resolve+IP-pin transport so the existing HTTP-layer mocks see
+    # the original URL instead of a pinned-IP rewrite.
+    import net_guard, requests as _rq
+    from unittest.mock import patch as _patch
+    def _pass(method, url, *, session=None, follow=None, max_redirects=5, **kw):
+        kw.setdefault("verify", False)
+        return getattr(session or _rq, method.lower())(url, **kw)
+    with _patch.object(net_guard, "guarded_request", _pass), \
+         _patch.object(net_guard, "assert_public_host", lambda *_a, **_k: None), \
+         _patch.object(net_guard, "guarded_get", lambda url, **kw: _pass("get", url, **kw)):
+        yield
+
+
 REQUIRED_FIELDS = {'module', 'tool', 'type', 'title', 'evidence',
                    'severity', 'cvss', 'target', 'found_by'}
 VALID_SEVERITIES = {'Critical', 'High', 'Medium', 'Low', 'Informational', 'Info'}

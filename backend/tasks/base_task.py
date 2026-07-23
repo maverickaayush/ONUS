@@ -142,12 +142,12 @@ def resolve_target_url(domain: str, timeout: int = 10) -> str:
     rather than the authorized domain, would silently widen scan scope.
     """
     import requests
+    import net_guard
     from urllib.parse import urlsplit
 
     for scheme in ('https', 'http'):
         try:
-            resp = requests.get(f'{scheme}://{domain}', timeout=timeout, verify=False,
-                                 allow_redirects=True)
+            resp = net_guard.guarded_get(f'{scheme}://{domain}', timeout=timeout)
             final_scheme = urlsplit(resp.url).scheme or scheme
             return f'{final_scheme}://{domain}'
         except requests.exceptions.SSLError:
