@@ -11,7 +11,7 @@ requests==2.33.0
 urllib3==2.7.0
 python-whois==0.9.4
 dnspython==2.6.1
-python-owasp-zap-v2.4==0.0.21
+python-owasp-zap-v2.4==0.1.0
 psutil==7.1.0
 validators==0.22.0
 weasyprint>=61.2
