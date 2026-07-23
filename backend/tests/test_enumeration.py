@@ -11,6 +11,22 @@ import json
 from unittest.mock import patch, MagicMock
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _bypass_ssrf_pin():
+    # enumeration's baseline probe now routes through net_guard's SNI-preserving
+    # pinned client; bypass it here so the existing requests.get mocks apply
+    # (SSRF/pin behaviour is covered in test_net_guard.py).
+    import net_guard, requests as _rq
+    from unittest.mock import patch as _patch
+    def _pass(method, url, *, session=None, follow=None, max_redirects=5, **kw):
+        kw.setdefault("verify", False)
+        return getattr(session or _rq, method.lower())(url, **kw)
+    with _patch.object(net_guard, "guarded_request", _pass), \
+         _patch.object(net_guard, "assert_public_host", lambda *_a, **_k: None), \
+         _patch.object(net_guard, "guarded_get", lambda url, **kw: _pass("get", url, **kw)):
+        yield
+
 REQUIRED_FIELDS = {'module', 'tool', 'type', 'title', 'evidence',
                    'severity', 'cvss', 'target', 'found_by'}
 VALID_SEVERITIES = {'Critical', 'High', 'Medium', 'Low', 'Informational', 'Info'}

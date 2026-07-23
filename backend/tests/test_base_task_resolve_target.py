@@ -12,18 +12,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unittest.mock import patch, MagicMock
 import pytest
 import requests
+import net_guard
 
 from tasks.base_task import resolve_target_url
 
 DOMAIN = "example.com"
 
-
-@pytest.fixture(autouse=True)
-def _stub_resolution():
-    # resolve_target_url now routes through net_guard (finding H1), which resolves
-    # the host. Keep these unit tests hermetic (no real DNS) by pinning a public IP.
-    with patch("socket.getaddrinfo", return_value=[(0, 0, 0, "", ("93.184.216.34", 0))]):
-        yield
+# resolve_target_url calls net_guard.guarded_get (the SNI-preserving pinned
+# client), so these mock that seam directly - fully hermetic, no DNS/socket.
 
 
 def _resp(url):
@@ -34,7 +30,7 @@ def _resp(url):
 
 class TestResolveTargetUrl:
     def test_https_succeeds_directly(self):
-        with patch("requests.get", return_value=_resp(f"https://{DOMAIN}/")):
+        with patch("net_guard.guarded_get", return_value=_resp(f"https://{DOMAIN}/")):
             assert resolve_target_url(DOMAIN) == f"https://{DOMAIN}"
 
     def test_https_fails_http_succeeds_no_redirect(self):
@@ -42,7 +38,7 @@ class TestResolveTargetUrl:
             if url.startswith("https://"):
                 raise requests.exceptions.ConnectionError("refused")
             return _resp(f"http://{DOMAIN}/")
-        with patch("requests.get", side_effect=fake_get):
+        with patch("net_guard.guarded_get", side_effect=fake_get):
             assert resolve_target_url(DOMAIN) == f"http://{DOMAIN}"
 
     def test_http_redirects_to_https_returns_https(self):
@@ -54,7 +50,7 @@ class TestResolveTargetUrl:
             if url.startswith("https://"):
                 raise requests.exceptions.ConnectionError("refused")
             return _resp(f"https://{DOMAIN}/")
-        with patch("requests.get", side_effect=fake_get):
+        with patch("net_guard.guarded_get", side_effect=fake_get):
             assert resolve_target_url(DOMAIN) == f"https://{DOMAIN}"
 
     def test_https_redirects_down_to_http_returns_http(self):
@@ -62,11 +58,11 @@ class TestResolveTargetUrl:
         # exception raised at all) but its own redirect chain lands on
         # http - the scheme that "worked" (https, no exception) must not
         # be blindly trusted; resp.url's final scheme (http) wins.
-        with patch("requests.get", return_value=_resp(f"http://{DOMAIN}/")):
+        with patch("net_guard.guarded_get", return_value=_resp(f"http://{DOMAIN}/")):
             assert resolve_target_url(DOMAIN) == f"http://{DOMAIN}"
 
     def test_both_fail_falls_back_to_https(self):
-        with patch("requests.get", side_effect=requests.exceptions.ConnectionError("refused")):
+        with patch("net_guard.guarded_get", side_effect=requests.exceptions.ConnectionError("refused")):
             assert resolve_target_url(DOMAIN) == f"https://{DOMAIN}"
 
     def test_ssl_error_falls_through_to_http(self):
@@ -74,7 +70,7 @@ class TestResolveTargetUrl:
             if url.startswith("https://"):
                 raise requests.exceptions.SSLError("bad handshake")
             return _resp(f"http://{DOMAIN}/")
-        with patch("requests.get", side_effect=fake_get):
+        with patch("net_guard.guarded_get", side_effect=fake_get):
             assert resolve_target_url(DOMAIN) == f"http://{DOMAIN}"
 
 

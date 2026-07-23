@@ -19,12 +19,22 @@ own DNS at connect time, so they get the dispatch-time assert_public_host gate,
 not per-connection pinning - closing that fully means teaching each tool to
 target-by-IP-with-Host, which is a much larger change. The pin is applied to
 every client we control directly (plain `requests`).
+
+The pin is a CONNECTION-level pin, not a URL rewrite: a mounted HTTPAdapter
+connects the socket to the validated IP while keeping the URL/SNI/Host as the
+real hostname (via urllib3's server_hostname). Rewriting the URL host to the IP
+would send SNI=IP, which SNI-routing CDNs (Vercel/Cloudflare/Fastly/Netlify)
+can't route - they return a generic 403/edge page stripped of the real site's
+headers, producing false "missing header"/wrong-status findings on most of the
+HTTPS web. Same approach ssl_tls.py and routers/verify.py already use.
 """
 import ipaddress
 import socket
-from urllib.parse import urlsplit, urlunsplit, urljoin
+from urllib.parse import urlsplit
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3 import HTTPConnectionPool, HTTPSConnectionPool
 
 # Networks ipaddress' category flags don't all cover: CGNAT, IETF protocol
 # assignments, benchmarking. is_private/is_loopback/is_link_local/is_reserved/
@@ -85,58 +95,93 @@ def assert_public_host(host: str) -> None:
     resolve_public_ips(host)
 
 
-def _pin_netloc(netloc: str, ip: str) -> str:
-    """Replace the host in a netloc with `ip` (bracketing IPv6), keeping the port
-    so the connection goes to the address we just validated, not a re-lookup."""
-    userinfo = ""
-    if "@" in netloc:
-        userinfo, netloc = netloc.rsplit("@", 1)
-        userinfo += "@"
-    port = ""
-    if netloc.startswith("["):                       # [ipv6]:port
-        port = netloc.split("]", 1)[1]
-    elif netloc.count(":") == 1:
-        port = ":" + netloc.rsplit(":", 1)[1]
-    host_part = f"[{ip}]" if ":" in ip else ip
-    return f"{userinfo}{host_part}{port}"
+class _PinnedPoolAdapter(HTTPAdapter):
+    """Pins every connection to its host's validated public IP while keeping the
+    URL/SNI/Host as the real hostname (rebinding-safe SSRF pin, SNI-correct).
+
+    The guard lives in get_connection, which requests calls once per hop - so
+    redirect targets are resolved+validated too, without a manual redirect loop.
+    A pool is cached per (scheme, host, port): the FIRST validated IP is reused
+    for the life of the session, so a rebind on a later lookup can't move the
+    connection to a private address."""
+
+    def __init__(self, *a, **k):
+        self._pools = {}
+        super().__init__(*a, **k)
+
+    def send(self, request, **kwargs):
+        # Force Host to the hostname: the pool connects to an IP, and urllib3
+        # would otherwise emit Host: <ip>, which name-vhosts/CDNs reject.
+        host = urlsplit(request.url).hostname
+        if host:
+            request.headers["Host"] = host
+        return super().send(request, **kwargs)
+
+    def get_connection(self, url, proxies=None):
+        parsed = urlsplit(url)
+        host, scheme = parsed.hostname, parsed.scheme
+        if not host:
+            raise SsrfBlocked(f"no host in URL: {url!r}")
+        port = parsed.port or (443 if scheme == "https" else 80)
+        key = (scheme, host, port)
+        pool = self._pools.get(key)
+        if pool is None:
+            ip = resolve_public_ips(host)[0]             # validate + pin; raises if non-public
+            if scheme == "https":
+                # server_hostname keeps SNI = the real name; connect goes to ip.
+                # cert_reqs NONE mirrors the scanner-wide verify=False stance.
+                pool = HTTPSConnectionPool(ip, port=port, server_hostname=host,
+                                           assert_hostname=False, cert_reqs="CERT_NONE",
+                                           retries=False)
+            else:
+                pool = HTTPConnectionPool(ip, port=port, retries=False)
+            self._pools[key] = pool
+        return pool
+
+    # requests 2.31 calls the 2-arg get_connection above. Keep the newer name a
+    # thin alias so a requests bump to 2.32+ doesn't silently bypass the pin.
+    def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
+        return self.get_connection(request.url, proxies)
+
+    def close(self):
+        for p in self._pools.values():
+            try:
+                p.close()
+            except Exception:
+                pass
+        self._pools.clear()
+        super().close()
 
 
 def guarded_request(method: str, url: str, *, session: requests.Session | None = None,
                     follow: bool | None = None, max_redirects: int = _MAX_REDIRECTS,
                     **kwargs) -> requests.Response:
-    """Drop-in for requests.<method> that (1) resolves+validates the host, (2)
-    pins the validated IP for the connection (rebinding-safe), and (3) when
-    following, re-validates every redirect hop. `verify=False` and manual redirect
-    control are forced - the scanner talks to hostile hosts, so cert trust is not
-    the point and hop control is. `follow` defaults to the caller's own
-    `allow_redirects` kwarg (True if unset, matching requests), so existing call
+    """Drop-in for requests.<method> that pins every connection (including each
+    redirect hop) to the host's validated public IP while keeping the hostname
+    for SNI/cert/Host (see _PinnedPoolAdapter). `verify=False` is forced - the
+    scanner talks to hostile hosts, cert trust is not the point. `follow` defaults
+    to the caller's `allow_redirects` (True if unset, matching requests), so call
     sites are drop-in: `allow_redirects=False` (owasp's open-redirect / injection
-    probes) => inspect a single response unfollowed; pass `follow=` to override."""
+    probes) => a single unfollowed response to inspect; redirects that ARE
+    followed route back through the pinning adapter, so a 302 into a private
+    range raises SsrfBlocked mid-chain."""
     if follow is None:
         follow = kwargs.get("allow_redirects", True)
     kwargs["verify"] = False
-    kwargs["allow_redirects"] = False
-    original_headers = dict(kwargs.pop("headers", {}) or {})
+    kwargs["allow_redirects"] = follow
 
-    for _ in range(max_redirects + 1):
-        parsed = urlsplit(url)
-        host = parsed.hostname
-        if not host:
-            raise SsrfBlocked(f"no host in URL: {url!r}")
-        ip = resolve_public_ips(host)[0]                 # raises if non-public
-        pinned = urlunsplit((parsed.scheme, _pin_netloc(parsed.netloc, ip),
-                             parsed.path, parsed.query, ""))
-        # Preserve the real Host so vhosts/TLS-SNI-by-name targets still answer.
-        headers = {**original_headers, "Host": parsed.netloc.rsplit("@", 1)[-1]}
-        caller = getattr(session or requests, method.lower())  # re-bound: method flips to get on redirect
-        resp = caller(pinned, headers=headers, **kwargs)
-        if follow and resp.status_code in _REDIRECT_CODES and "location" in resp.headers:
-            url = urljoin(url, resp.headers["location"])  # validated next loop
-            kwargs.pop("data", None); kwargs.pop("json", None)  # don't replay a body on GET-redirect
-            method = "get"
-            continue
-        return resp
-    raise SsrfBlocked(f"too many redirects (> {max_redirects})")
+    own = session is None
+    sess = session or requests.Session()
+    if not isinstance(sess.get_adapter("https://"), _PinnedPoolAdapter):
+        adapter = _PinnedPoolAdapter()
+        sess.mount("https://", adapter)
+        sess.mount("http://", adapter)
+    sess.max_redirects = max_redirects
+    try:
+        return sess.request(method, url, **kwargs)
+    finally:
+        if own:
+            sess.close()
 
 
 def guarded_get(url: str, **kwargs) -> requests.Response:

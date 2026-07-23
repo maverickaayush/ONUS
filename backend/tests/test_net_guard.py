@@ -1,12 +1,13 @@
-"""SSRF guard tests (finding H1).
+"""SSRF guard tests (finding H1 + the SNI-preserving connection-level pin).
 
-Two layers:
-  1. Behavioural matrix on net_guard itself - the guard logic every call site
-     routes through: reject metadata/RFC1918/loopback/CGNAT/reserved, mixed
-     records, IP pinning (rebinding), and redirect re-validation.
-  2. Wiring proofs - drive the real module entrypoints and confirm they refuse
-     a private target *before* any socket/HTTP happens (i.e. they actually go
-     through the guard, not raw requests).
+The pin is an HTTPAdapter that connects to the host's validated public IP while
+keeping the URL/SNI/Host as the real hostname. So the tests assert two things
+that must BOTH hold:
+  1. it's still a pin - private/rebinding/redirect-into-private are rejected,
+     at the get_connection seam every request+redirect-hop routes through;
+  2. it's SNI-correct - the pool connects to the IP but carries
+     server_hostname = the real name (the thing the URL-rewrite pin broke on
+     SNI-routing CDNs like Vercel/Cloudflare).
 
 Run with:
     cd backend && python3 -m pytest tests/test_net_guard.py -v
@@ -15,13 +16,11 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import patch, MagicMock
-import socket
 
 import pytest
-from requests.structures import CaseInsensitiveDict
 
 import net_guard
-from net_guard import resolve_public_ips, guarded_get, SsrfBlocked
+from net_guard import (resolve_public_ips, SsrfBlocked, _PinnedPoolAdapter)
 
 
 def _addrinfo(*ips):
@@ -29,17 +28,8 @@ def _addrinfo(*ips):
     return [(0, 0, 0, "", (ip, 0)) for ip in ips]
 
 
-def _resp(status=200, location=None):
-    r = MagicMock()
-    r.status_code = status
-    r.headers = CaseInsensitiveDict({"Location": location} if location else {})
-    r.url = "http://x/"
-    return r
-
-
 # --- 1. resolution matrix ---------------------------------------------------
 
-# literal path needs no DNS mock
 @pytest.mark.parametrize("ip", [
     "169.254.169.254",   # cloud metadata
     "10.0.0.5", "172.16.0.1", "192.168.1.1",   # RFC1918
@@ -64,7 +54,6 @@ def test_rejects_hostname_resolving_private():
 
 
 def test_rejects_mixed_records_one_private():
-    # one public + one private A record -> whole host rejected
     with patch("socket.getaddrinfo", return_value=_addrinfo("93.184.216.34", "192.168.0.9")):
         with pytest.raises(SsrfBlocked):
             resolve_public_ips("mixed.example")
@@ -75,87 +64,100 @@ def test_accepts_all_public():
         assert resolve_public_ips("ok.example") == ["1.1.1.1", "93.184.216.34"]
 
 
-# --- 2. pinning / rebinding -------------------------------------------------
+# --- 2. connection-level pin: connect to IP, SNI stays the hostname ----------
 
-def test_pins_resolved_ip_and_preserves_host():
-    with patch("socket.getaddrinfo", return_value=_addrinfo("93.184.216.34")), \
-         patch("requests.get", return_value=_resp()) as m:
-        guarded_get("http://target.example/path")
-    url = m.call_args.args[0]
-    assert "93.184.216.34" in url and "target.example" not in url  # connected to IP, not name
-    assert m.call_args.kwargs["headers"]["Host"] == "target.example"
-
-
-def test_rebinding_uses_first_resolution_only():
-    # public on the first lookup, private on the second: pinning must connect to
-    # the public IP and never consult the second (private) answer. If this passed
-    # without pinning, the request would carry the hostname and re-resolve.
-    with patch("socket.getaddrinfo", side_effect=[_addrinfo("93.184.216.34"),
-                                                  _addrinfo("10.0.0.1")]) as gai, \
-         patch("requests.get", return_value=_resp()) as m:
-        guarded_get("http://rebind.example/")
-    assert gai.call_count == 1                       # resolved once, then pinned
-    assert "93.184.216.34" in m.call_args.args[0]
+def test_pool_connects_to_ip_but_sni_is_hostname():
+    ad = _PinnedPoolAdapter()
+    with patch("socket.getaddrinfo", return_value=_addrinfo("93.184.216.34")):
+        pool = ad.get_connection("https://target.example/path")
+    assert pool.host == "93.184.216.34"                      # socket goes to the IP
+    assert pool.conn_kw.get("server_hostname") == "target.example"  # SNI = real name (the CDN fix)
 
 
-# --- 3. redirect re-validation ----------------------------------------------
+def test_http_pool_also_pins_to_ip():
+    ad = _PinnedPoolAdapter()
+    with patch("socket.getaddrinfo", return_value=_addrinfo("93.184.216.34")):
+        pool = ad.get_connection("http://target.example/")
+    assert pool.host == "93.184.216.34"
 
-def test_redirect_into_private_is_blocked():
-    with patch("socket.getaddrinfo", side_effect=[_addrinfo("93.184.216.34"),   # initial host
-                                                  _addrinfo("169.254.169.254")]), \
-         patch("requests.get", return_value=_resp(302, "http://metadata.internal/")):
+
+def test_send_forces_host_header_to_hostname():
+    # pool connects to an IP; Host must be the hostname, not <ip>.
+    ad = _PinnedPoolAdapter()
+    req = MagicMock(); req.url = "https://target.example/x"; req.headers = {}
+    with patch("requests.adapters.HTTPAdapter.send", return_value="sentinel") as sup:
+        out = ad.send(req)
+    assert out == "sentinel"
+    assert req.headers["Host"] == "target.example"
+
+
+# --- 3. still a pin: private + rebinding + redirect-hop rejection ------------
+
+def test_get_connection_rejects_private_host():
+    # every request AND every redirect hop routes through get_connection, so a
+    # private target here == a redirect-into-private being blocked mid-chain.
+    ad = _PinnedPoolAdapter()
+    with patch("socket.getaddrinfo", return_value=_addrinfo("169.254.169.254")):
         with pytest.raises(SsrfBlocked):
-            guarded_get("http://public.example/")
+            ad.get_connection("http://metadata.internal/latest/")
 
 
-def test_multi_hop_redirect_hop3_private_is_blocked():
-    reqs = [_resp(302, "http://h2/"), _resp(302, "http://h3/"), _resp(302, "http://h4/")]
-    gai = [_addrinfo("93.184.216.34"), _addrinfo("1.1.1.1"),
-           _addrinfo("8.8.8.8"), _addrinfo("192.168.5.5")]   # hop 3's target is private
-    with patch("socket.getaddrinfo", side_effect=gai), \
-         patch("requests.get", side_effect=reqs) as m:
-        with pytest.raises(SsrfBlocked):
-            guarded_get("http://h1/")
-    assert m.call_count == 3                          # stopped before the 4th hop
-
-
-def test_redirect_to_public_is_followed():
+def test_rebinding_pins_first_resolution():
+    # public on the first lookup, private on the second: the cached pool must
+    # stay pinned to the public IP and never re-resolve to the private one.
+    ad = _PinnedPoolAdapter()
     with patch("socket.getaddrinfo", side_effect=[_addrinfo("93.184.216.34"),
-                                                  _addrinfo("1.1.1.1")]), \
-         patch("requests.get", side_effect=[_resp(302, "http://next.example/"),
-                                            _resp(200)]) as m:
-        out = guarded_get("http://public.example/")
-    assert out.status_code == 200 and m.call_count == 2
+                                                  _addrinfo("10.0.0.1")]) as gai:
+        p1 = ad.get_connection("https://rebind.example/")
+        p2 = ad.get_connection("https://rebind.example/other")
+    assert gai.call_count == 1                    # resolved once, pool cached
+    assert p1 is p2 and p1.host == "93.184.216.34"
 
 
-# --- 4. wiring proofs: real module entrypoints refuse before connecting ------
-# Technique: point resolution at a private IP; a wired module raises/aborts at
-# the guard and never calls its HTTP/socket primitive. An UNwired module would.
+def test_guarded_get_end_to_end_blocks_metadata():
+    # full path through requests: a metadata host raises before any bytes leave.
+    with patch("socket.getaddrinfo", return_value=_addrinfo("169.254.169.254")):
+        with pytest.raises(SsrfBlocked):
+            net_guard.guarded_get("https://metadata.example/", timeout=5)
+
+
+def test_follow_inferred_from_allow_redirects():
+    # allow_redirects=False must not follow; sess.request is called with it.
+    captured = {}
+    real_session = net_guard.requests.Session
+    class _S(real_session):
+        def request(self, method, url, **kw):
+            captured.update(kw); r = MagicMock(); r.status_code = 302; return r
+    with patch.object(net_guard.requests, "Session", _S), \
+         patch("socket.getaddrinfo", return_value=_addrinfo("93.184.216.34")):
+        net_guard.guarded_request("get", "https://x.example/", allow_redirects=False)
+    assert captured.get("allow_redirects") is False
+
+
+# --- 4. wiring: real module entrypoints abort when resolution is blocked -----
 
 def test_base_task_resolve_target_is_guarded():
     from tasks.base_task import resolve_target_url
-    with patch("socket.getaddrinfo", return_value=_addrinfo("10.0.0.1")), \
-         patch("requests.get") as m:
-        resolve_target_url("private.example")        # swallows SsrfBlocked -> fallback
-    assert not m.called                              # guard fired before any HTTP
+    with patch("net_guard.resolve_public_ips", side_effect=SsrfBlocked("blocked")):
+        # swallows SsrfBlocked per scheme, falls back to https://<domain>
+        assert resolve_target_url("private.example") == "https://private.example"
 
 
 def test_owasp_open_redirect_is_guarded():
     import requests
     from tasks.owasp import test_open_redirect
     session = requests.Session()
-    with patch("socket.getaddrinfo", return_value=_addrinfo("192.168.1.1")), \
-         patch.object(session, "get") as m:
+    with patch("net_guard.resolve_public_ips", side_effect=SsrfBlocked("blocked")):
         findings = test_open_redirect(session, "http://private.example/", "private.example")
-    assert findings == [] and not m.called
+    assert findings == []
 
 
 def test_ssl_tls_https_reachable_is_guarded():
     from tasks.ssl_tls import _https_reachable
-    with patch("socket.getaddrinfo", return_value=_addrinfo("127.0.0.1")), \
+    with patch("net_guard.resolve_public_ips", side_effect=SsrfBlocked("blocked")), \
          patch("socket.create_connection") as m:
         assert _https_reachable("private.example") is False
-    assert not m.called                              # never opened a socket to the private IP
+    assert not m.called
 
 
 @pytest.mark.parametrize("modname", [
